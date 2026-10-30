@@ -1,0 +1,6 @@
+{
+  "name": "EduTest Online",
+  "description": "Nền tảng làm đề và luyện thi trắc nghiệm trực tuyến chuẩn thi cử với chấm điểm tức thì, ma trận câu hỏi, máy tính mini, lời giải chi tiết và công cụ soạn đề.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

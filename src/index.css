@@ -1,0 +1,152 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+/* ============================================================
+   KATEX TAILWIND ISOLATION & SIZING FIX
+   1. Fixes square root (dấu căn) so the horizontal line automatically
+      fits snugly to the expression inside the radical (not stretching).
+   2. Fixes vector arrows (\vec and \overrightarrow) so the arrow sits
+      directly and snugly above the expression underneath it.
+   ============================================================ */
+
+/* 1. Reset box-sizing to content-box for KaTeX */
+.katex,
+.katex *,
+.katex ::before,
+.katex ::after {
+  box-sizing: content-box;
+}
+
+/* 2. For square roots: Ensure .sqrt contains a snug inline-table that fits the radicand exactly */
+.katex .sqrt {
+  display: inline-block !important;
+  position: relative !important;
+  vertical-align: middle !important;
+}
+
+.katex .sqrt > .vlist-t {
+  display: inline-table !important;
+  table-layout: auto !important;
+  width: auto !important;
+  border-collapse: collapse !important;
+}
+
+.katex .vlist-t {
+  border-collapse: collapse !important;
+}
+
+.katex .vlist-r {
+  display: table-row !important;
+}
+
+.katex .vlist {
+  display: table-cell !important;
+  vertical-align: bottom !important;
+  position: relative !important;
+}
+
+/* 3. Ensure .hide-tail is an inline-block with overflow:hidden so it honors height and clips the tail cleanly */
+.katex .hide-tail {
+  display: inline-block !important;
+  position: relative !important;
+  overflow: hidden !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  vertical-align: baseline !important;
+}
+
+.katex .katex-stretchy {
+  width: 100% !important;
+  display: block !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+/* 4. Restore KaTeX SVG rules:
+   - Radical signs (\sqrt) and vector arrows (\overrightarrow) have attribute width="400em"
+   - SVG inside .hide-tail needs width: 400em so the checkmark is crisp and overline extends,
+     and height: 100% of the hide-tail container so it is clearly visible and fits the expression.
+*/
+.katex svg {
+  display: block !important;
+  position: absolute !important;
+  fill: currentColor !important;
+  stroke: currentColor !important;
+}
+
+.katex svg path {
+  stroke: none !important;
+}
+
+.katex .hide-tail > svg {
+  display: block !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: 400em !important;
+  min-width: 400em !important;
+  max-width: none !important;
+  height: 100% !important;
+  fill: currentColor !important;
+  stroke: currentColor !important;
+}
+
+.katex .katex-stretchy svg {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+/* 5. Vector accents (\vec single character arrow) */
+.katex .katex-accent > .vlist-t {
+  text-align: center !important;
+}
+
+.katex .katex-accent .accent-body {
+  position: relative !important;
+}
+
+.katex .katex-overlay {
+  display: block !important;
+  position: relative !important;
+}
+
+.katex .katex-overlay svg {
+  display: block !important;
+  position: static !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* 6. Stretchy vector arrows (\overrightarrow{AB}) */
+.katex .svg-align {
+  text-align: left !important;
+}
+
+.katex .svg-align svg {
+  vertical-align: top !important;
+}
+
+/* Custom styles for tables in question content */
+.markdown-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.75rem 0;
+  font-size: 0.875rem;
+}
+
+.markdown-table th,
+.markdown-table td {
+  border: 1px solid #cbd5e1;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.markdown-table th {
+  background-color: #f8fafc;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.markdown-table tr:nth-child(even) td {
+  background-color: #f8fafc;
+}
