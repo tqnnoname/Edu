@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Exam, Question, UserRole } from '../types/exam';
 import { X, Eye, EyeOff, Printer, Clock, BookOpen, CheckCircle, ArrowRight, FileText } from 'lucide-react';
 import { RichContentRenderer } from './RichContentRenderer';
+import { formatTrueFalseScoringRule } from '../utils/scoring';
 
 interface ExamPreviewModalProps {
   isOpen: boolean;
@@ -25,6 +26,33 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
   const [filterType, setFilterType] = useState<string>('all');
 
   if (!isOpen || !exam) return null;
+
+  // Chế độ người ra đề: Không cho ai khác xem thử (kể cả học sinh), trừ người ra đề
+  const isCreatorOnly = exam.visibility === 'private' || exam.status === 'draft';
+  if (userRole === 'student' && isCreatorOnly) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 font-sans">
+        <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 text-center space-y-4">
+          <div className="w-12 h-12 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+            <X className="w-6 h-6" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900">
+            Không có quyền xem thử đề thi
+          </h3>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Đề thi này đang ở <strong>chế độ Người ra đề (Bản nháp riêng tư)</strong>. Hệ thống không cho phép bất kỳ ai khác kể cả học sinh xem trước, chỉ khi nào người ra đề mở đề thi mới có thể xem và làm bài.
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full py-2 px-4 bg-slate-900 text-white font-bold text-xs rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+          >
+            Đã hiểu & Đóng
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const canViewSolutions = userRole === 'teacher';
 
@@ -202,6 +230,16 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                           </span>
                           <div className="flex-1">
                             <RichContentRenderer content={opt} />
+                            {q.optionImages?.[optIdx] && (
+                              <div className="mt-1.5">
+                                <img
+                                  src={q.optionImages[optIdx]}
+                                  alt={`Phương án ${letter}`}
+                                  className="max-h-32 rounded border border-slate-200 object-contain bg-white shadow-2xs"
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
+                            )}
                           </div>
                           {showSolutions && isCorrect && (
                             <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
@@ -215,6 +253,9 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                 {/* Format 2: True/False */}
                 {q.type === 'true_false' && q.tfItems && (
                   <div className="space-y-1.5 pt-1">
+                    <div className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
+                      ⚖ {formatTrueFalseScoringRule(q)}
+                    </div>
                     {q.tfItems.map((item, itemIdx) => {
                       const letter = String.fromCharCode(97 + itemIdx);
                       return (
@@ -266,24 +307,63 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                 {q.type === 'grouped' && q.subQuestions && (
                   <div className="pl-3 border-l-2 border-purple-200 space-y-3 pt-1">
                     {q.subQuestions.map((sub, sIdx) => (
-                      <div key={sub.id} className="text-xs space-y-1">
+                      <div key={sub.id} className="text-xs space-y-1.5 p-2 rounded-lg bg-white/70 border border-purple-100">
                         <div className="font-bold text-purple-900">
                           {index + 1}.{sIdx + 1}) {sub.question}
                         </div>
-                        {sub.options && (
-                          <div className="grid grid-cols-2 gap-1.5 pl-3">
+                        {sub.imageUrl && (
+                          <div className="py-1">
+                            <img
+                              src={sub.imageUrl}
+                              alt={`Hình câu ${index + 1}.${sIdx + 1}`}
+                              className="max-h-32 rounded border border-purple-200 object-contain bg-white shadow-2xs"
+                              referrerPolicy="no-referrer"
+                            />
+                          </div>
+                        )}
+                        {(sub.type || 'single_choice') === 'single_choice' && sub.options && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-2">
                             {sub.options.map((opt, oIdx) => (
                               <div
                                 key={oIdx}
-                                className={`p-1.5 rounded border text-[11px] ${
+                                className={`p-2 rounded border text-[11px] ${
                                   showSolutions && sub.correctAnswer === oIdx
                                     ? 'bg-emerald-50 border-emerald-300 font-bold text-emerald-900'
-                                    : 'bg-white border-slate-200'
+                                    : 'bg-white border-slate-200 text-slate-800'
                                 }`}
                               >
-                                {String.fromCharCode(65 + oIdx)}. {opt}
+                                <div>
+                                  <span className="font-bold mr-1">{String.fromCharCode(65 + oIdx)}.</span>
+                                  {opt}
+                                </div>
+                                {sub.optionImages?.[oIdx] && (
+                                  <div className="mt-1">
+                                    <img
+                                      src={sub.optionImages[oIdx]}
+                                      alt={`Ý ${String.fromCharCode(65 + oIdx)}`}
+                                      className="max-h-24 rounded border border-purple-100 object-contain bg-white shadow-2xs"
+                                      referrerPolicy="no-referrer"
+                                    />
+                                  </div>
+                                )}
                               </div>
                             ))}
+                          </div>
+                        )}
+
+                        {sub.type === 'text_input' && (
+                          <div className="p-2.5 bg-slate-50 border border-dashed border-purple-300 rounded-lg text-xs space-y-1">
+                            <div className="text-slate-500 italic text-[11px]">
+                              [Thí sinh điền câu trả lời số hoặc biểu thức vào ô trống]
+                            </div>
+                            {showSolutions && sub.acceptedAnswers && sub.acceptedAnswers.length > 0 && (
+                              <div className="text-emerald-800 font-medium text-[11px] pt-1">
+                                Đáp án chấp nhận:{' '}
+                                <span className="font-mono bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                  {sub.acceptedAnswers.join(' / ')}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

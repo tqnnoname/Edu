@@ -45,13 +45,66 @@ export function gradeQuestion(
         isSkipped: true,
       };
     }
-    const isCorrect = userAnswer === question.correctAnswer;
+    const isCorrect = Number(userAnswer) === question.correctAnswer;
     return {
       questionId: question.id,
       earnedPoints: isCorrect ? maxPoints : 0,
       maxPoints,
       isFullyCorrect: isCorrect,
       isPartiallyCorrect: false,
+      isSkipped: false,
+    };
+  }
+
+  // 1b. Dạng Multiple Choice (Chọn nhiều phương án đúng)
+  if (question.type === 'multiple_choice') {
+    const userChoices = Array.isArray(userAnswer) ? (userAnswer as number[]) : [];
+    const isSkipped = userChoices.length === 0;
+
+    if (isSkipped) {
+      return {
+        questionId: question.id,
+        earnedPoints: 0,
+        maxPoints,
+        isFullyCorrect: false,
+        isPartiallyCorrect: false,
+        isSkipped: true,
+      };
+    }
+
+    const correctList = question.correctAnswers || (question.correctAnswer !== undefined ? [question.correctAnswer] : []);
+    if (correctList.length === 0) {
+      return {
+        questionId: question.id,
+        earnedPoints: maxPoints,
+        maxPoints,
+        isFullyCorrect: true,
+        isPartiallyCorrect: false,
+        isSkipped: false,
+      };
+    }
+
+    const correctSet = new Set(correctList);
+    let correctCount = 0;
+    let incorrectCount = 0;
+
+    userChoices.forEach((idx) => {
+      if (correctSet.has(idx)) correctCount++;
+      else incorrectCount++;
+    });
+
+    const isFullyCorrect = correctCount === correctList.length && incorrectCount === 0;
+    // Chấm điểm từng phần: tỷ lệ đúng trừ số phương án chọn sai (tối thiểu 0)
+    const ratio = Math.max(0, (correctCount - incorrectCount) / correctList.length);
+    const earnedPoints = Number((ratio * maxPoints).toFixed(3));
+    const isPartiallyCorrect = earnedPoints > 0 && !isFullyCorrect;
+
+    return {
+      questionId: question.id,
+      earnedPoints,
+      maxPoints,
+      isFullyCorrect,
+      isPartiallyCorrect,
       isSkipped: false,
     };
   }
@@ -73,28 +126,66 @@ export function gradeQuestion(
     const ansMap = (userAnswer as { [itemId: string]: boolean }) || {};
     const isSkipped = Object.keys(ansMap).length === 0;
 
-    // Tính điểm mặc định nếu ý không có điểm riêng: chia đều điểm câu!
-    const defaultItemPoints = maxPoints / items.length;
-
-    let earnedTotal = 0;
     let correctItemsCount = 0;
     const itemScores: { [itemId: string]: { earned: number; max: number; correct: boolean } } = {};
 
+    // Đánh giá từng ý đúng hay sai
     items.forEach((item) => {
-      const itemMax = item.points !== undefined && item.points > 0 ? item.points : defaultItemPoints;
       const userChoice = ansMap[item.id];
       const isCorrect = userChoice !== undefined && userChoice === item.isCorrect;
-
-      const earned = isCorrect ? itemMax : 0;
-      earnedTotal += earned;
       if (isCorrect) correctItemsCount += 1;
 
       itemScores[item.id] = {
-        earned,
-        max: itemMax,
+        earned: 0,
+        max: item.points !== undefined && item.points > 0 ? item.points : maxPoints / items.length,
         correct: isCorrect,
       };
     });
+
+    let earnedTotal = 0;
+
+    // Chế độ 1: Bậc thang tùy chỉnh theo số ý đúng (tiered)
+    if (question.tfScoringMode === 'tiered' && question.tfTierPoints && question.tfTierPoints.length > 0) {
+      if (correctItemsCount > 0) {
+        const tierIdx = correctItemsCount - 1;
+        earnedTotal = question.tfTierPoints[tierIdx] !== undefined 
+          ? question.tfTierPoints[tierIdx] 
+          : (correctItemsCount === items.length ? maxPoints : 0);
+      } else {
+        earnedTotal = 0;
+      }
+    }
+    // Chế độ 2: Chuẩn Bộ GD&ĐT 2025 (1 ý = 10%, 2 ý = 25%, 3 ý = 50%, 4 ý = 100% điểm câu)
+    else if (question.tfScoringMode === 'standard_ministry') {
+      if (correctItemsCount === 1) earnedTotal = 0.1 * maxPoints;
+      else if (correctItemsCount === 2) earnedTotal = 0.25 * maxPoints;
+      else if (correctItemsCount === 3) earnedTotal = 0.50 * maxPoints;
+      else if (correctItemsCount >= 4) earnedTotal = maxPoints;
+      else earnedTotal = 0;
+    }
+    // Chế độ 3: Điểm riêng từng ý đã gán trong TrueFalseItem
+    else if (question.tfScoringMode === 'custom_item_points') {
+      earnedTotal = 0;
+      items.forEach((item) => {
+        const itemMax = item.points !== undefined && item.points > 0 ? item.points : maxPoints / items.length;
+        if (itemScores[item.id].correct) {
+          earnedTotal += itemMax;
+          itemScores[item.id].earned = itemMax;
+        }
+      });
+    }
+    // Chế độ 4: Chia đều mặc định (divide_equally)
+    else {
+      const defaultItemPoints = maxPoints / items.length;
+      earnedTotal = 0;
+      items.forEach((item) => {
+        const itemMax = item.points !== undefined && item.points > 0 ? item.points : defaultItemPoints;
+        if (itemScores[item.id].correct) {
+          earnedTotal += itemMax;
+          itemScores[item.id].earned = itemMax;
+        }
+      });
+    }
 
     const isFullyCorrect = correctItemsCount === items.length;
     const isPartiallyCorrect = correctItemsCount > 0 && !isFullyCorrect;
@@ -154,9 +245,11 @@ export function gradeQuestion(
     let allSubCorrect = true;
     let anySubCorrect = false;
     let allSubSkipped = true;
+    const subQuestionScores: { [subId: string]: QuestionScoreDetail } = {};
 
     subQs.forEach((subQ) => {
       const subRes = gradeQuestion(subQ, subAnsMap[subQ.id]);
+      subQuestionScores[subQ.id] = subRes;
       totalSubMax += subRes.maxPoints;
       totalSubEarned += subRes.earnedPoints;
 
@@ -174,6 +267,7 @@ export function gradeQuestion(
       isFullyCorrect: allSubCorrect && subQs.length > 0,
       isPartiallyCorrect: anySubCorrect && !allSubCorrect,
       isSkipped: allSubSkipped,
+      subQuestionScores,
     };
   }
 
@@ -283,11 +377,14 @@ export function shuffleExamQuestionsAndOptions(
   // 1. Đảo phương án lựa chọn (shuffle options) nếu bật
   if (shuffleOptions) {
     clonedQuestions.forEach((q) => {
-      if (q.type === 'single_choice' && q.options && q.options.length > 1) {
+      // Đảo phương án cho câu hỏi đơn & nhiều đáp án
+      if ((q.type === 'single_choice' || q.type === 'multiple_choice') && q.options && q.options.length > 1) {
         const combined = q.options.map((opt, idx) => ({
           text: opt,
           image: q.optionImages ? q.optionImages[idx] : undefined,
-          isCorrect: q.correctAnswer === idx,
+          isCorrect: q.type === 'single_choice' 
+            ? q.correctAnswer === idx 
+            : (q.correctAnswers || []).includes(idx),
         }));
 
         for (let i = combined.length - 1; i > 0; i--) {
@@ -299,20 +396,28 @@ export function shuffleExamQuestionsAndOptions(
         if (q.optionImages) {
           q.optionImages = combined.map((c) => c.image);
         }
-        const newCorrectIdx = combined.findIndex((c) => c.isCorrect);
-        if (newCorrectIdx !== -1) {
-          q.correctAnswer = newCorrectIdx;
+        if (q.type === 'multiple_choice') {
+          q.correctAnswers = combined
+            .map((c, i) => (c.isCorrect ? i : -1))
+            .filter((i) => i !== -1);
+        } else {
+          const newCorrectIdx = combined.findIndex((c) => c.isCorrect);
+          if (newCorrectIdx !== -1) {
+            q.correctAnswer = newCorrectIdx;
+          }
         }
       }
 
       // Nếu là câu hỏi chùm (grouped), cũng đảo options cho các subQuestions
       if (q.type === 'grouped' && q.subQuestions) {
         q.subQuestions.forEach((subQ) => {
-          if (subQ.type === 'single_choice' && subQ.options && subQ.options.length > 1) {
+          if ((subQ.type === 'single_choice' || subQ.type === 'multiple_choice') && subQ.options && subQ.options.length > 1) {
             const combined = subQ.options.map((opt, idx) => ({
               text: opt,
               image: subQ.optionImages ? subQ.optionImages[idx] : undefined,
-              isCorrect: subQ.correctAnswer === idx,
+              isCorrect: subQ.type === 'single_choice' 
+                ? subQ.correctAnswer === idx 
+                : (subQ.correctAnswers || []).includes(idx),
             }));
 
             for (let i = combined.length - 1; i > 0; i--) {
@@ -324,9 +429,15 @@ export function shuffleExamQuestionsAndOptions(
             if (subQ.optionImages) {
               subQ.optionImages = combined.map((c) => c.image);
             }
-            const newCorrectIdx = combined.findIndex((c) => c.isCorrect);
-            if (newCorrectIdx !== -1) {
-              subQ.correctAnswer = newCorrectIdx;
+            if (subQ.type === 'multiple_choice') {
+              subQ.correctAnswers = combined
+                .map((c, i) => (c.isCorrect ? i : -1))
+                .filter((i) => i !== -1);
+            } else {
+              const newCorrectIdx = combined.findIndex((c) => c.isCorrect);
+              if (newCorrectIdx !== -1) {
+                subQ.correctAnswer = newCorrectIdx;
+              }
             }
           }
         });
@@ -349,3 +460,64 @@ export function shuffleExamQuestionsAndOptions(
     questions: finalQuestions,
   };
 }
+
+/**
+ * Trả về mảng điểm theo số ý đúng tương ứng (vị trí 0 = đúng 1 ý, vị trí 1 = đúng 2 ý, ...)
+ */
+export function getTrueFalseTierPoints(question: Question): number[] {
+  const count = question.tfItems?.length || 4;
+  const maxP = question.points || 1.0;
+
+  if (question.tfScoringMode === 'tiered' && question.tfTierPoints && question.tfTierPoints.length > 0) {
+    return question.tfTierPoints;
+  }
+
+  if (question.tfScoringMode === 'standard_ministry') {
+    if (count === 4) {
+      return [
+        Number((0.1 * maxP).toFixed(2)),
+        Number((0.25 * maxP).toFixed(2)),
+        Number((0.5 * maxP).toFixed(2)),
+        Number((1.0 * maxP).toFixed(2)),
+      ];
+    }
+    return Array.from({ length: count }, (_, i) => {
+      const step = i + 1;
+      if (step === 1) return Number((0.1 * maxP).toFixed(2));
+      if (step === 2) return Number((0.25 * maxP).toFixed(2));
+      if (step === 3) return Number((0.5 * maxP).toFixed(2));
+      return Number(((step / count) * maxP).toFixed(2));
+    });
+  }
+
+  // Chia đều mặc định
+  return Array.from({ length: count }, (_, i) => 
+    Number((((i + 1) * maxP) / count).toFixed(2))
+  );
+}
+
+/**
+ * Tạo nhãn mô tả quy chế chấm điểm câu Đúng/Sai cho học sinh dễ đọc
+ */
+export function formatTrueFalseScoringRule(question: Question): string {
+  const count = question.tfItems?.length || 4;
+  const tiers = getTrueFalseTierPoints(question);
+
+  if (question.tfScoringMode === 'tiered') {
+    const parts = tiers.slice(0, count).map((p, idx) => `Đúng ${idx + 1} ý: ${p}đ`);
+    return `Chấm theo bậc số ý đúng: ${parts.join(' | ')}`;
+  }
+
+  if (question.tfScoringMode === 'standard_ministry') {
+    const parts = tiers.slice(0, count).map((p, idx) => `Đúng ${idx + 1} ý: ${p}đ`);
+    return `Chuẩn Bộ GD&ĐT 2025: ${parts.join(' | ')}`;
+  }
+
+  if (question.tfScoringMode === 'custom_item_points') {
+    return 'Chấm theo điểm riêng từng ý mệnh đề.';
+  }
+
+  const perItem = (question.points || 1.0) / count;
+  return `Chia đều điểm câu (${perItem.toFixed(2)}đ / ý).`;
+}
+

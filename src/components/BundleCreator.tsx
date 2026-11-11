@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Exam, ExamBundle, BundleSelectionMode, ElectiveGroup } from '../types/exam';
+import { Exam, ExamBundle, BundleSelectionMode, ElectiveGroup, ExamStatus, BundleTimingMode } from '../types/exam';
 import { 
   ArrowLeft, 
   Save, 
@@ -10,13 +10,20 @@ import {
   AlertCircle,
   MoveUp,
   MoveDown,
-  Check,
+  Check, 
   HelpCircle,
   Settings,
   FolderPlus,
   Timer,
-  Shuffle
+  Shuffle,
+  Lock,
+  Eye,
+  Calendar,
+  KeyRound,
+  CheckCircle2,
+  Sparkles
 } from 'lucide-react';
+import { generate8DigitBundleCode, saveCustomBundle } from '../utils/storage';
 
 interface BundleCreatorProps {
   availableExams: Exam[];
@@ -33,12 +40,42 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
 }) => {
   const isEditing = Boolean(initialBundle);
   const [title, setTitle] = useState(initialBundle?.title || '');
+  const [bundleCode, setBundleCode] = useState<string>(
+    initialBundle?.bundleCode || generate8DigitBundleCode()
+  );
   const [description, setDescription] = useState(initialBundle?.description || '');
   const [breakMinutes, setBreakMinutes] = useState(initialBundle?.breakMinutes ?? 5);
+
+  // Scheduling & Access Restrictions
+  const [status, setStatus] = useState<ExamStatus>(initialBundle?.status || 'open');
+  const [openTime, setOpenTime] = useState<string>(initialBundle?.openTime || '');
+  const [closeTime, setCloseTime] = useState<string>(initialBundle?.closeTime || '');
+  const [maxAttempts, setMaxAttempts] = useState<number>(initialBundle?.maxAttempts ?? 0);
+  const [lockExitUntilTimeout, setLockExitUntilTimeout] = useState<boolean>(
+    initialBundle?.lockExitUntilTimeout ?? false
+  );
+  const [showOnlyStudentAnswersAfterExam, setShowOnlyStudentAnswersAfterExam] = useState<boolean>(
+    initialBundle?.showOnlyStudentAnswersAfterExam ?? false
+  );
+  const [minSubmitMinutes, setMinSubmitMinutes] = useState<number>(
+    initialBundle?.minSubmitMinutes ?? 0
+  );
+  const [requireAccessCode, setRequireAccessCode] = useState<boolean>(
+    initialBundle?.requireAccessCode ?? false
+  );
+  const [accessSecurityCode, setAccessSecurityCode] = useState<string>(
+    initialBundle?.accessSecurityCode || ''
+  );
+  const [inPlaceSaveToast, setInPlaceSaveToast] = useState<string | null>(null);
 
   // Selection mode: 'all_compulsory' | 'has_electives'
   const [selectionMode, setSelectionMode] = useState<BundleSelectionMode>(
     initialBundle?.selectionMode || 'all_compulsory'
+  );
+
+  // Timing mode for compulsory sequential vs elective cluster max duration
+  const [timingMode, setTimingMode] = useState<BundleTimingMode>(
+    initialBundle?.timingMode || 'compulsory_seq_elective_cluster_max'
   );
 
   // Mode 1: All compulsory list
@@ -91,6 +128,18 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
   const [selectionTimeLimitSeconds, setSelectionTimeLimitSeconds] = useState<number>(() => {
     return initialBundle?.selectionTimeLimitSeconds ?? 60;
   });
+
+  // Random questions count per exam in bundle
+  const [randomQuestionCountPerExam, setRandomQuestionCountPerExam] = useState<{ [examId: string]: number }>(() => {
+    return initialBundle?.randomQuestionCountPerExam || {};
+  });
+
+  const handleSetRandomQuestionCount = (examId: string, count: number) => {
+    setRandomQuestionCountPerExam((prev) => ({
+      ...prev,
+      [examId]: Math.max(0, count),
+    }));
+  };
 
   // Mode 1: Toggle exam
   const handleToggleExam = (examId: string) => {
@@ -170,7 +219,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
     );
   };
 
-  const handleSaveBundle = () => {
+  const handleSaveBundle = (stayInEditor: boolean = false) => {
     if (!title.trim()) {
       setErrorMsg('Vui lòng nhập tên cho tổ hợp thi!');
       return;
@@ -185,17 +234,36 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
       const newBundle: ExamBundle = {
         id: initialBundle?.id || ('bundle-custom-' + Date.now()),
         title: title.trim(),
+        bundleCode: bundleCode.trim() || generate8DigitBundleCode(),
         description:
           description.trim() ||
           `Tổ hợp gồm ${selectedExamIds.length} môn thi bắt buộc với thời gian nghỉ ${breakMinutes} phút giữa các môn.`,
         breakMinutes: Number(breakMinutes) || 5,
         selectionMode: 'all_compulsory',
+        timingMode: 'all_sequential_independent',
         examIds: selectedExamIds,
+        randomQuestionCountPerExam: Object.keys(randomQuestionCountPerExam).length > 0 ? randomQuestionCountPerExam : undefined,
+        openTime: openTime || undefined,
+        closeTime: closeTime || undefined,
+        status,
+        maxAttempts: maxAttempts > 0 ? Number(maxAttempts) : undefined,
+        lockExitUntilTimeout,
+        showOnlyStudentAnswersAfterExam,
+        minSubmitMinutes: Number(minSubmitMinutes) > 0 ? Number(minSubmitMinutes) : undefined,
+        requireAccessCode,
+        accessSecurityCode: requireAccessCode ? (accessSecurityCode.trim() || '123456') : undefined,
         createdAt: initialBundle?.createdAt || new Date().toISOString().split('T')[0],
         isCustom: true,
       };
 
-      onSave(newBundle);
+      if (stayInEditor) {
+        saveCustomBundle(newBundle);
+        const tStr = new Date().toLocaleTimeString('vi-VN');
+        setInPlaceSaveToast(`✓ Đã lưu tổ hợp thi thành công tại đây lúc ${tStr}!`);
+        setTimeout(() => setInPlaceSaveToast(null), 3500);
+      } else {
+        onSave(newBundle);
+      }
     } else {
       // Validate elective groups
       if (electiveGroups.length === 0) {
@@ -244,22 +312,41 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
       const newBundle: ExamBundle = {
         id: initialBundle?.id || ('bundle-custom-' + Date.now()),
         title: title.trim(),
+        bundleCode: bundleCode.trim() || generate8DigitBundleCode(),
         description:
           description.trim() ||
           `Tổ hợp có ${compulsoryExamIds.length} môn bắt buộc và ${electiveGroups.length} nhóm môn tự chọn (chọn ${validMinGroups}-${validMaxGroups} nhóm).`,
         breakMinutes: Number(breakMinutes) || 5,
         selectionMode: 'has_electives',
+        timingMode: timingMode,
         examIds: allInvolvedIds,
         compulsoryExamIds,
         electiveGroups,
         minGroupsToSelect: validMinGroups,
         maxGroupsToSelect: validMaxGroups,
         selectionTimeLimitSeconds: Math.max(0, Number(selectionTimeLimitSeconds) || 0),
+        randomQuestionCountPerExam: Object.keys(randomQuestionCountPerExam).length > 0 ? randomQuestionCountPerExam : undefined,
+        openTime: openTime || undefined,
+        closeTime: closeTime || undefined,
+        status,
+        maxAttempts: maxAttempts > 0 ? Number(maxAttempts) : undefined,
+        lockExitUntilTimeout,
+        showOnlyStudentAnswersAfterExam,
+        minSubmitMinutes: Number(minSubmitMinutes) > 0 ? Number(minSubmitMinutes) : undefined,
+        requireAccessCode,
+        accessSecurityCode: requireAccessCode ? (accessSecurityCode.trim() || '123456') : undefined,
         createdAt: initialBundle?.createdAt || new Date().toISOString().split('T')[0],
         isCustom: true,
       };
 
-      onSave(newBundle);
+      if (stayInEditor) {
+        saveCustomBundle(newBundle);
+        const tStr = new Date().toLocaleTimeString('vi-VN');
+        setInPlaceSaveToast(`✓ Đã lưu tổ hợp thi thành công tại đây lúc ${tStr}!`);
+        setTimeout(() => setInPlaceSaveToast(null), 3500);
+      } else {
+        onSave(newBundle);
+      }
     }
   };
 
@@ -291,7 +378,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
         </div>
 
         <button
-          onClick={handleSaveBundle}
+          onClick={() => handleSaveBundle(false)}
           className="py-2.5 px-5 text-xs sm:text-sm font-semibold text-white bg-purple-700 hover:bg-purple-800 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
         >
           <Save className="w-4 h-4" />
@@ -346,6 +433,32 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
             </div>
           </div>
 
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                <KeyRound className="w-3.5 h-3.5 text-purple-600" />
+                <span>Mã tổ hợp môn (8 chữ số - Chỉ GV thấy):</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setBundleCode(generate8DigitBundleCode())}
+                className="text-[11px] font-bold text-purple-600 hover:text-purple-800 flex items-center gap-1 cursor-pointer"
+                title="Tạo mã 8 số ngẫu nhiên mới"
+              >
+                <Shuffle className="w-3 h-3" />
+                <span>Đổi mã</span>
+              </button>
+            </div>
+            <input
+              type="text"
+              maxLength={8}
+              value={bundleCode}
+              onChange={(e) => setBundleCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+              placeholder="VD: 58291043"
+              className="w-full px-3.5 py-2 text-sm font-mono font-bold tracking-widest bg-purple-50/60 border border-purple-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 text-purple-950"
+            />
+          </div>
+
           <div className="md:col-span-2">
             <label className="block text-xs font-semibold text-slate-700 mb-1">
               Mô tả ngắn gọn về tổ hợp
@@ -357,6 +470,155 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
               placeholder="Ghi chú về quy chế thi, cách chọn môn, số lượng chỉ tiêu..."
               className="w-full px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
+          </div>
+
+          {/* Schedule & Timing Controls */}
+          <div className="md:col-span-2 pt-3 border-t border-slate-100">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Trạng thái tổ hợp:
+                </label>
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as ExamStatus)}
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 font-semibold"
+                >
+                  <option value="open">Đang mở (Thí sinh vào thi ngay)</option>
+                  <option value="scheduled">Đã lên lịch (Mở theo giờ)</option>
+                  <option value="closed">Đã đóng (Khóa không nhận bài)</option>
+                  <option value="draft">Bản nháp (Chỉ giáo viên xem)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Thời gian bắt đầu mở:
+                </label>
+                <input
+                  type="datetime-local"
+                  value={openTime}
+                  onChange={(e) => setOpenTime(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Thời gian kết thúc đóng:
+                </label>
+                <input
+                  type="datetime-local"
+                  value={closeTime}
+                  onChange={(e) => setCloseTime(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Security & Strict Controls */}
+          <div className="md:col-span-2 pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            {/* Lock exit */}
+            <div className="p-3 rounded-lg border border-purple-200 bg-purple-50/50 flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="chk_bundle_lockExit"
+                checked={lockExitUntilTimeout}
+                onChange={(e) => setLockExitUntilTimeout(e.target.checked)}
+                className="w-4 h-4 text-purple-600 rounded border-slate-300 mt-0.5 focus:ring-purple-600"
+              />
+              <div>
+                <label htmlFor="chk_bundle_lockExit" className="font-bold text-purple-950 flex items-center gap-1.5 cursor-pointer">
+                  <Lock className="w-3.5 h-3.5 text-purple-600" />
+                  <span>Không cho thoát khỏi giao diện thi đến hết giờ</span>
+                </label>
+                <p className="text-[11px] text-purple-900/80 mt-0.5 leading-tight">
+                  Khóa nút thoát phòng thi cho toàn bộ các môn trong tổ hợp.
+                </p>
+              </div>
+            </div>
+
+            {/* Review mode */}
+            <div className="p-3 rounded-lg border border-cyan-200 bg-cyan-50/50 flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="chk_bundle_onlyStudent"
+                checked={showOnlyStudentAnswersAfterExam}
+                onChange={(e) => setShowOnlyStudentAnswersAfterExam(e.target.checked)}
+                className="w-4 h-4 text-cyan-600 rounded border-slate-300 mt-0.5 focus:ring-cyan-600"
+              />
+              <div>
+                <label htmlFor="chk_bundle_onlyStudent" className="font-bold text-cyan-950 flex items-center gap-1.5 cursor-pointer">
+                  <Eye className="w-3.5 h-3.5 text-cyan-700" />
+                  <span>Sau khi thi chỉ xem câu trả lời đã làm (Ẩn đáp án)</span>
+                </label>
+                <p className="text-[11px] text-cyan-900/80 mt-0.5 leading-tight">
+                  Thí sinh nộp xong chỉ xem lại bài đã làm, không thấy đáp án và lời giải.
+                </p>
+              </div>
+            </div>
+
+            {/* Min submit duration */}
+            <div className="p-3 rounded-lg border border-indigo-200 bg-indigo-50/50 flex flex-col justify-between gap-1.5">
+              <label className="font-bold text-indigo-950 flex items-center gap-1.5 text-xs">
+                <Clock className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Giới hạn thời gian nộp bài sau (phút):</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  value={minSubmitMinutes}
+                  onChange={(e) => setMinSubmitMinutes(Math.max(0, Number(e.target.value)))}
+                  placeholder="0 = nộp bất kỳ lúc nào"
+                  className="w-24 px-2.5 py-1 text-xs bg-white border border-indigo-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-600 font-bold"
+                />
+                <span className="text-[11px] text-indigo-900">
+                  {minSubmitMinutes > 0 ? `Làm tối thiểu ${minSubmitMinutes}p mới được nộp` : 'Tự do nộp bài bất kỳ lúc nào'}
+                </span>
+              </div>
+            </div>
+
+            {/* Candidate access code restriction */}
+            <div className="p-3 rounded-lg border border-amber-200 bg-amber-50/50 flex flex-col justify-between gap-2">
+              <div className="flex items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  id="chk_bundle_requireAccess"
+                  checked={requireAccessCode}
+                  onChange={(e) => {
+                    setRequireAccessCode(e.target.checked);
+                    if (e.target.checked && !accessSecurityCode) {
+                      setAccessSecurityCode(Math.floor(100000 + Math.random() * 900000).toString());
+                    }
+                  }}
+                  className="w-4 h-4 text-amber-600 rounded border-slate-300 mt-0.5 focus:ring-amber-600"
+                />
+                <div>
+                  <label htmlFor="chk_bundle_requireAccess" className="font-bold text-amber-950 flex items-center gap-1 cursor-pointer">
+                    <Lock className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Chỉ thí sinh có mã cung cấp mới được làm tổ hợp</span>
+                  </label>
+                  <p className="text-[11px] text-amber-900/80 mt-0.5 leading-tight">
+                    Thí sinh phải nhập đúng mã bảo mật tổ hợp thi mới được vào thi.
+                  </p>
+                </div>
+              </div>
+
+              {requireAccessCode && (
+                <div className="flex items-center gap-2 pl-6">
+                  <span className="text-[11px] font-semibold text-amber-950 shrink-0">Mã bảo mật cấp cho HS:</span>
+                  <input
+                    type="text"
+                    value={accessSecurityCode}
+                    onChange={(e) => setAccessSecurityCode(e.target.value)}
+                    placeholder="VD: 582910 hoặc PIN"
+                    className="px-2.5 py-1 text-xs bg-white border border-amber-300 rounded font-mono font-bold text-amber-950 w-36 uppercase tracking-wider"
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -820,8 +1082,173 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Step 4: Bundle Timing Mode Configuration */}
+            <div className="p-5 rounded-xl border border-indigo-200 bg-indigo-50/40 space-y-4 shadow-2xs">
+              <div>
+                <h3 className="text-xs font-bold text-indigo-950 uppercase tracking-wide flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-indigo-700" />
+                  <span>4. Quy chế tính giờ làm bài (Môn bắt buộc & Cụm tự chọn)</span>
+                </h3>
+                <p className="text-[11px] text-indigo-900/80 mt-0.5">
+                  Quy định cách tính thời gian cho môn bắt buộc và tổ hợp môn tự chọn theo yêu cầu thi cử.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Option 1: Compulsory sequential, Elective cluster max duration */}
+                <div
+                  onClick={() => setTimingMode('compulsory_seq_elective_cluster_max')}
+                  className={`p-4 rounded-xl border-2 transition-all cursor-pointer ${
+                    timingMode === 'compulsory_seq_elective_cluster_max'
+                      ? 'bg-white border-purple-600 ring-2 ring-purple-200 shadow-xs'
+                      : 'bg-white/80 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-bold text-xs sm:text-sm text-purple-950 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+                      <span>Môn bắt buộc nối tiếp · Cụm tự chọn làm chung (Max 1 môn)</span>
+                    </span>
+                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs shrink-0 ${
+                      timingMode === 'compulsory_seq_elective_cluster_max' ? 'bg-purple-600 text-white font-bold' : 'border border-slate-300'
+                    }`}>
+                      {timingMode === 'compulsory_seq_elective_cluster_max' && '✓'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Với các <strong>môn bắt buộc</strong> thì cứ <strong>nối tiếp</strong> thi theo giờ từng môn. Còn với <strong>tổ hợp môn tự chọn</strong> thì thời gian làm cụm đó bằng <strong>thời gian lớn nhất của một môn</strong> trong cụm. Thí sinh được linh hoạt chuyển đổi giữa các môn tự chọn trong thời gian đó.
+                  </p>
+                  <div className="mt-2.5 text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded inline-flex items-center gap-1 border border-purple-200">
+                    <CheckCircle2 className="w-3 h-3 text-purple-600" />
+                    <span>Chế độ chuẩn TN THPT & Khảo sát năng lực</span>
+                  </div>
+                </div>
+
+                {/* Option 2: Sequential independent */}
+                <div
+                  onClick={() => setTimingMode('all_sequential_independent')}
+                  className={`p-4 rounded-xl border-2 transition-all cursor-pointer ${
+                    timingMode === 'all_sequential_independent'
+                      ? 'bg-white border-slate-800 ring-2 ring-slate-200 shadow-xs'
+                      : 'bg-white/80 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-bold text-xs sm:text-sm text-slate-900">
+                      Tất cả các môn tính giờ riêng lẻ, thi nối tiếp
+                    </span>
+                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs shrink-0 ${
+                      timingMode === 'all_sequential_independent' ? 'bg-slate-900 text-white font-bold' : 'border border-slate-300'
+                    }`}>
+                      {timingMode === 'all_sequential_independent' && '✓'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    Mỗi môn thi (cả bắt buộc lẫn tự chọn) đều được thi riêng biệt, tính giờ độc lập theo thời lượng của môn đó và nối tiếp nhau với thời gian nghỉ giải lao ở giữa.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         )}
+
+        {/* Step: Random Question Count Per Subject (Cài đặt số câu bốc ngẫu nhiên cho từng môn) */}
+        {((selectionMode === 'all_compulsory' && selectedExamIds.length > 0) ||
+          (selectionMode === 'has_electives' && (compulsoryExamIds.length > 0 || electiveGroups.some((g) => g.examIds.length > 0)))) && (
+          <div className="pt-6 border-t border-slate-200 space-y-4">
+            <div className="flex items-center gap-2">
+              <Shuffle className="w-4 h-4 text-purple-600" />
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                Cài đặt số câu chọn ngẫu nhiên trong mỗi môn thi (Ngân hàng đề)
+              </h3>
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Bạn có thể ra trước ngân hàng câu hỏi đầy đủ cho từng môn, sau đó chỉ định số câu máy sẽ bốc ngẫu nhiên cho thí sinh làm. Để 0 nếu muốn thí sinh thi toàn bộ ngân hàng câu hỏi của môn đó.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {Array.from(
+                new Set(
+                  selectionMode === 'all_compulsory'
+                    ? selectedExamIds
+                    : [...compulsoryExamIds, ...electiveGroups.flatMap((g) => g.examIds)]
+                )
+              ).map((examId) => {
+                const ex = availableExams.find((e) => e.id === examId);
+                if (!ex) return null;
+                const currentRandomCount = randomQuestionCountPerExam[examId] ?? 0;
+
+                return (
+                  <div
+                    key={examId}
+                    className="p-3 bg-white border border-slate-200 rounded-xl flex items-center justify-between gap-3 shadow-2xs"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-slate-900 truncate">{ex.title}</div>
+                      <div className="text-[11px] text-slate-500">
+                        Ngân hàng hiện có: <strong className="text-slate-800">{ex.questions.length} câu</strong>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <label className="text-[11px] font-semibold text-purple-900">Bốc:</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max={ex.questions.length}
+                        value={currentRandomCount}
+                        onChange={(e) =>
+                          handleSetRandomQuestionCount(examId, parseInt(e.target.value) || 0)
+                        }
+                        className="w-16 px-2 py-1 text-center font-bold font-mono text-xs text-purple-700 bg-purple-50 border border-purple-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-600"
+                      />
+                      <span className="text-[11px] text-slate-500">câu</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bottom Sticky Action Bar */}
+      <div className="sticky bottom-4 z-30 mt-8 p-4 bg-white/95 backdrop-blur-md rounded-2xl border border-slate-300 shadow-xl flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => handleSaveBundle(true)}
+            className="py-2.5 px-4 text-xs sm:text-sm font-semibold text-purple-950 bg-purple-200 hover:bg-purple-300 rounded-xl transition-all flex items-center gap-2 shadow-xs cursor-pointer"
+          >
+            <Save className="w-4 h-4 text-purple-800" />
+            <span>Lưu tổ hợp tại đây (Không thoát tab)</span>
+          </button>
+
+          {inPlaceSaveToast && (
+            <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg animate-in fade-in">
+              {inPlaceSaveToast}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="py-2.5 px-4 text-xs sm:text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+          >
+            Hủy & Quay lại
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSaveBundle(false)}
+            className="py-2.5 px-5 text-xs sm:text-sm font-bold text-white bg-purple-700 hover:bg-purple-800 rounded-xl transition-colors flex items-center gap-2 shadow-md cursor-pointer"
+          >
+            <CheckCircle2 className="w-4 h-4 text-purple-200" />
+            <span>{isEditing ? 'Lưu thay đổi tổ hợp' : 'Lưu & Xuất bản tổ hợp'}</span>
+          </button>
+        </div>
       </div>
     </div>
   );

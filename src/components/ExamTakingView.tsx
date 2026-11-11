@@ -24,7 +24,12 @@ import {
   BookOpen,
   Shuffle,
   Info,
-  Eye
+  Eye,
+  Save,
+  Lock,
+  Columns2,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 import { MiniCalculator } from './MiniCalculator';
 import { ScratchpadModal } from './ScratchpadModal';
@@ -32,13 +37,15 @@ import { RichContentRenderer } from './RichContentRenderer';
 import { QuickQuestionEditorModal } from './QuickQuestionEditorModal';
 import { ConfirmModal } from './ConfirmModal';
 import { ExamPreviewModal } from './ExamPreviewModal';
-import { gradeEntireExam, shuffleExamQuestionsAndOptions } from '../utils/scoring';
-import { saveCustomExam } from '../utils/storage';
+import { gradeEntireExam, shuffleExamQuestionsAndOptions, formatTrueFalseScoringRule } from '../utils/scoring';
+import { saveCustomExam, saveActiveSession } from '../utils/storage';
 
 interface ExamTakingViewProps {
   exam: Exam;
   mode: 'exam' | 'practice';
   userRole?: UserRole;
+  candidateName?: string;
+  studentCode?: string;
   onComplete: (result: ExamResult) => void;
   onExit: () => void;
   onUpdateExam?: (updatedExam: Exam) => void;
@@ -48,12 +55,15 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   exam: initialExam,
   mode,
   userRole = 'student',
+  candidateName,
+  studentCode,
   onComplete,
   onExit,
   onUpdateExam,
 }) => {
   const [liveExam, setLiveExam] = useState<Exam>(initialExam);
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
+  const [saveDraftToast, setSaveDraftToast] = useState<string | null>(null);
 
   // Check if shuffle settings are on, or user can toggle
   const [shuffleQuestions, setShuffleQuestions] = useState(
@@ -117,6 +127,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   const [remainingSeconds, setRemainingSeconds] = useState(exam.durationMinutes * 60);
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
+  const [isLockdownNoticeOpen, setIsLockdownNoticeOpen] = useState(false);
+  const [isEarlySubmitNoticeOpen, setIsEarlySubmitNoticeOpen] = useState(false);
   const [showInstructionsModal, setShowInstructionsModal] = useState(false);
   const [filterMode, setFilterMode] = useState<'all' | 'unanswered' | 'flagged'>('all');
   const [showCalculator, setShowCalculator] = useState(false);
@@ -124,17 +136,169 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [fontSize, setFontSize] = useState<'normal' | 'large'>('normal');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isSplitView, setIsSplitView] = useState(true);
   const [revealedExplanations, setRevealedExplanations] = useState<{ [questionId: string]: boolean }>({});
+
+  // Tab switch anti-cheat state
+  const [tabSwitchCount, setTabSwitchCount] = useState(0);
+  const [showTabSwitchWarning, setShowTabSwitchWarning] = useState(false);
+  const [copyToastNotice, setCopyToastNotice] = useState<string | null>(null);
 
   const startTime = useMemo(() => Date.now(), []);
   const currentQuestion: Question = exam.questions[currentIndex] || exam.questions[0];
 
+  // Anti-copy enabled check
+  const isAntiCopyEnabled = exam.allowCopy === false || exam.settings?.allowCopy === false;
+  // Live score display toggle
+  const isLiveScoreVisible = Boolean(exam.showLiveScoreDuringExam || exam.settings?.showLiveScoreDuringExam);
+
+  // Early submit lockout check
+  const minSubmitMinutes = exam.minSubmitMinutes || 0;
+  const timeSpentSeconds = (exam.durationMinutes * 60) - remainingSeconds;
+  const minRequiredSeconds = minSubmitMinutes * 60;
+  const isEarlySubmitBlocked = 
+    mode === 'exam' && 
+    userRole === 'student' && 
+    minSubmitMinutes > 0 && 
+    timeSpentSeconds < minRequiredSeconds;
+  const remainingEarlySeconds = Math.max(0, minRequiredSeconds - timeSpentSeconds);
+
   // Helper to submit exam
-  const handleSubmitExam = useCallback(() => {
-    const timeSpentSeconds = Math.round((Date.now() - startTime) / 1000);
-    const result = gradeEntireExam(exam, answers, timeSpentSeconds);
+  const handleSubmitExam = useCallback((customReason?: string) => {
+    const timeSpent = Math.round((Date.now() - startTime) / 1000);
+    const result = gradeEntireExam(exam, answers, timeSpent);
+    
+    // Attach candidate profile, anti-cheat metadata and settings snapshot
+    result.studentName = candidateName;
+    result.studentCode = studentCode;
+    result.examCode = exam.examCode;
+    result.tabSwitchCount = tabSwitchCount;
+    if (customReason) {
+      result.submissionReason = customReason;
+    }
+    result.showScoreAfterExam = exam.showScoreAfterExam ?? exam.settings?.showScoreAfterExam ?? true;
+    result.showAnswersAfterExam = exam.showAnswersAfterExam ?? exam.settings?.showAnswersAfterExam ?? true;
+    result.showOnlyStudentAnswersAfterExam = exam.showOnlyStudentAnswersAfterExam ?? false;
+
     onComplete(result);
-  }, [exam, answers, startTime, onComplete]);
+  }, [exam, answers, startTime, tabSwitchCount, candidateName, studentCode, onComplete]);
+
+  // Handle saving draft in-place
+  const handleSaveDraftExam = () => {
+    saveActiveSession({
+      examId: exam.id,
+      examCode: exam.examCode,
+      candidateName,
+      candidateCode: studentCode,
+      mode,
+      answers,
+      flagged,
+      currentQuestionIndex: currentIndex,
+      startTime,
+      remainingSeconds,
+      isSubmitted: false,
+    });
+    const nowTime = new Date().toLocaleTimeString('vi-VN');
+    setSaveDraftToast(`✓ Đã lưu bài làm tạm thời thành công lúc ${nowTime}!`);
+    setTimeout(() => setSaveDraftToast(null), 3500);
+  };
+
+  // Tab switch / visibilitychange listener
+  useEffect(() => {
+    if (mode !== 'exam') return;
+    const maxSwitches = exam.maxTabSwitches ?? 0;
+    if (maxSwitches <= 0) return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        setTabSwitchCount((prev) => {
+          const next = prev + 1;
+          if (next >= maxSwitches) {
+            // Auto submit immediately!
+            handleSubmitExam(`Tự động thu bài do rời màn hình quá số lần quy định (${next}/${maxSwitches} lần)`);
+          } else {
+            setShowTabSwitchWarning(true);
+          }
+          return next;
+        });
+      }
+    };
+
+    const handleWindowBlur = () => {
+      // Secondary check for window losing focus
+      setTabSwitchCount((prev) => {
+        const next = prev + 1;
+        if (next >= maxSwitches) {
+          handleSubmitExam(`Tự động thu bài do rời màn hình quá số lần quy định (${next}/${maxSwitches} lần)`);
+        } else {
+          setShowTabSwitchWarning(true);
+        }
+        return next;
+      });
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [mode, exam.maxTabSwitches, handleSubmitExam]);
+
+  // Anti-copy event interception
+  useEffect(() => {
+    if (!isAntiCopyEnabled) return;
+
+    const handleCopy = (e: ClipboardEvent) => {
+      e.preventDefault();
+      setCopyToastNotice('🚫 Chế độ phòng thi: Đã khóa tính năng sao chép (Copy) để đảm bảo tính công bằng!');
+      setTimeout(() => setCopyToastNotice(null), 3500);
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      setCopyToastNotice('🚫 Chế độ phòng thi: Đã khóa thao tác chuột phải (Context Menu)!');
+      setTimeout(() => setCopyToastNotice(null), 3500);
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && ['c', 'C', 'u', 'U', 'p', 'P', 'a', 'A'].includes(e.key)) {
+        e.preventDefault();
+        setCopyToastNotice('🚫 Chế độ phòng thi: Phím tắt sao chép bị vô hiệu hóa!');
+        setTimeout(() => setCopyToastNotice(null), 3500);
+      }
+      if (e.key === 'F12') {
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('copy', handleCopy);
+    window.addEventListener('cut', handleCopy);
+    window.addEventListener('contextmenu', handleContextMenu);
+    window.addEventListener('keydown', handleKeyDown);
+
+  }, [isAntiCopyEnabled]);
+
+  // Lockdown room until timeout: prevent window close / refresh if lockExitUntilTimeout is on
+  useEffect(() => {
+    if (exam.lockExitUntilTimeout && mode === 'exam' && userRole === 'student' && remainingSeconds > 0) {
+      const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+        e.returnValue = 'Phòng thi đang bị khóa cho đến khi hết giờ làm bài!';
+        return 'Phòng thi đang bị khóa cho đến khi hết giờ làm bài!';
+      };
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }
+  }, [exam.lockExitUntilTimeout, mode, userRole, remainingSeconds]);
+
+  // Live score calculation
+  const currentLiveEarnedPoints = useMemo(() => {
+    if (!isLiveScoreVisible && mode !== 'practice') return 0;
+    const graded = gradeEntireExam(exam, answers, 0);
+    return graded.earnedPoints;
+  }, [exam, answers, isLiveScoreVisible, mode]);
 
   // Timer countdown
   useEffect(() => {
@@ -144,7 +308,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
       setRemainingSeconds((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          handleSubmitExam();
+          handleSubmitExam('Hết thời gian làm bài quy định');
           return 0;
         }
         return prev - 1;
@@ -177,6 +341,9 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     if (q.type === 'single_choice') {
       return typeof ans === 'number';
     }
+    if (q.type === 'multiple_choice') {
+      return Array.isArray(ans) && ans.length > 0;
+    }
     if (q.type === 'true_false') {
       const map = ans as { [itemId: string]: boolean };
       const items = q.tfItems || [];
@@ -188,7 +355,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     if (q.type === 'grouped') {
       const subMap = ans as { [subId: string]: CandidateAnswerValue };
       const subQs = q.subQuestions || [];
-      return subQs.length > 0 && subQs.every((sub) => subMap[sub.id] !== undefined);
+      return subQs.length > 0 && subQs.some((sub) => subMap[sub.id] !== undefined && subMap[sub.id] !== null);
     }
     return false;
   }, [answers]);
@@ -200,6 +367,24 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   // Handlers for answering current question
   const handleSetSingleChoice = (optionIndex: number) => {
     setAnswers((prev) => ({ ...prev, [currentQuestion.id]: optionIndex }));
+  };
+
+  const handleToggleMultipleChoice = (optIdx: number) => {
+    setAnswers((prev) => {
+      const current = Array.isArray(prev[currentQuestion.id])
+        ? [...(prev[currentQuestion.id] as number[])]
+        : [];
+      const existsIdx = current.indexOf(optIdx);
+      if (existsIdx > -1) {
+        current.splice(existsIdx, 1);
+      } else {
+        current.push(optIdx);
+      }
+      return {
+        ...prev,
+        [currentQuestion.id]: current.sort((a, b) => a - b),
+      };
+    });
   };
 
   const handleSetTrueFalse = (itemId: string, choice: boolean) => {
@@ -235,11 +420,527 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     });
   };
 
+  const handleSetGroupedSubTrueFalse = (subQId: string, itemId: string, val: boolean) => {
+    setAnswers((prev) => {
+      const currentSubMap = (prev[currentQuestion.id] as { [id: string]: CandidateAnswerValue }) || {};
+      const currentSubAns = (currentSubMap[subQId] as { [id: string]: boolean }) || {};
+      return {
+        ...prev,
+        [currentQuestion.id]: {
+          ...currentSubMap,
+          [subQId]: {
+            ...currentSubAns,
+            [itemId]: val,
+          },
+        },
+      };
+    });
+  };
+
+  const handleToggleGroupedSubMultipleChoice = (subQId: string, optIdx: number) => {
+    setAnswers((prev) => {
+      const currentSubMap = (prev[currentQuestion.id] as { [id: string]: CandidateAnswerValue }) || {};
+      const currentList = Array.isArray(currentSubMap[subQId]) ? [...(currentSubMap[subQId] as number[])] : [];
+      const exIdx = currentList.indexOf(optIdx);
+      if (exIdx > -1) currentList.splice(exIdx, 1);
+      else currentList.push(optIdx);
+      return {
+        ...prev,
+        [currentQuestion.id]: {
+          ...currentSubMap,
+          [subQId]: currentList.sort((a, b) => a - b),
+        },
+      };
+    });
+  };
+
   const handleClearCurrentAnswer = () => {
     const newAnswers = { ...answers };
     delete newAnswers[currentQuestion.id];
     setAnswers(newAnswers);
   };
+
+  const renderAnswerForm = () => {
+    return (
+      <div className="space-y-4">
+        {/* FORMAT 1: Single Choice */}
+        {currentQuestion.type === 'single_choice' && (
+          <div className="space-y-3">
+            {(currentQuestion.options || []).map((optText, optIdx) => {
+              const isSelected = answers[currentQuestion.id] === optIdx;
+              const letter = String.fromCharCode(65 + optIdx);
+              const isRevealed = revealedExplanations[currentQuestion.id];
+              const isCorrect = currentQuestion.correctAnswer === optIdx;
+
+              let stateClasses = 'bg-white border-slate-200 hover:border-blue-400 hover:bg-blue-50/20';
+              let letterClasses = 'bg-slate-100 text-slate-700 border-slate-200';
+
+              if (isSelected) {
+                stateClasses = 'bg-blue-50 border-blue-500 text-blue-900 ring-1 ring-blue-500';
+                letterClasses = 'bg-blue-600 text-white border-blue-600';
+              }
+
+              if (mode === 'practice' && isRevealed) {
+                if (isCorrect) {
+                  stateClasses = 'bg-emerald-50 border-emerald-500 text-emerald-950 ring-1 ring-emerald-500';
+                  letterClasses = 'bg-emerald-600 text-white border-emerald-600';
+                } else if (isSelected && !isCorrect) {
+                  stateClasses = 'bg-rose-50 border-rose-500 text-rose-950 ring-1 ring-rose-500';
+                  letterClasses = 'bg-rose-600 text-white border-rose-600';
+                }
+              }
+
+              return (
+                <button
+                  key={optIdx}
+                  type="button"
+                  onClick={() => handleSetSingleChoice(optIdx)}
+                  className={`w-full text-left p-4 rounded-xl border transition-all duration-150 flex items-start gap-3.5 cursor-pointer ${stateClasses}`}
+                >
+                  <span
+                    className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center shrink-0 border mt-0.5 ${letterClasses}`}
+                  >
+                    {letter}
+                  </span>
+                  <div
+                    className={`flex-1 leading-relaxed ${
+                      fontSize === 'large' ? 'text-base' : 'text-sm'
+                    }`}
+                  >
+                    <RichContentRenderer content={optText} />
+                    {currentQuestion.optionImages?.[optIdx] && (
+                      <div className="mt-2.5">
+                        <img
+                          src={currentQuestion.optionImages[optIdx]}
+                          alt={`Phương án ${letter}`}
+                          className="max-h-48 rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* FORMAT 2: Multiple Choice (Nhiều phương án đúng) */}
+        {currentQuestion.type === 'multiple_choice' && (
+          <div className="space-y-3">
+            <div className="text-xs text-blue-800 bg-blue-50/70 p-2.5 rounded-lg border border-blue-200 flex items-center gap-1.5">
+              <CheckSquare className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>Dạng chọn <strong>nhiều phương án đúng</strong> (nhấp để chọn hoặc bỏ chọn).</span>
+            </div>
+            {(currentQuestion.options || []).map((optText, optIdx) => {
+              const selectedArr = Array.isArray(answers[currentQuestion.id])
+                ? (answers[currentQuestion.id] as number[])
+                : [];
+              const isSelected = selectedArr.includes(optIdx);
+              const letter = String.fromCharCode(65 + optIdx);
+              const isRevealed = revealedExplanations[currentQuestion.id];
+              const isCorrectOption = (currentQuestion.correctAnswers || []).includes(optIdx);
+
+              let stateClasses = 'bg-white border-slate-200 hover:border-blue-400 hover:bg-blue-50/20';
+              let letterClasses = 'bg-slate-100 text-slate-700 border-slate-200';
+
+              if (isSelected) {
+                stateClasses = 'bg-blue-50 border-blue-500 text-blue-900 ring-1 ring-blue-500';
+                letterClasses = 'bg-blue-600 text-white border-blue-600';
+              }
+
+              if (mode === 'practice' && isRevealed) {
+                if (isCorrectOption) {
+                  stateClasses = 'bg-emerald-50 border-emerald-500 text-emerald-950 ring-1 ring-emerald-500';
+                  letterClasses = 'bg-emerald-600 text-white border-emerald-600';
+                } else if (isSelected && !isCorrectOption) {
+                  stateClasses = 'bg-rose-50 border-rose-500 text-rose-950 ring-1 ring-rose-500';
+                  letterClasses = 'bg-rose-600 text-white border-rose-600';
+                }
+              }
+
+              return (
+                <button
+                  key={optIdx}
+                  type="button"
+                  onClick={() => handleToggleMultipleChoice(optIdx)}
+                  className={`w-full text-left p-4 rounded-xl border transition-all duration-150 flex items-start gap-3.5 cursor-pointer ${stateClasses}`}
+                >
+                  <div className="flex items-center gap-2 shrink-0 mt-0.5">
+                    {isSelected ? (
+                      <CheckSquare className="w-5 h-5 text-blue-600" />
+                    ) : (
+                      <Square className="w-5 h-5 text-slate-400" />
+                    )}
+                    <span
+                      className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center border ${letterClasses}`}
+                    >
+                      {letter}
+                    </span>
+                  </div>
+                  <div
+                    className={`flex-1 leading-relaxed ${
+                      fontSize === 'large' ? 'text-base' : 'text-sm'
+                    }`}
+                  >
+                    <RichContentRenderer content={optText} />
+                    {currentQuestion.optionImages?.[optIdx] && (
+                      <div className="mt-2.5">
+                        <img
+                          src={currentQuestion.optionImages[optIdx]}
+                          alt={`Phương án ${letter}`}
+                          className="max-h-48 rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* FORMAT 3: True / False */}
+        {currentQuestion.type === 'true_false' && (
+          <div className="space-y-4">
+            <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                <span className="font-semibold">{formatTrueFalseScoringRule(currentQuestion)}</span>
+              </div>
+              <span className="text-[11px] text-emerald-700 italic">
+                * Chọn <strong>ĐÚNG</strong> hoặc <strong>SAI</strong> cho từng ý bên dưới:
+              </span>
+            </div>
+            {(currentQuestion.tfItems || []).map((item, itemIdx) => {
+              const letter = String.fromCharCode(97 + itemIdx);
+              const ansMap = (answers[currentQuestion.id] as { [id: string]: boolean }) || {};
+              const userChoice = ansMap[item.id];
+              const defaultItemPoint = (currentQuestion.points || 1.0) / (currentQuestion.tfItems?.length || 1);
+              const itemPoints = item.points !== undefined && item.points > 0 ? item.points : defaultItemPoint;
+
+              return (
+                <div
+                  key={item.id}
+                  className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <span className="w-6 h-6 rounded-md bg-slate-100 text-slate-800 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5 border border-slate-200">
+                      {letter})
+                    </span>
+                    <div className="text-sm text-slate-900 leading-relaxed">
+                      <RichContentRenderer content={item.statement} />
+                      <span className="text-[11px] font-mono text-slate-400 block mt-0.5">
+                        ({itemPoints.toFixed(2)} điểm)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                    <button
+                      type="button"
+                      onClick={() => handleSetTrueFalse(item.id, true)}
+                      className={`px-4 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
+                        userChoice === true
+                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-emerald-50 hover:text-emerald-700'
+                      }`}
+                    >
+                      ĐÚNG
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetTrueFalse(item.id, false)}
+                      className={`px-4 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
+                        userChoice === false
+                          ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-rose-50 hover:text-rose-700'
+                      }`}
+                    >
+                      SAI
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* FORMAT 4: Text Input */}
+        {currentQuestion.type === 'text_input' && (
+          <div className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <label className="block text-xs font-semibold text-slate-700">
+                Nhập câu trả lời vào ô (số, phân số hoặc biểu thức):
+              </label>
+              <div className="flex items-center gap-1 flex-wrap">
+                <span className="text-[11px] text-slate-400 mr-1 hidden md:inline">Chèn nhanh:</span>
+                {[
+                  { label: '√x', insert: '√(' },
+                  { label: '∛x', insert: '∛(' },
+                  { label: 'u⃗', insert: '\\vec{u}' },
+                  { label: 'AB→', insert: '\\overrightarrow{AB}' },
+                  { label: 'π', insert: 'π' },
+                  { label: '²', insert: '²' },
+                  { label: '/', insert: '/' },
+                  { label: '±', insert: '±' },
+                ].map((m, mIdx) => (
+                  <button
+                    key={mIdx}
+                    type="button"
+                    onClick={() => {
+                      const currentVal = (answers[currentQuestion.id] as string) || '';
+                      handleSetTextInput(currentVal + m.insert);
+                    }}
+                    className={`px-2 py-0.5 rounded text-xs font-mono font-bold transition-colors cursor-pointer ${
+                      m.label.includes('√')
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-2xs'
+                        : 'bg-white text-slate-700 hover:bg-slate-200 border border-slate-300'
+                    }`}
+                    title={`Chèn ký hiệu ${m.label}`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={(answers[currentQuestion.id] as string) || ''}
+                onChange={(e) => handleSetTextInput(e.target.value)}
+                placeholder="VD: 3.5 hoặc 7/2 hoặc √(2) hoặc kết quả tính toán..."
+                className="flex-1 px-4 py-3 text-sm md:text-base bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono shadow-2xs"
+              />
+              {(answers[currentQuestion.id] as string) && (
+                <button
+                  type="button"
+                  onClick={() => handleSetTextInput('')}
+                  className="p-3 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200 transition-colors"
+                  title="Xóa nội dung"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* FORMAT 5: Grouped Questions (Câu hỏi chùm: hỗ trợ đơn, nhiều, đúng/sai, trả lời ngắn) */}
+        {currentQuestion.type === 'grouped' && (
+          <div className="space-y-6 pt-2">
+            <div className="text-xs font-bold text-purple-800 uppercase tracking-wide">
+              Các câu hỏi con trong chùm:
+            </div>
+
+            {(currentQuestion.subQuestions || []).map((subQ, subIdx) => {
+              const subAnsMap = (answers[currentQuestion.id] as { [subId: string]: CandidateAnswerValue }) || {};
+              const subAns = subAnsMap[subQ.id];
+
+              return (
+                <div
+                  key={subQ.id}
+                  className="p-5 rounded-xl border border-purple-200 bg-purple-50/20 space-y-4"
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-purple-100">
+                    <span className="font-bold text-xs sm:text-sm text-purple-950">
+                      Câu {currentIndex + 1}.{subIdx + 1}
+                    </span>
+                    <span className="font-mono text-xs font-semibold text-purple-700 bg-purple-100/70 px-2 py-0.5 rounded">
+                      {subQ.points || 1.0} điểm
+                    </span>
+                  </div>
+
+                  <div className="text-sm font-medium text-slate-900 leading-relaxed">
+                    <RichContentRenderer content={subQ.question} imageUrl={subQ.imageUrl} />
+                  </div>
+
+                  {/* SubQ: Single choice */}
+                  {subQ.type === 'single_choice' && (
+                    <div className="space-y-2">
+                      {(subQ.options || []).map((optText, optIdx) => {
+                        const isSelected = subAns === optIdx;
+                        const letter = String.fromCharCode(65 + optIdx);
+                        return (
+                          <button
+                            key={optIdx}
+                            type="button"
+                            onClick={() => handleSetGroupedSubAnswer(subQ.id, optIdx)}
+                            className={`w-full text-left p-3 rounded-lg border text-xs sm:text-sm flex items-start gap-3 transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-purple-100/80 border-purple-400 text-purple-950 font-medium ring-1 ring-purple-400'
+                                : 'bg-white border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            <span className={`w-6 h-6 rounded font-bold text-xs flex items-center justify-center shrink-0 border ${
+                              isSelected ? 'bg-purple-700 text-white border-purple-700' : 'bg-slate-100 text-slate-700 border-slate-200'
+                            }`}>
+                              {letter}
+                            </span>
+                            <div className="flex-1 leading-relaxed">
+                              <RichContentRenderer content={optText} />
+                              {subQ.optionImages?.[optIdx] && (
+                                <div className="mt-2">
+                                  <img
+                                    src={subQ.optionImages[optIdx]}
+                                    alt={`Ý ${letter}`}
+                                    className="max-h-36 rounded-lg border border-purple-200 object-contain bg-white shadow-2xs"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* SubQ: Multiple choice */}
+                  {subQ.type === 'multiple_choice' && (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-purple-800 font-semibold mb-1">
+                        * Chọn một hoặc nhiều phương án:
+                      </div>
+                      {(subQ.options || []).map((optText, optIdx) => {
+                        const subArr = Array.isArray(subAns) ? (subAns as number[]) : [];
+                        const isSelected = subArr.includes(optIdx);
+                        const letter = String.fromCharCode(65 + optIdx);
+                        return (
+                          <button
+                            key={optIdx}
+                            type="button"
+                            onClick={() => handleToggleGroupedSubMultipleChoice(subQ.id, optIdx)}
+                            className={`w-full text-left p-3 rounded-lg border text-xs sm:text-sm flex items-start gap-3 transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-purple-100/80 border-purple-400 text-purple-950 font-medium ring-1 ring-purple-400'
+                                : 'bg-white border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
+                              {isSelected ? (
+                                <CheckSquare className="w-4 h-4 text-purple-700" />
+                              ) : (
+                                <Square className="w-4 h-4 text-slate-400" />
+                              )}
+                              <span className={`w-6 h-6 rounded font-bold text-xs flex items-center justify-center border ${
+                                isSelected ? 'bg-purple-700 text-white border-purple-700' : 'bg-slate-100 text-slate-700 border-slate-200'
+                              }`}>
+                                {letter}
+                              </span>
+                            </div>
+                            <div className="flex-1 leading-relaxed">
+                              <RichContentRenderer content={optText} />
+                              {subQ.optionImages?.[optIdx] && (
+                                <div className="mt-2">
+                                  <img
+                                    src={subQ.optionImages[optIdx]}
+                                    alt={`Ý ${letter}`}
+                                    className="max-h-36 rounded-lg border border-purple-200 object-contain bg-white shadow-2xs"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* SubQ: True / False */}
+                  {subQ.type === 'true_false' && (
+                    <div className="space-y-3">
+                      {subQ.tfItems && subQ.tfItems.length > 0 ? (
+                        <div className="space-y-2">
+                          {subQ.tfItems.map((item, tfIdx) => {
+                            const tfMap = (subAns as { [id: string]: boolean }) || {};
+                            const userChoice = tfMap[item.id];
+                            return (
+                              <div
+                                key={item.id}
+                                className="p-3 bg-white rounded-lg border border-purple-100 flex items-center justify-between gap-3 text-xs"
+                              >
+                                <div className="text-slate-800 flex-1">
+                                  {String.fromCharCode(97 + tfIdx)}) <RichContentRenderer content={item.statement} />
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSetGroupedSubTrueFalse(subQ.id, item.id, true)}
+                                    className={`px-2.5 py-1 text-xs font-bold rounded ${
+                                      userChoice === true
+                                        ? 'bg-emerald-600 text-white'
+                                        : 'bg-slate-100 text-slate-700 hover:bg-emerald-50 hover:text-emerald-700'
+                                    }`}
+                                  >
+                                    Đúng
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSetGroupedSubTrueFalse(subQ.id, item.id, false)}
+                                    className={`px-2.5 py-1 text-xs font-bold rounded ${
+                                      userChoice === false
+                                        ? 'bg-rose-600 text-white'
+                                        : 'bg-slate-100 text-slate-700 hover:bg-rose-50 hover:text-rose-700'
+                                    }`}
+                                  >
+                                    Sai
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => handleSetGroupedSubAnswer(subQ.id, true)}
+                            className={`px-4 py-2 text-xs font-bold rounded-lg border cursor-pointer ${
+                              subAns === true
+                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-emerald-50'
+                            }`}
+                          >
+                            ĐÚNG
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSetGroupedSubAnswer(subQ.id, false)}
+                            className={`px-4 py-2 text-xs font-bold rounded-lg border cursor-pointer ${
+                              subAns === false
+                                ? 'bg-rose-600 text-white border-rose-600'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-rose-50'
+                            }`}
+                          >
+                            SAI
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* SubQ: Text input (Trả lời ngắn) */}
+                  {subQ.type === 'text_input' && (
+                    <input
+                      type="text"
+                      value={(subAns as string) || ''}
+                      onChange={(e) => handleSetGroupedSubAnswer(subQ.id, e.target.value)}
+                      placeholder="Nhập câu trả lời ngắn..."
+                      className="w-full px-3.5 py-2.5 text-xs sm:text-sm bg-white border border-purple-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 font-mono"
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col font-sans select-none">
@@ -248,7 +949,13 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
         {/* Left: Exam title & mode */}
         <div className="flex items-center gap-3 min-w-0">
           <button
-            onClick={() => setIsExitConfirmOpen(true)}
+            onClick={() => {
+              if (exam.lockExitUntilTimeout && mode === 'exam' && userRole === 'student' && remainingSeconds > 0) {
+                setIsLockdownNoticeOpen(true);
+              } else {
+                setIsExitConfirmOpen(true);
+              }
+            }}
             className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
             title="Thoát phòng thi"
           >
@@ -258,7 +965,17 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             <h1 className="text-sm md:text-base font-bold text-slate-900 truncate">
               {exam.title}
             </h1>
-            <div className="flex items-center gap-2 text-xs text-slate-500">
+            <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+              {candidateName && (
+                <span className="font-bold text-blue-900 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                  Thí sinh: {candidateName} {studentCode && `(${studentCode})`}
+                </span>
+              )}
+              {exam.examCode && (
+                <span className="font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                  Mã đề: {exam.examCode}
+                </span>
+              )}
               <span>{exam.grade}</span>
               <span aria-hidden="true">·</span>
               <span className={`font-medium ${mode === 'exam' ? 'text-blue-700' : 'text-amber-700'}`}>
@@ -272,19 +989,32 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           </div>
         </div>
 
-        {/* Center: Countdown Timer */}
-        {mode === 'exam' && (
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
-            <Clock className={`w-4 h-4 ${remainingSeconds <= 300 ? 'text-rose-600 animate-pulse' : 'text-blue-600'}`} />
-            <span
-              className={`font-mono text-base font-bold tabular-nums ${
-                remainingSeconds <= 300 ? 'text-rose-600' : 'text-slate-800'
-              }`}
+        {/* Center: Countdown Timer & Live Score */}
+        <div className="flex items-center gap-2">
+          {mode === 'exam' && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
+              <Clock className={`w-4 h-4 ${remainingSeconds <= 300 ? 'text-rose-600 animate-pulse' : 'text-blue-600'}`} />
+              <span
+                className={`font-mono text-base font-bold tabular-nums ${
+                  remainingSeconds <= 300 ? 'text-rose-600' : 'text-slate-800'
+                }`}
+              >
+                {formatTime(remainingSeconds)}
+              </span>
+            </div>
+          )}
+
+          {/* Live Score if enabled */}
+          {(isLiveScoreVisible || mode === 'practice') && (
+            <div
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-50 border border-amber-300 rounded-lg text-xs font-mono font-bold text-amber-900 shadow-2xs"
+              title="Điểm số tạm tính tích lũy được trong bài làm"
             >
-              {formatTime(remainingSeconds)}
-            </span>
-          </div>
-        )}
+              <CheckCircle2 className="w-3.5 h-3.5 text-amber-600" />
+              <span>Điểm: {currentLiveEarnedPoints.toFixed(2)}/{exam.totalPoints || 10}đ</span>
+            </div>
+          )}
+        </div>
 
         {/* Right Tools & Submit Action */}
         <div className="flex items-center gap-2 shrink-0">
@@ -347,13 +1077,38 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
 
+          {/* Split Screen Toggle Button */}
+          <button
+            onClick={() => setIsSplitView(!isSplitView)}
+            className={`hidden md:flex p-2 rounded-lg border text-xs font-semibold transition-colors items-center gap-1.5 cursor-pointer shadow-2xs ${
+              isSplitView
+                ? 'bg-indigo-600 text-white border-indigo-600'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+            title={isSplitView ? 'Đang bật chia đôi màn hình: Nhấp để chuyển về chế độ 1 cột' : 'Bật chế độ chia đôi màn hình: Đọc đề bên trái & Làm bài bên phải'}
+          >
+            <Columns2 className="w-4 h-4" />
+            <span className="hidden xl:inline">{isSplitView ? 'Chia đôi màn hình: Bật' : 'Chia đôi màn hình'}</span>
+          </button>
+
           {/* Submit Button */}
           <button
-            onClick={() => setIsSubmitModalOpen(true)}
-            className="py-1.5 px-4 text-xs md:text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs whitespace-nowrap cursor-pointer"
+            onClick={() => {
+              if (isEarlySubmitBlocked) {
+                setIsEarlySubmitNoticeOpen(true);
+              } else {
+                setIsSubmitModalOpen(true);
+              }
+            }}
+            className={`py-1.5 px-4 text-xs md:text-sm font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs whitespace-nowrap cursor-pointer ${
+              isEarlySubmitBlocked
+                ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                : 'text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
+            }`}
+            title={isEarlySubmitBlocked ? `Chưa đủ thời gian nộp bài: Còn ${formatTime(remainingEarlySeconds)} nữa mới được nộp!` : 'Nộp bài thi'}
           >
-            <Send className="w-4 h-4" />
-            <span>Nộp bài</span>
+            {isEarlySubmitBlocked ? <Lock className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+            <span>{isEarlySubmitBlocked ? `Nộp sau (${formatTime(remainingEarlySeconds)})` : 'Nộp bài'}</span>
           </button>
         </div>
       </header>
@@ -445,272 +1200,60 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
               </div>
             </div>
 
-            {/* Question Statement */}
-            <div className="mb-6">
-              <div
-                className={`font-medium text-slate-900 leading-relaxed ${
-                  fontSize === 'large' ? 'text-lg md:text-xl' : 'text-base md:text-lg'
-                }`}
-              >
-                <RichContentRenderer
-                  content={currentQuestion.question}
-                  imageUrl={currentQuestion.imageUrl}
-                />
-              </div>
-            </div>
-
-            {/* --- RENDER FORMAT 1: Single Choice (Lựa chọn 1 đáp án đúng) --- */}
-            {currentQuestion.type === 'single_choice' && (
-              <div className="space-y-3">
-                {(currentQuestion.options || []).map((optText, optIdx) => {
-                  const isSelected = answers[currentQuestion.id] === optIdx;
-                  const letter = String.fromCharCode(65 + optIdx); // A, B, C, D, E...
-                  const isRevealed = revealedExplanations[currentQuestion.id];
-                  const isCorrect = currentQuestion.correctAnswer === optIdx;
-
-                  let stateClasses = 'bg-white border-slate-200 hover:border-blue-400 hover:bg-blue-50/20';
-                  let letterClasses = 'bg-slate-100 text-slate-700 border-slate-200';
-
-                  if (isSelected) {
-                    stateClasses = 'bg-blue-50 border-blue-500 text-blue-900 ring-1 ring-blue-500';
-                    letterClasses = 'bg-blue-600 text-white border-blue-600';
-                  }
-
-                  if (mode === 'practice' && isRevealed) {
-                    if (isCorrect) {
-                      stateClasses = 'bg-emerald-50 border-emerald-500 text-emerald-950 ring-1 ring-emerald-500';
-                      letterClasses = 'bg-emerald-600 text-white border-emerald-600';
-                    } else if (isSelected && !isCorrect) {
-                      stateClasses = 'bg-rose-50 border-rose-500 text-rose-950 ring-1 ring-rose-500';
-                      letterClasses = 'bg-rose-600 text-white border-rose-600';
-                    }
-                  }
-
-                  return (
-                    <button
-                      key={optIdx}
-                      onClick={() => handleSetSingleChoice(optIdx)}
-                      className={`w-full text-left p-4 rounded-xl border transition-all duration-150 flex items-start gap-3.5 cursor-pointer ${stateClasses}`}
-                    >
-                      <span
-                        className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center shrink-0 border mt-0.5 ${letterClasses}`}
-                      >
-                        {letter}
-                      </span>
-                      <div
-                        className={`flex-1 leading-relaxed ${
-                          fontSize === 'large' ? 'text-base' : 'text-sm'
-                        }`}
-                      >
-                        <RichContentRenderer content={optText} />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* --- RENDER FORMAT 2: True / False (Lựa chọn Đúng/Sai từng ý) --- */}
-            {currentQuestion.type === 'true_false' && (
-              <div className="space-y-4">
-                <div className="text-xs text-slate-500 italic">
-                  * Chọn <strong>ĐÚNG</strong> hoặc <strong>SAI</strong> cho từng ý bên dưới:
-                </div>
-                {(currentQuestion.tfItems || []).map((item, itemIdx) => {
-                  const letter = String.fromCharCode(97 + itemIdx); // a, b, c, d...
-                  const ansMap = (answers[currentQuestion.id] as { [id: string]: boolean }) || {};
-                  const userChoice = ansMap[item.id];
-                  const defaultItemPoint = (currentQuestion.points || 1.0) / (currentQuestion.tfItems?.length || 1);
-                  const itemPoints = item.points !== undefined && item.points > 0 ? item.points : defaultItemPoint;
-
-                  return (
-                    <div
-                      key={item.id}
-                      className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                    >
-                      <div className="flex items-start gap-3 min-w-0 flex-1">
-                        <span className="w-6 h-6 rounded-md bg-slate-100 text-slate-800 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5 border border-slate-200">
-                          {letter})
-                        </span>
-                        <div className="text-sm text-slate-900 leading-relaxed">
-                          <RichContentRenderer content={item.statement} />
-                          <span className="text-[11px] font-mono text-slate-400 block mt-0.5">
-                            ({itemPoints.toFixed(2)} điểm)
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* True / False Selector */}
-                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                        <button
-                          type="button"
-                          onClick={() => handleSetTrueFalse(item.id, true)}
-                          className={`px-4 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                            userChoice === true
-                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-emerald-50 hover:text-emerald-700'
-                          }`}
-                        >
-                          ĐÚNG
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSetTrueFalse(item.id, false)}
-                          className={`px-4 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                            userChoice === false
-                              ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
-                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-rose-50 hover:text-rose-700'
-                          }`}
-                        >
-                          SAI
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* --- RENDER FORMAT 3: Text Input (Trả lời bằng cách nhập văn bản/số) --- */}
-            {currentQuestion.type === 'text_input' && (
-              <div className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <label className="block text-xs font-semibold text-slate-700">
-                    Nhập câu trả lời vào ô (số, phân số hoặc căn thức):
-                  </label>
-                  {/* Math quick bar with roots */}
-                  <div className="flex items-center gap-1 flex-wrap">
-                    <span className="text-[11px] text-slate-400 mr-1 hidden md:inline">Chèn nhanh:</span>
-                    {[
-                      { label: '√x', insert: '√(' },
-                      { label: '∛x', insert: '∛(' },
-                      { label: 'u⃗', insert: '\\vec{u}' },
-                      { label: 'AB→', insert: '\\overrightarrow{AB}' },
-                      { label: 'π', insert: 'π' },
-                      { label: '²', insert: '²' },
-                      { label: '/', insert: '/' },
-                      { label: '±', insert: '±' },
-                    ].map((m, mIdx) => (
-                      <button
-                        key={mIdx}
-                        type="button"
-                        onClick={() => {
-                          const currentVal = (answers[currentQuestion.id] as string) || '';
-                          handleSetTextInput(currentVal + m.insert);
-                        }}
-                        className={`px-2 py-0.5 rounded text-xs font-mono font-bold transition-colors cursor-pointer ${
-                          m.label.includes('√')
-                            ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-2xs'
-                            : 'bg-white text-slate-700 hover:bg-slate-200 border border-slate-300'
-                        }`}
-                        title={`Chèn ký hiệu ${m.label}`}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
+            {/* Split Screen vs Single Column Question & Answer Flow */}
+            {isSplitView ? (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Left Column: Problem Statement & Passage */}
+                <div className="lg:col-span-6 bg-slate-50/70 p-5 rounded-2xl border border-slate-200 lg:max-h-[68vh] lg:overflow-y-auto space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                    <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                      <BookOpen className="w-3.5 h-3.5 text-blue-600" />
+                      Đọc đề bài & Ngữ liệu
+                    </span>
+                    <span className="text-[11px] text-slate-400">Cuộn xem độc lập</span>
+                  </div>
+                  <div
+                    className={`font-medium text-slate-900 leading-relaxed ${
+                      fontSize === 'large' ? 'text-lg md:text-xl' : 'text-base md:text-lg'
+                    }`}
+                  >
+                    <RichContentRenderer
+                      content={currentQuestion.question}
+                      imageUrl={currentQuestion.imageUrl}
+                    />
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={(answers[currentQuestion.id] as string) || ''}
-                    onChange={(e) => handleSetTextInput(e.target.value)}
-                    placeholder="VD: 3.5 hoặc 7/2 hoặc √(2) hoặc kết quả tính toán..."
-                    className="flex-1 px-4 py-3 text-sm md:text-base bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono shadow-2xs"
-                  />
-                  {(answers[currentQuestion.id] as string) && (
-                    <button
-                      type="button"
-                      onClick={() => handleSetTextInput('')}
-                      className="p-3 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200 transition-colors"
-                      title="Xóa nội dung"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
+
+                {/* Right Column: Answers & Inputs */}
+                <div className="lg:col-span-6 lg:max-h-[68vh] lg:overflow-y-auto space-y-4 pr-1">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                    <span className="text-xs font-bold text-blue-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                      Phiếu chọn phương án
+                    </span>
+                    <span className="text-[11px] text-blue-600 font-medium">Cuộn chọn đáp án</span>
+                  </div>
+                  {renderAnswerForm()}
                 </div>
-                <div className="text-[11px] text-slate-500">
-                  Lưu ý: Bạn có thể dùng nút <strong className="text-emerald-700">√x</strong>, <strong className="text-emerald-700">∛x</strong> để chèn căn thức nhanh chóng.
+              </div>
+            ) : (
+              <div>
+                <div className="mb-6">
+                  <div
+                    className={`font-medium text-slate-900 leading-relaxed ${
+                      fontSize === 'large' ? 'text-lg md:text-xl' : 'text-base md:text-lg'
+                    }`}
+                  >
+                    <RichContentRenderer
+                      content={currentQuestion.question}
+                      imageUrl={currentQuestion.imageUrl}
+                    />
+                  </div>
                 </div>
+                {renderAnswerForm()}
               </div>
             )}
 
-            {/* --- RENDER FORMAT 4: Grouped Questions (Câu hỏi chùm) --- */}
-            {currentQuestion.type === 'grouped' && (
-              <div className="space-y-6 pt-2">
-                <div className="text-xs font-bold text-purple-800 uppercase tracking-wide">
-                  Các câu hỏi con trong chùm:
-                </div>
-
-                {(currentQuestion.subQuestions || []).map((subQ, subIdx) => {
-                  const subAnsMap = (answers[currentQuestion.id] as { [subId: string]: CandidateAnswerValue }) || {};
-                  const subAns = subAnsMap[subQ.id];
-
-                  return (
-                    <div
-                      key={subQ.id}
-                      className="p-5 rounded-xl border border-purple-200 bg-purple-50/20 space-y-4"
-                    >
-                      <div className="flex items-center justify-between pb-2 border-b border-purple-100">
-                        <span className="font-bold text-xs sm:text-sm text-purple-950">
-                          Câu {currentIndex + 1}.{subIdx + 1}
-                        </span>
-                        <span className="font-mono text-xs font-semibold text-purple-700 bg-purple-100/70 px-2 py-0.5 rounded">
-                          {subQ.points || 1.0} điểm
-                        </span>
-                      </div>
-
-                      {/* Sub question statement */}
-                      <div className="text-sm font-medium text-slate-900 leading-relaxed">
-                        <RichContentRenderer content={subQ.question} imageUrl={subQ.imageUrl} />
-                      </div>
-
-                      {/* Sub question: Single choice */}
-                      {subQ.type === 'single_choice' && (
-                        <div className="space-y-2">
-                          {(subQ.options || []).map((optText, optIdx) => {
-                            const isSelected = subAns === optIdx;
-                            const letter = String.fromCharCode(65 + optIdx);
-                            return (
-                              <button
-                                key={optIdx}
-                                type="button"
-                                onClick={() => handleSetGroupedSubAnswer(subQ.id, optIdx)}
-                                className={`w-full text-left p-3 rounded-lg border text-xs sm:text-sm flex items-start gap-3 transition-colors cursor-pointer ${
-                                  isSelected
-                                    ? 'bg-purple-100/80 border-purple-400 text-purple-950 font-medium ring-1 ring-purple-400'
-                                    : 'bg-white border-slate-200 hover:bg-slate-50'
-                                }`}
-                              >
-                                <span className={`w-6 h-6 rounded font-bold text-xs flex items-center justify-center shrink-0 border ${
-                                  isSelected ? 'bg-purple-700 text-white border-purple-700' : 'bg-slate-100 text-slate-700 border-slate-200'
-                                }`}>
-                                  {letter}
-                                </span>
-                                <div className="flex-1 leading-relaxed">
-                                  <RichContentRenderer content={optText} />
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* Sub question: Text input */}
-                      {subQ.type === 'text_input' && (
-                        <input
-                          type="text"
-                          value={(subAns as string) || ''}
-                          onChange={(e) => handleSetGroupedSubAnswer(subQ.id, e.target.value)}
-                          placeholder="Nhập câu trả lời..."
-                          className="w-full px-3 py-2 text-xs sm:text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 font-mono"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
 
             {/* In Practice Mode: Explanation Reveal */}
             {mode === 'practice' && (
@@ -782,13 +1325,65 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 </button>
               ) : (
                 <button
-                  onClick={() => setIsSubmitModalOpen(true)}
-                  className="py-2 px-4 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors flex items-center gap-1 shadow-xs cursor-pointer"
+                  onClick={() => {
+                    if (isEarlySubmitBlocked) {
+                      setIsEarlySubmitNoticeOpen(true);
+                    } else {
+                      setIsSubmitModalOpen(true);
+                    }
+                  }}
+                  className={`py-2 px-4 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 shadow-xs cursor-pointer ${
+                    isEarlySubmitBlocked
+                      ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                      : 'text-white bg-emerald-600 hover:bg-emerald-700'
+                  }`}
                 >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>Hoàn thành & Nộp bài</span>
+                  {isEarlySubmitBlocked ? <Lock className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
+                  <span>{isEarlySubmitBlocked ? `Nộp sau (${formatTime(remainingEarlySeconds)})` : 'Hoàn thành & Nộp bài'}</span>
                 </button>
               )}
+            </div>
+          </div>
+
+          {/* Bottom Action Bar: Lưu bài thi & Nộp bài */}
+          <div className="mt-5 p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveDraftExam}
+                className="py-2 px-3.5 text-xs font-semibold text-slate-800 bg-white hover:bg-slate-100 active:bg-slate-200 border border-slate-300 rounded-lg transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                title="Lưu tạm thời câu trả lời và thời gian vào hệ thống"
+              >
+                <Save className="w-3.5 h-3.5 text-blue-600" />
+                <span>Lưu bài làm tạm thời</span>
+              </button>
+
+              {saveDraftToast && (
+                <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg animate-in fade-in duration-150">
+                  {saveDraftToast}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isEarlySubmitBlocked) {
+                    setIsEarlySubmitNoticeOpen(true);
+                  } else {
+                    setIsSubmitModalOpen(true);
+                  }
+                }}
+                className={`py-2 px-4 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer ${
+                  isEarlySubmitBlocked
+                    ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                    : 'text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
+                }`}
+              >
+                {isEarlySubmitBlocked ? <Lock className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
+                <span>{isEarlySubmitBlocked ? `Chưa đủ thời gian nộp (còn ${formatTime(remainingEarlySeconds)})` : 'Nộp bài thi'}</span>
+              </button>
             </div>
           </div>
         </main>
@@ -1033,6 +1628,110 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
         onDelete={handleDeleteQuestion}
         onClose={() => setEditingQuestion(null)}
       />
+
+      {/* Copy Prevention Toast */}
+      {copyToastNotice && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-white px-5 py-3 rounded-xl shadow-2xl border border-rose-500/40 text-xs sm:text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-bottom-4">
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+          <span>{copyToastNotice}</span>
+        </div>
+      )}
+
+      {/* Tab Switch Warning Modal */}
+      {showTabSwitchWarning && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border-2 border-rose-500 text-center space-y-4 animate-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-7 h-7 text-rose-600" />
+            </div>
+            <div>
+              <span className="text-[10px] uppercase font-bold text-rose-600 tracking-wider">
+                Cảnh báo Quy chế Phòng thi
+              </span>
+              <h3 className="text-base font-extrabold text-slate-900 mt-1">
+                Ghi nhận rời màn hình thi (Lần {tabSwitchCount}/{exam.maxTabSwitches})
+              </h3>
+              <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                Hệ thống phát hiện bạn vừa chuyển tab hoặc rời khỏi cửa sổ làm bài. Theo quy chế phòng thi: Nếu bạn rời màn hình thi quá <strong>{exam.maxTabSwitches} lần</strong>, hệ thống sẽ <strong>tự động thu và nộp bài thi ngay lập tức</strong>!
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowTabSwitchWarning(false)}
+              className="w-full py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              Tôi đã hiểu & Quay lại làm bài
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Lockdown Notice Modal - Strict Stay Until Timeout */}
+      {isLockdownNoticeOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border-2 border-purple-500 text-center space-y-4 animate-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center mx-auto">
+              <Lock className="w-7 h-7 text-purple-700" />
+            </div>
+            <div>
+              <span className="text-[10px] uppercase font-bold text-purple-700 tracking-wider">
+                Chế độ Phòng thi Khóa Nghiêm ngặt
+              </span>
+              <h3 className="text-base font-extrabold text-slate-900 mt-1">
+                Không được phép thoát giao diện thi!
+              </h3>
+              <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                Đề thi này được cài đặt quy chế <strong>Khóa thoát phòng thi cho đến khi kết thúc thời gian làm bài</strong> ({formatTime(remainingSeconds)} còn lại). Bạn không thể rời khỏi màn hình thi sớm.
+              </p>
+              <p className="text-xs text-purple-900 font-semibold bg-purple-50 p-2.5 rounded-lg border border-purple-200 mt-3">
+                Vui lòng tiếp tục làm bài hoặc rà soát các câu trả lời. Hệ thống sẽ mở hoặc tự động nộp bài khi hết giờ!
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsLockdownNoticeOpen(false)}
+              className="w-full py-2.5 px-4 bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              Tiếp tục làm bài
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Early Submit Blocked Modal */}
+      {isEarlySubmitNoticeOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border-2 border-amber-500 text-center space-y-4 animate-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+              <Clock className="w-7 h-7 text-amber-600" />
+            </div>
+            <div>
+              <span className="text-[10px] uppercase font-bold text-amber-700 tracking-wider">
+                Giới hạn thời gian nộp bài
+              </span>
+              <h3 className="text-base font-extrabold text-slate-900 mt-1">
+                Chưa đủ thời gian làm bài tối thiểu!
+              </h3>
+              <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                Quy định đề thi yêu cầu thí sinh phải làm bài tối thiểu <strong>{minSubmitMinutes} phút</strong> trước khi được phép nộp bài.
+              </p>
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 mt-3">
+                <span className="text-xs text-amber-900 block font-medium">Thời gian còn lại trước khi mở nút nộp bài:</span>
+                <span className="text-2xl font-mono font-extrabold text-amber-950 tracking-wider">
+                  {formatTime(remainingEarlySeconds)}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsEarlySubmitNoticeOpen(false)}
+              className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              Quay lại rà soát bài làm
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Exit Confirmation Modal */}
       <ConfirmModal

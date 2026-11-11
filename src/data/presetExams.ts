@@ -26,6 +26,7 @@ export const SAMPLE_DEMO_EXAM: Exam = {
   totalQuestions: 4,
   totalPoints: 10.0,
   createdAt: '2026-03-29',
+  examCode: '20261201',
   isCustom: false,
   questions: [
     {

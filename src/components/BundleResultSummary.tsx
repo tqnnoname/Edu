@@ -197,9 +197,20 @@ export const BundleResultSummary: React.FC<BundleResultSummaryProps> = ({
                   {idx + 1}
                 </span>
                 <div className="min-w-0">
-                  <h4 className="text-sm sm:text-base font-bold text-slate-900 truncate">
-                    {res.examTitle}
-                  </h4>
+                  <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                    <h4 className="text-sm sm:text-base font-bold text-slate-900 truncate">
+                      {res.examTitle}
+                    </h4>
+                    {bundle.compulsoryExamIds?.includes(res.examId) ? (
+                      <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                        Môn bắt buộc
+                      </span>
+                    ) : bundle.selectionMode === 'has_electives' ? (
+                      <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-purple-50 text-purple-800 border border-purple-200">
+                        Cụm tự chọn
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="flex items-center gap-2 text-xs text-slate-500 font-mono mt-0.5">
                     <span>Đúng: {res.correctCount}/{res.totalQuestions} câu</span>
                     <span>·</span>

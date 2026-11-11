@@ -5,7 +5,9 @@ import { Coffee, ArrowRight, CheckCircle2, Clock, Eye, Sparkles } from 'lucide-r
 interface IntermissionBreakViewProps {
   completedExam: Exam;
   completedResult: ExamResult;
-  nextExam: Exam;
+  nextExam?: Exam;
+  nextClusterExams?: Exam[];
+  nextClusterMaxDuration?: number;
   nextIndex: number;
   totalExams: number;
   breakMinutes: number;
@@ -16,6 +18,8 @@ export const IntermissionBreakView: React.FC<IntermissionBreakViewProps> = ({
   completedExam,
   completedResult,
   nextExam,
+  nextClusterExams,
+  nextClusterMaxDuration,
   nextIndex,
   totalExams,
   breakMinutes,
@@ -102,21 +106,43 @@ export const IntermissionBreakView: React.FC<IntermissionBreakViewProps> = ({
           </div>
         </div>
 
-        {/* Next Exam Preview */}
-        <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl text-left mb-6">
-          <div className="text-xs font-bold text-blue-800 uppercase tracking-wide mb-1">
-            Chuẩn bị môn thi tiếp theo ({nextIndex + 1}/{totalExams}):
+        {/* Next Exam / Cluster Preview */}
+        {nextClusterExams && nextClusterExams.length > 0 ? (
+          <div className="p-4 bg-purple-50/80 border border-purple-200 rounded-2xl text-left mb-6">
+            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+              <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-purple-700 text-white uppercase tracking-wide">
+                Cụm môn tự chọn
+              </span>
+              <span className="text-xs font-bold text-purple-900">
+                Gồm {nextClusterExams.length} môn tự chọn
+              </span>
+            </div>
+            <div className="text-sm sm:text-base font-bold text-purple-950 mb-2">
+              {nextClusterExams.map((e) => e.title).join(' • ')}
+            </div>
+            <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
+              <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <strong>Quy chế thi cụm:</strong> Thời gian làm cả cụm bằng thời gian lớn nhất của 1 môn (<strong>{nextClusterMaxDuration || 45} phút</strong>). Bạn có thể tự do chuyển đổi giữa các môn trong cụm!
+              </div>
+            </div>
           </div>
-          <div className="text-base font-bold text-blue-950 mb-1">
-            {nextExam.title}
+        ) : nextExam ? (
+          <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl text-left mb-6">
+            <div className="text-xs font-bold text-blue-800 uppercase tracking-wide mb-1">
+              Chuẩn bị môn thi tiếp theo ({nextIndex + 1}/{totalExams}):
+            </div>
+            <div className="text-base font-bold text-blue-950 mb-1">
+              {nextExam.title}
+            </div>
+            <div className="flex items-center gap-2 text-xs text-blue-800">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Thời gian: {nextExam.durationMinutes} phút</span>
+              <span>·</span>
+              <span>Số lượng: {nextExam.questions.length} câu hỏi</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-xs text-blue-800">
-            <Clock className="w-3.5 h-3.5" />
-            <span>Thời gian: {nextExam.durationMinutes} phút</span>
-            <span>·</span>
-            <span>Số lượng: {nextExam.questions.length} câu hỏi</span>
-          </div>
-        </div>
+        ) : null}
 
         {/* Relaxation Tips */}
         <div className="text-left text-xs text-slate-500 mb-6 space-y-1.5 p-3 rounded-lg bg-slate-50 border border-slate-200/60">

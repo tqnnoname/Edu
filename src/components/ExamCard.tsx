@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Exam, SubjectType, UserRole } from '../types/exam';
 import { 
   Calculator, 
@@ -22,13 +22,20 @@ import {
   Layers,
   Calendar,
   ShieldAlert,
-  AlertTriangle
+  AlertTriangle,
+  Users,
+  CopySlash,
+  KeyRound,
+  Shuffle,
+  Check
 } from 'lucide-react';
 
 interface ExamCardProps {
   exam: Exam;
   userRole?: UserRole;
   attemptCount?: number;
+  activeClassId?: string;
+  isEnrolledInClass?: boolean;
   onStartExam: (exam: Exam, mode: 'exam' | 'practice') => void;
   onPreviewExam?: (exam: Exam) => void;
   onEditExam?: (exam: Exam) => void;
@@ -36,7 +43,7 @@ interface ExamCardProps {
   onDeleteCustom?: (examId: string) => void;
 }
 
-const subjectIcons: Record<SubjectType, React.ElementType> = {
+const subjectIcons: Record<string, React.ElementType> = {
   math: Calculator,
   english: Languages,
   physics: Atom,
@@ -47,7 +54,7 @@ const subjectIcons: Record<SubjectType, React.ElementType> = {
   general: BookOpen,
 };
 
-const subjectLabels: Record<SubjectType, string> = {
+const subjectLabels: Record<string, string> = {
   math: 'Toán học',
   english: 'Tiếng Anh',
   physics: 'Vật lý',
@@ -58,7 +65,7 @@ const subjectLabels: Record<SubjectType, string> = {
   general: 'Tổng hợp',
 };
 
-const subjectColors: Record<SubjectType, { text: string; bg: string; border: string }> = {
+const subjectColors: Record<string, { text: string; bg: string; border: string }> = {
   math: { text: 'text-blue-700', bg: 'bg-blue-50', border: 'border-blue-100' },
   english: { text: 'text-indigo-700', bg: 'bg-indigo-50', border: 'border-indigo-100' },
   physics: { text: 'text-teal-700', bg: 'bg-teal-50', border: 'border-teal-100' },
@@ -73,15 +80,33 @@ export const ExamCard: React.FC<ExamCardProps> = ({
   exam,
   userRole = 'student',
   attemptCount = 0,
+  activeClassId,
+  isEnrolledInClass = false,
   onStartExam,
   onPreviewExam,
   onEditExam,
   onDuplicateExam,
   onDeleteCustom,
 }) => {
+  const [copiedCode, setCopiedCode] = useState(false);
+
+  const handleCopyCode = (code: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
   const Icon = subjectIcons[exam.subject] || BookOpen;
   const color = subjectColors[exam.subject] || subjectColors.general;
   const isTeacher = userRole === 'teacher';
+
+  // 1. Chế độ người ra đề (Draft or Private)
+  const isCreatorOnly = exam.visibility === 'private' || exam.status === 'draft';
+
+  // 2. Chế độ giới hạn trong lớp
+  const isClassRestricted = exam.visibility === 'class';
+  const isStudentNotInClass = !isTeacher && isClassRestricted && exam.assignedClassId && !isEnrolledInClass && activeClassId !== exam.assignedClassId;
 
   // Compute status and scheduling state
   const now = new Date().getTime();
@@ -97,8 +122,10 @@ export const ExamCard: React.FC<ExamCardProps> = ({
     exam.maxAttempts > 0 && 
     attemptCount >= exam.maxAttempts;
 
+  // Total block state for student
   const isExamBlockedForStudent = !isTeacher && (
-    exam.status === 'draft' ||
+    isCreatorOnly ||
+    isStudentNotInClass ||
     exam.status === 'closed' ||
     isBeforeOpen ||
     isAfterClose ||
@@ -121,7 +148,15 @@ export const ExamCard: React.FC<ExamCardProps> = ({
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
           <Lock className="w-3 h-3" />
-          Riêng người ra đề
+          Chế độ Người ra đề (Riêng tư)
+        </span>
+      );
+    }
+    if (v === 'class') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
+          <Users className="w-3 h-3 text-blue-600" />
+          Giới hạn trong Lớp{exam.assignedClassName ? `: ${exam.assignedClassName}` : ''}
         </span>
       );
     }
@@ -145,14 +180,14 @@ export const ExamCard: React.FC<ExamCardProps> = ({
     if (exam.status === 'draft') {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
-          Bản nháp
+          Bản nháp (Chưa mở)
         </span>
       );
     }
     if (exam.status === 'closed' || isAfterClose) {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
-          Đã đóng
+          Đã đóng đề
         </span>
       );
     }
@@ -166,13 +201,15 @@ export const ExamCard: React.FC<ExamCardProps> = ({
     }
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-        Đang mở
+        Đang mở thi
       </span>
     );
   };
 
   return (
-    <div className="group bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs hover:shadow-md transition-all duration-200 flex flex-col justify-between hover:border-slate-300 relative">
+    <div className={`group bg-white rounded-xl border p-5 shadow-xs hover:shadow-md transition-all duration-200 flex flex-col justify-between relative ${
+      isExamBlockedForStudent ? 'border-amber-200 bg-slate-50/70' : 'border-slate-200/80 hover:border-slate-300'
+    }`}>
       <div>
         {/* Top bar info & Manage Actions */}
         <div className="flex items-center justify-between mb-3 gap-2">
@@ -181,7 +218,7 @@ export const ExamCard: React.FC<ExamCardProps> = ({
               <Icon className="w-4 h-4" />
             </div>
             <span className="text-xs font-semibold text-slate-700 tracking-wide uppercase">
-              {subjectLabels[exam.subject]}
+              {subjectLabels[exam.subject] || exam.subject}
             </span>
           </div>
 
@@ -224,6 +261,17 @@ export const ExamCard: React.FC<ExamCardProps> = ({
           {getVisibilityBadge()}
           {getStatusBadge()}
 
+          {/* Anti-copy tag */}
+          {exam.allowCopy === false && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-800 border border-slate-300"
+              title="Chế độ bảo mật: Đã khóa tính năng sao chép câu hỏi (chống copy)"
+            >
+              <CopySlash className="w-3 h-3 text-slate-600" />
+              Chống copy
+            </span>
+          )}
+
           {/* Anti-cheat tab switch limit tag */}
           {exam.maxTabSwitches !== undefined && exam.maxTabSwitches > 0 && (
             <span
@@ -247,6 +295,49 @@ export const ExamCard: React.FC<ExamCardProps> = ({
               Lượt thi: {attemptCount}/{exam.maxAttempts}
             </span>
           )}
+          {/* Lockdown until timeout tag */}
+          {exam.lockExitUntilTimeout && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-rose-50 text-rose-800 border border-rose-200"
+              title="Quy chế phòng thi nghiêm ngặt: Không được phép thoát ra khỏi giao diện thi cho đến khi hết thời gian làm bài!"
+            >
+              <Lock className="w-3 h-3 text-rose-600" />
+              Khóa thoát phòng đến hết giờ
+            </span>
+          )}
+
+          {/* Min submit duration tag */}
+          {exam.minSubmitMinutes !== undefined && exam.minSubmitMinutes > 0 && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-800 border border-indigo-200"
+              title={`Thời gian làm bài tối thiểu: Chỉ được phép nộp bài sau khi đã làm tối thiểu ${exam.minSubmitMinutes} phút!`}
+            >
+              <Clock className="w-3 h-3 text-indigo-600" />
+              Nộp sau ≥ {exam.minSubmitMinutes}p
+            </span>
+          )}
+
+          {/* Require candidate access code tag */}
+          {exam.requireAccessCode && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-300"
+              title="Đề thi bảo mật: Chỉ thí sinh có mã dự thi / mật mã do giáo viên cung cấp mới được phép vào làm bài!"
+            >
+              <KeyRound className="w-3 h-3 text-amber-700" />
+              Cần mã dự thi được cấp
+            </span>
+          )}
+
+          {/* Review mode tag */}
+          {exam.showOnlyStudentAnswersAfterExam && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-cyan-50 text-cyan-800 border border-cyan-200"
+              title="Chế độ xem kết quả: Sau khi nộp bài chỉ được xem lại câu trả lời đã làm, không xem đáp án chuẩn & giải thích chi tiết."
+            >
+              <Eye className="w-3 h-3 text-cyan-600" />
+              Chỉ xem bài đã làm
+            </span>
+          )}
         </div>
 
         {/* Title */}
@@ -254,7 +345,7 @@ export const ExamCard: React.FC<ExamCardProps> = ({
           {exam.title}
         </h3>
 
-        {/* Unboxed Metadata with · separator */}
+        {/* Metadata */}
         <div className="flex items-center gap-2 text-xs text-slate-500 mb-2 flex-wrap">
           <span>{exam.grade}</span>
           <span aria-hidden="true" className="text-slate-300">·</span>
@@ -272,6 +363,49 @@ export const ExamCard: React.FC<ExamCardProps> = ({
             {exam.totalPoints || 10} điểm
           </span>
         </div>
+
+        {/* 8-Digit Exam Code pill - CHỈ HIỂN THỊ CHO GIÁO VIÊN (ẩn với học sinh) */}
+        {isTeacher && exam.examCode && (
+          <div className="flex items-center justify-between bg-blue-50/70 border border-blue-200/80 rounded-lg px-2.5 py-1 mb-2.5 text-xs">
+            <div className="flex items-center gap-1.5">
+              <KeyRound className="w-3.5 h-3.5 text-blue-600" />
+              <span className="text-[11px] font-semibold text-blue-900">Mã đề (chỉ GV thấy):</span>
+              <span className="font-mono font-bold text-blue-950 tracking-wider bg-white px-1.5 py-0.2 rounded border border-blue-200 shadow-2xs">
+                {exam.examCode}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={(e) => handleCopyCode(exam.examCode!, e)}
+              className="text-[11px] text-blue-700 hover:text-blue-950 font-semibold flex items-center gap-1 cursor-pointer bg-white/80 hover:bg-white px-2 py-0.5 rounded border border-blue-200 transition-colors"
+              title="Sao chép mã đề 8 số để cấp cho học sinh"
+            >
+              {copiedCode ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3 text-blue-600" />}
+              <span>{copiedCode ? 'Đã chép' : 'Chép mã'}</span>
+            </button>
+          </div>
+        )}
+
+        {/* Teacher access code display if required */}
+        {isTeacher && exam.requireAccessCode && exam.accessSecurityCode && (
+          <div className="flex items-center justify-between bg-amber-50/70 border border-amber-200 rounded-lg px-2.5 py-1 mb-2.5 text-xs">
+            <div className="flex items-center gap-1.5">
+              <Lock className="w-3.5 h-3.5 text-amber-700" />
+              <span className="text-[11px] font-semibold text-amber-950">Mã dự thi cấp cho HS:</span>
+              <span className="font-mono font-bold text-amber-900 bg-white px-1.5 py-0.2 rounded border border-amber-300">
+                {exam.accessSecurityCode}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Random question indicator */}
+        {exam.randomQuestionCount !== undefined && exam.randomQuestionCount > 0 && (
+          <div className="text-[11px] text-purple-800 bg-purple-50 border border-purple-200 rounded-lg px-2.5 py-1 mb-2.5 flex items-center gap-1.5">
+            <Shuffle className="w-3 h-3 text-purple-600 shrink-0" />
+            <span>Đề bốc ngẫu nhiên <strong>{exam.randomQuestionCount}</strong> / {exam.questions.length} câu</span>
+          </div>
+        )}
 
         {/* Timing schedule info if applicable */}
         {(exam.openTime || exam.closeTime) && (
@@ -293,44 +427,67 @@ export const ExamCard: React.FC<ExamCardProps> = ({
 
       {/* Action buttons */}
       <div className="pt-3 border-t border-slate-100 flex items-center gap-2 flex-wrap">
+        {/* If blocked for students */}
         {isExamBlockedForStudent ? (
-          <div className="w-full flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-100 text-slate-600 text-xs">
-            <span className="flex items-center gap-1 text-[11px] font-medium text-slate-700">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-              {isAttemptsExceeded
-                ? 'Đã hết lượt thi cho phép'
-                : isBeforeOpen
-                ? `Mở lúc ${formatDateTimeStr(exam.openTime)}`
-                : isAfterClose || exam.status === 'closed'
-                ? 'Đã hết hạn làm đề thi'
-                : 'Đang ở trạng thái Bản nháp'}
-            </span>
-            {onPreviewExam && (
+          <div className="w-full p-2.5 rounded-lg bg-amber-50/80 border border-amber-200 text-amber-900 text-xs flex flex-col gap-1.5">
+            <div className="flex items-center gap-1.5 font-bold">
+              <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+              <span>
+                {isCreatorOnly
+                  ? 'Chế độ người ra đề (Chưa mở xem thử)'
+                  : isStudentNotInClass
+                  ? `Giới hạn trong ${exam.assignedClassName || 'Lớp riêng'}`
+                  : isAttemptsExceeded
+                  ? 'Đã hết lượt thi cho phép'
+                  : isBeforeOpen
+                  ? `Mở lúc ${formatDateTimeStr(exam.openTime)}`
+                  : 'Đã hết hạn làm đề thi'}
+              </span>
+            </div>
+            <p className="text-[11px] text-amber-800 leading-snug">
+              {isCreatorOnly
+                ? 'Đề thi đang ở chế độ Người ra đề riêng tư. Khi nào người ra đề mở công khai hoặc mở thi mới cho phép học sinh xem trước và làm bài.'
+                : isStudentNotInClass
+                ? 'Chỉ học sinh trong lớp học này mới được xem và làm bài thi. Vui lòng tham gia lớp để mở khóa.'
+                : 'Đề thi hiện đang bị khóa truy cập theo quy chế.'}
+            </p>
+            {(isCreatorOnly || isStudentNotInClass || exam.requireAccessCode) && (
               <button
-                onClick={() => onPreviewExam(exam)}
-                className="py-1 px-2 text-[11px] font-semibold text-blue-700 bg-white hover:bg-blue-50 rounded border border-blue-200 transition-colors cursor-pointer shrink-0"
+                type="button"
+                onClick={() => onStartExam(exam, 'exam')}
+                className="mt-1 py-1.5 px-3 text-xs font-semibold text-blue-700 bg-blue-100/90 hover:bg-blue-200 active:bg-blue-300 rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                Xem thử
+                <KeyRound className="w-3.5 h-3.5 text-blue-600" />
+                <span>Nhập mã số vào thi / Mở khóa</span>
               </button>
             )}
           </div>
         ) : (
           <>
-            <button
-              onClick={() => onStartExam(exam, 'exam')}
-              className="flex-1 py-2 px-3 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 active:bg-black rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer min-w-[90px]"
-            >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              <span>Vào thi</span>
-            </button>
-            <button
-              onClick={() => onStartExam(exam, 'practice')}
-              className="py-2 px-2.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
-              title="Chế độ luyện tập có giải thích ngay"
-            >
-              <Lightbulb className="w-3.5 h-3.5 text-amber-600" />
-              <span>Luyện tập</span>
-            </button>
+            {/* Start Exam button */}
+            {exam.modeType !== 'practice_only' && (
+              <button
+                onClick={() => onStartExam(exam, 'exam')}
+                className="flex-1 py-2 px-3 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 active:bg-black rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer min-w-[90px]"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Vào thi</span>
+              </button>
+            )}
+
+            {/* Practice button */}
+            {exam.modeType !== 'exam_only' && (
+              <button
+                onClick={() => onStartExam(exam, 'practice')}
+                className="py-2 px-2.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                title="Chế độ luyện tập có giải thích ngay"
+              >
+                <Lightbulb className="w-3.5 h-3.5 text-amber-600" />
+                <span>Luyện tập</span>
+              </button>
+            )}
+
+            {/* Preview Exam button - ONLY if not blocked! */}
             {onPreviewExam && (
               <button
                 onClick={() => onPreviewExam(exam)}
@@ -341,6 +498,8 @@ export const ExamCard: React.FC<ExamCardProps> = ({
                 <span>Xem thử</span>
               </button>
             )}
+
+            {/* Teacher Edit button */}
             {isTeacher && onEditExam && (
               <button
                 onClick={() => onEditExam(exam)}

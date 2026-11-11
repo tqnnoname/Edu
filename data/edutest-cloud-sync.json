@@ -1,0 +1,22 @@
+{
+  "users": [
+    {
+      "id": "usr_master_teacher",
+      "email": "tranquangnhat418@gmail.com",
+      "username": "tranquangnhat418",
+      "fullName": "Thầy Trần Quang Nhật (Admin Tối Cao)",
+      "role": "teacher",
+      "isMasterAdmin": true,
+      "password": "123456",
+      "avatar": "",
+      "school": "Trường THPT Chuyên",
+      "createdAt": "2026-01-01"
+    }
+  ],
+  "teacherRequests": [],
+  "customExams": [],
+  "customBundles": [],
+  "classrooms": [],
+  "results": [],
+  "lastSyncedAt": "2026-11-05T15:28:43.648Z"
+}

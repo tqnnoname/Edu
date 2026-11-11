@@ -73,28 +73,40 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
   const [secondsRemaining, setSecondsRemaining] = useState<number>(timeLimitSeconds);
   const timerHasExpiredRef = useRef(false);
 
-  // Helper to build random valid selection
-  const generateRandomSelection = () => {
+  // Helper to build random valid selection (nếu thiếu thì chọn ngẫu nhiên bổ sung cho đủ)
+  const generateRandomSelection = (preserveCurrent = false) => {
     if (electiveGroups.length === 0) return { pickedGroupIds: [], pickedExamMap: {} };
 
-    // 1. Choose number of groups between minGroupsToSelect and maxGroupsToSelect
-    const numGroups = Math.floor(
-      Math.random() * (maxGroupsToSelect - minGroupsToSelect + 1)
-    ) + minGroupsToSelect;
+    let pickedGroupIds: string[] = [];
+    if (preserveCurrent && activeGroupIds.length > 0) {
+      pickedGroupIds = [...activeGroupIds];
+    }
 
-    // 2. Randomly pick groups
-    const shuffledGroups = [...electiveGroups].sort(() => Math.random() - 0.5);
-    const chosenGroups = shuffledGroups.slice(0, numGroups);
-    const pickedGroupIds = chosenGroups.map((g) => g.id);
+    // Target number of groups (at least minGroupsToSelect, up to maxGroupsToSelect)
+    const targetGroupCount = Math.max(minGroupsToSelect, Math.min(pickedGroupIds.length || minGroupsToSelect, maxGroupsToSelect));
 
-    // 3. For each chosen group, randomly pick minSelectCount exams
+    // If still missing groups, pick randomly among the remaining unchosen groups
+    if (pickedGroupIds.length < targetGroupCount) {
+      const remainingGroups = electiveGroups
+        .filter((g) => !pickedGroupIds.includes(g.id))
+        .sort(() => Math.random() - 0.5);
+      const needed = targetGroupCount - pickedGroupIds.length;
+      pickedGroupIds = [...pickedGroupIds, ...remainingGroups.slice(0, needed).map((g) => g.id)];
+    }
+
+    // For each active group, ensure minSelectCount exams are chosen (keeping existing chosen exams)
     const pickedExamMap: Record<string, string[]> = {};
     electiveGroups.forEach((grp) => {
       if (pickedGroupIds.includes(grp.id)) {
         const available = grp.examIds.filter((id) => allExams.some((e) => e.id === id));
-        const shuffledExams = [...available].sort(() => Math.random() - 0.5);
-        const countToPick = Math.min(grp.minSelectCount, shuffledExams.length);
-        pickedExamMap[grp.id] = shuffledExams.slice(0, countToPick);
+        let alreadyPicked = preserveCurrent ? (selectedElectiveMap[grp.id] || []).filter((id) => available.includes(id)) : [];
+        
+        if (alreadyPicked.length < grp.minSelectCount) {
+          const unchosen = available.filter((id) => !alreadyPicked.includes(id)).sort(() => Math.random() - 0.5);
+          const neededExams = grp.minSelectCount - alreadyPicked.length;
+          alreadyPicked = [...alreadyPicked, ...unchosen.slice(0, neededExams)];
+        }
+        pickedExamMap[grp.id] = alreadyPicked;
       } else {
         pickedExamMap[grp.id] = [];
       }
@@ -116,7 +128,7 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
           window.clearInterval(intervalId);
           if (!timerHasExpiredRef.current) {
             timerHasExpiredRef.current = true;
-            // Auto random selection when timer expires!
+            // Auto random selection of missing groups/exams when timer expires!
             handleAutoRandomSelectionOnExpire();
           }
           return 0;
@@ -130,9 +142,10 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
     };
   }, [timeLimitSeconds]);
 
-  // When timer expires, auto-select randomly and immediately start
+  // When timer expires, auto-select randomly the missing parts and immediately start
   const handleAutoRandomSelectionOnExpire = () => {
-    const { pickedGroupIds, pickedExamMap } = generateRandomSelection();
+    // Preserve what the candidate already selected, and randomly pick missing groups/exams!
+    const { pickedGroupIds, pickedExamMap } = generateRandomSelection(true);
     setActiveGroupIds(pickedGroupIds);
     setSelectedElectiveMap(pickedExamMap);
 
@@ -143,19 +156,19 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
     const uniqueIds = Array.from(new Set(allChosenIds));
     const finalExams = uniqueIds.map((id) => allExams.find((e) => e.id === id)).filter(Boolean) as Exam[];
 
-    setAutoNotice('⏱ Đã hết thời gian chọn môn! Hệ thống đã tự động chọn ngẫu nhiên tổ hợp môn hợp lệ và đưa bạn vào phòng thi.');
+    setAutoNotice('⏱ Đã hết thời gian chọn môn! Hệ thống đã giữ nguyên các môn bạn đã chọn và tự động chọn ngẫu nhiên bổ sung thêm cho đủ số lượng theo quy chế.');
     setTimeout(() => {
       onConfirm(finalExams);
     }, 1200);
   };
 
-  // Manual random selection button handler (user clicks "Chọn ngẫu nhiên giúp tôi")
-  const handleManualRandomSelect = () => {
-    const { pickedGroupIds, pickedExamMap } = generateRandomSelection();
+  // Manual random selection button handler (user clicks "Chọn ngẫu nhiên giúp tôi" or "Bổ sung cho đủ")
+  const handleManualRandomSelect = (preserve = true) => {
+    const { pickedGroupIds, pickedExamMap } = generateRandomSelection(preserve);
     setActiveGroupIds(pickedGroupIds);
     setSelectedElectiveMap(pickedExamMap);
     setErrorMessage(null);
-    setAutoNotice('🎲 Đã tự động chọn ngẫu nhiên các nhóm và môn thi hợp lệ theo đúng quy chế!');
+    setAutoNotice('🎲 Đã tự động giữ các môn bạn chọn và bổ sung ngẫu nhiên thêm các nhóm/môn còn thiếu cho đủ quy chế!');
     setTimeout(() => setAutoNotice(null), 4000);
   };
 
@@ -243,6 +256,8 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
     return { activeGroupStatus, isOverallValid, isAllActiveGroupsMet };
   }, [electiveGroups, activeGroupIds, selectedElectiveMap, groupCountValid]);
 
+  const isClusterMaxMode = bundle.timingMode !== 'all_sequential_independent';
+
   // Calculate final list of selected exams in order
   const finalSelectedExams = useMemo(() => {
     const activeElectiveExamIds = activeGroupIds.flatMap((gId) => selectedElectiveMap[gId] || []);
@@ -254,8 +269,34 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
     return uniqueIds.map((id) => allExams.find((e) => e.id === id)).filter(Boolean) as Exam[];
   }, [compulsoryExams, activeGroupIds, selectedElectiveMap, allExams]);
 
-  const totalExamMinutes = finalSelectedExams.reduce((acc, e) => acc + e.durationMinutes, 0);
-  const totalBreakMinutes = Math.max(0, finalSelectedExams.length - 1) * bundle.breakMinutes;
+  const electiveChosenExams = useMemo(() => {
+    const activeElectiveExamIds = activeGroupIds.flatMap((gId) => selectedElectiveMap[gId] || []);
+    return activeElectiveExamIds.map((id) => allExams.find((e) => e.id === id)).filter(Boolean) as Exam[];
+  }, [activeGroupIds, selectedElectiveMap, allExams]);
+
+  const maxElectiveDuration = useMemo(() => {
+    if (electiveChosenExams.length === 0) return 0;
+    return Math.max(...electiveChosenExams.map((e) => e.durationMinutes || 0));
+  }, [electiveChosenExams]);
+
+  const totalExamMinutes = useMemo(() => {
+    const compMins = compulsoryExams.reduce((acc, e) => acc + e.durationMinutes, 0);
+    if (isClusterMaxMode) {
+      return compMins + maxElectiveDuration;
+    }
+    return compMins + electiveChosenExams.reduce((acc, e) => acc + e.durationMinutes, 0);
+  }, [compulsoryExams, electiveChosenExams, isClusterMaxMode, maxElectiveDuration]);
+
+  const totalBreakMinutes = useMemo(() => {
+    if (isClusterMaxMode) {
+      const breakCount = (compulsoryExams.length > 0 && electiveChosenExams.length > 0)
+        ? compulsoryExams.length
+        : Math.max(0, compulsoryExams.length - 1);
+      return breakCount * bundle.breakMinutes;
+    }
+    return Math.max(0, finalSelectedExams.length - 1) * bundle.breakMinutes;
+  }, [isClusterMaxMode, compulsoryExams.length, electiveChosenExams.length, finalSelectedExams.length, bundle.breakMinutes]);
+
   const totalSessionMinutes = totalExamMinutes + totalBreakMinutes;
 
   const handleStart = () => {
@@ -367,7 +408,7 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
               {/* Manual random button */}
               <button
                 type="button"
-                onClick={handleManualRandomSelect}
+                onClick={() => handleManualRandomSelect(true)}
                 className="px-2.5 py-1 text-[11px] font-bold bg-white hover:bg-slate-100 text-purple-700 border border-purple-300 rounded-lg shadow-2xs transition-all flex items-center gap-1 cursor-pointer"
                 title="Bốc thăm ngẫu nhiên nhóm và môn thi hợp lệ ngay"
               >
@@ -404,7 +445,7 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
           {timeLimitSeconds === 0 && (
             <button
               type="button"
-              onClick={handleManualRandomSelect}
+              onClick={() => handleManualRandomSelect(true)}
               className="px-2.5 py-1 text-[11px] font-bold bg-white hover:bg-purple-100 text-purple-700 border border-purple-300 rounded-lg shadow-2xs transition-all flex items-center gap-1 shrink-0 cursor-pointer"
               title="Bốc thăm ngẫu nhiên nhóm và môn thi hợp lệ ngay"
             >
@@ -413,6 +454,16 @@ export const BundleElectiveSelectorModal: React.FC<BundleElectiveSelectorModalPr
             </button>
           )}
         </div>
+
+        {/* Timing rule banner */}
+        {isClusterMaxMode && (
+          <div className="px-4 sm:px-6 py-2 bg-amber-50/90 border-b border-amber-200 text-xs text-amber-950 flex items-center gap-2 shrink-0">
+            <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+            <div className="leading-tight">
+              <strong>Quy chế tính giờ:</strong> Môn bắt buộc thi tuần tự theo giờ từng môn; Cụm các môn tự chọn làm chung trong tổng thời gian bằng <strong>thời gian lớn nhất của một môn</strong>{maxElectiveDuration > 0 ? ` (${maxElectiveDuration} phút)` : ''}!
+            </div>
+          </div>
+        )}
 
         {/* Error / Alert notice */}
         {errorMessage && (
