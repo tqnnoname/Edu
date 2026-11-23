@@ -152,6 +152,8 @@
   --odo-w: 0.64em;
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
   line-height: var(--odo-h);
 }
@@ -167,19 +169,27 @@
 }
 
 .odometer-score-root.odometer-size-xl {
-  --odo-h: 54px;
-  font-size: 38px;
+  --odo-h: 50px;
+  font-size: 36px;
 }
 
 .odometer-score-root.odometer-size-2xl {
-  --odo-h: 76px;
-  font-size: 54px;
+  --odo-h: 72px;
+  font-size: 52px;
 }
 
 @media (max-width: 640px) {
+  .odometer-score-root.odometer-size-lg {
+    --odo-h: 30px;
+    font-size: 20px;
+  }
+  .odometer-score-root.odometer-size-xl {
+    --odo-h: 40px;
+    font-size: 28px;
+  }
   .odometer-score-root.odometer-size-2xl {
-    --odo-h: 54px;
-    font-size: 38px;
+    --odo-h: 50px;
+    font-size: 36px;
   }
 }
 

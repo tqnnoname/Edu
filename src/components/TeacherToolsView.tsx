@@ -2,6 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallba
 import {
   Classroom,
   Exam,
+  ExamBundle,
   ExamResult,
   Scoreboard,
   ScoreboardDisplayMode,
@@ -65,6 +66,7 @@ import {
 interface TeacherToolsViewProps {
   currentUser: UserAccount | null;
   allExams: Exam[];
+  allBundles?: ExamBundle[];
   results?: ExamResult[];
   classrooms: Classroom[];
   initialSubSection?: 'scoreboards' | 'exam_presentation' | 'exam_modes';
@@ -116,6 +118,7 @@ function computeParticipantTotal(
 export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
   currentUser,
   allExams,
+  allBundles = [],
   results = [],
   classrooms,
   initialSubSection = 'scoreboards',
@@ -1085,10 +1088,10 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
 
                 {/* LIVE PRESENTATION 50/50 SPLIT-SCREEN STAGE */}
                 {isPresentationOpen && (
-                  <div className="bg-slate-950 text-white rounded-2xl border border-slate-800 p-5 sm:p-6 shadow-2xl space-y-5">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-                      <div>
-                        <span className="text-[11px] font-bold uppercase tracking-widest text-amber-300">
+                  <div className="@container bg-slate-950 text-white rounded-2xl border border-slate-800 p-4 sm:p-6 shadow-2xl space-y-5 max-w-full overflow-x-hidden">
+                    <div className="flex flex-col @3xl:flex-row @3xl:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+                      <div className="min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-widest text-amber-300 break-words">
                           Sân Khấu Công Bố Điểm · {selectedBoard.title}
                         </span>
                       </div>
@@ -1098,7 +1101,7 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
                           value={decimalMode}
                           onChange={(e) => setDecimalMode(e.target.value as OdometerDecimalMode)}
                           disabled={rollingParticipantId !== null}
-                          className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-bold text-amber-200 focus:outline-none"
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-bold text-amber-200 focus:outline-none max-w-full min-w-0"
                         >
                           <option value="auto_decimal">Thập phân: Tự động</option>
                           <option value="1">1 số lẻ (.0)</option>
@@ -1110,7 +1113,7 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
                           value={activeAnnounceRoundId}
                           onChange={(e) => setActiveAnnounceRoundId(e.target.value)}
                           disabled={rollingParticipantId !== null}
-                          className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-bold text-white focus:outline-none"
+                          className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-bold text-white focus:outline-none max-w-full sm:max-w-[240px] min-w-0"
                         >
                           {selectedBoard.rounds.map((r) => (
                             <option key={r.id} value={r.id}>
@@ -1157,7 +1160,7 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
                           type="button"
                           onClick={handleResetRevealedBoard}
                           disabled={rollingParticipantId !== null}
-                          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+                          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 cursor-pointer disabled:opacity-40 whitespace-nowrap"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
                           <span>Đặt lại</span>
@@ -1166,12 +1169,12 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
                     </div>
 
                     {/* 50/50 Split Screen */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    <div className="grid grid-cols-1 @5xl:grid-cols-2 gap-5 min-w-0">
                       {/* LEFT 50%: ĐIỂM THI & NÚT CÔNG BỐ (KHÔNG HIỆN ĐIỂM TRƯỚC) */}
-                      <div className="bg-slate-900/75 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between gap-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                      <div className="bg-slate-900/75 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col justify-between gap-4 min-w-0">
+                        <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5 flex-wrap">
                           <span className="text-xs font-extrabold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
-                            <Sparkles className="w-4 h-4" />
+                            <Sparkles className="w-4 h-4 shrink-0" />
                             <span>Điểm thi thí sinh</span>
                           </span>
                           {rollingParticipantId && revealMusicStyle !== 'mute' && (
@@ -1182,7 +1185,7 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
                           )}
                         </div>
 
-                        <div className="flex-1 flex flex-col items-center justify-center py-6 px-4 rounded-xl bg-gradient-to-b from-slate-950 via-indigo-950/40 to-slate-950 border border-slate-800 text-center min-h-[210px]">
+                        <div className="flex-1 flex flex-col items-center justify-center py-6 px-4 rounded-xl bg-gradient-to-b from-slate-950 via-indigo-950/40 to-slate-950 border border-slate-800 text-center min-h-[210px] min-w-0">
                           {!spotlightParticipantId ? (
                             <div className="space-y-2 max-w-sm">
                               <Trophy className="w-10 h-10 text-amber-400/70 mx-auto" />
@@ -1191,11 +1194,11 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
                               </p>
                             </div>
                           ) : (
-                            <div className="space-y-4">
-                              <div className="text-xl sm:text-2xl font-black text-white">
+                            <div className="space-y-4 w-full min-w-0 flex flex-col items-center">
+                              <div className="text-xl sm:text-2xl font-black text-white break-words max-w-full">
                                 {selectedBoard.participants.find((p) => p.id === spotlightParticipantId)?.name || ''}
                               </div>
-                              <div className="px-6 py-4 rounded-2xl bg-white text-slate-950 border-4 border-amber-400 shadow-2xl inline-flex items-center justify-center">
+                              <div className="px-4 sm:px-6 py-3 sm:py-4 rounded-2xl bg-white text-slate-950 border-4 border-amber-400 shadow-2xl inline-flex items-center justify-center max-w-full overflow-x-auto">
                                 <OdometerScore
                                   value={rollingTargetTotal}
                                   decimalPlaces={activeDecimalPlaces}
@@ -1500,6 +1503,7 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
       {subSection === 'exam_presentation' && (
         <ExamScorePresentationView
           exams={allExams}
+          bundles={allBundles}
           results={results}
           classrooms={classrooms}
           initialExamId={initialPresentationExamId}

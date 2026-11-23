@@ -56,20 +56,27 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
     ? result.scoreOnTenScale 
     : ((result.earnedPoints / (result.totalPoints || 10)) * 10);
 
-  let rankLabel = 'Cần Cố Gắng Thêm';
-  let rankColor = 'text-amber-600 bg-amber-50 border-amber-200';
-  if (scoreOnTen >= 9.0) {
-    rankLabel = 'Xuất Sắc! Điểm Gần Tuyệt Đối';
-    rankColor = 'text-emerald-700 bg-emerald-50 border-emerald-200';
-  } else if (scoreOnTen >= 8.0) {
-    rankLabel = 'Giỏi · Nắm Chắc Kiến Thức';
-    rankColor = 'text-blue-700 bg-blue-50 border-blue-200';
-  } else if (scoreOnTen >= 6.5) {
-    rankLabel = 'Khá · Đạt Yêu Cầu';
-    rankColor = 'text-indigo-700 bg-indigo-50 border-indigo-200';
-  } else if (scoreOnTen >= 5.0) {
-    rankLabel = 'Trung Bình';
-    rankColor = 'text-slate-700 bg-slate-50 border-slate-200';
+  const isScoreHidden = result.showScoreAfterExam === false;
+
+  let rankLabel = 'Đã hoàn thành';
+  let rankColor = 'text-emerald-700 bg-emerald-50 border-emerald-200';
+  if (!isScoreHidden) {
+    if (scoreOnTen >= 9.0) {
+      rankLabel = 'Xuất Sắc! Điểm Gần Tuyệt Đối';
+      rankColor = 'text-emerald-700 bg-emerald-50 border-emerald-200';
+    } else if (scoreOnTen >= 8.0) {
+      rankLabel = 'Giỏi · Nắm Chắc Kiến Thức';
+      rankColor = 'text-blue-700 bg-blue-50 border-blue-200';
+    } else if (scoreOnTen >= 6.5) {
+      rankLabel = 'Khá · Đạt Yêu Cầu';
+      rankColor = 'text-indigo-700 bg-indigo-50 border-indigo-200';
+    } else if (scoreOnTen >= 5.0) {
+      rankLabel = 'Trung Bình';
+      rankColor = 'text-slate-700 bg-slate-50 border-slate-200';
+    } else {
+      rankLabel = 'Cần Cố Gắng Thêm';
+      rankColor = 'text-amber-600 bg-amber-50 border-amber-200';
+    }
   }
 
   // Get wrong or partially correct question IDs for retake (submitted essays wait for grading)
@@ -118,15 +125,15 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
           </div>
 
           {/* Big Score Box with actual points and 10 scale or Hidden notice */}
-          {result.showScoreAfterExam === false ? (
-            <div className="flex items-center gap-3 bg-indigo-50 p-4 rounded-xl border border-indigo-200 text-indigo-950 shrink-0 max-w-sm">
-              <CheckCircle2 className="w-8 h-8 text-indigo-600 shrink-0" />
+          {isScoreHidden ? (
+            <div className="flex items-center gap-3 bg-emerald-50/70 p-4 rounded-xl border border-emerald-200 text-emerald-950 shrink-0 max-w-sm">
+              <CheckCircle2 className="w-8 h-8 text-emerald-600 shrink-0" />
               <div>
-                <div className="text-xs font-bold uppercase tracking-wider text-indigo-800">
-                  Đã ghi nhận bài nộp
+                <div className="text-xs font-bold uppercase tracking-wider text-emerald-800">
+                  Đã hoàn thành
                 </div>
-                <div className="text-xs text-indigo-900 mt-0.5 leading-snug">
-                  Giáo viên đã cài đặt <strong>ẩn điểm số sau khi thi</strong>. Điểm thi chính thức sẽ được công bố sau khi chấm hoàn tất.
+                <div className="text-xs text-emerald-900 mt-0.5 leading-snug">
+                  Bài làm của bạn đã được ghi nhận. Điểm số chính thức sẽ được giáo viên công bố sau.
                 </div>
               </div>
             </div>

@@ -1954,12 +1954,12 @@ export default function App() {
           {/* Main Content Area */}
           <div className="flex-1 min-w-0 flex flex-col">
             {/* Compact Top Header Bar */}
-            <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs px-4 sm:px-6 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3">
+            <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
                 <button
                   type="button"
                   onClick={() => setIsMobileNavOpen(true)}
-                  className="lg:hidden p-2 rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-200 cursor-pointer"
+                  className="lg:hidden p-2 rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-200 cursor-pointer shrink-0"
                   aria-label="Mở menu điều hướng"
                 >
                   <Menu className="w-5 h-5" />
@@ -2015,7 +2015,7 @@ export default function App() {
               </div>
 
               {/* Right quick tools */}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 shrink-0 max-w-full">
                 {/* Direct 8-digit code */}
                 <button
                   type="button"
@@ -2400,6 +2400,7 @@ export default function App() {
             <TeacherToolsView
               currentUser={currentUser}
               allExams={exams}
+              allBundles={bundles}
               results={results}
               classrooms={classrooms}
               onExamsChanged={refreshAllData}
@@ -2517,8 +2518,8 @@ export default function App() {
                         (e.target as HTMLElement).style.display = 'none';
                       }}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-slate-900/40 via-transparent to-transparent pointer-events-none" />
-                    <div className="absolute bottom-3 left-3 right-3 text-white text-xs font-medium px-2 py-1 drop-shadow-sm flex items-center justify-between">
+                    <div className="absolute inset-0 bg-gradient-to-t from-slate-900/70 via-slate-900/15 to-transparent pointer-events-none" />
+                    <div className="absolute bottom-3 left-3 right-3 text-white text-xs font-medium px-2.5 py-1.5 rounded-lg bg-slate-950/45 backdrop-blur-xs flex flex-wrap items-center justify-between gap-2">
                       <span>Phòng thi mô phỏng trực tuyến</span>
                       <span className="font-mono">Chuẩn cấu trúc 2026</span>
                     </div>
@@ -2600,29 +2601,29 @@ export default function App() {
               </div>
             )}
 
-            {/* Primary Category Switcher: Đề thi từng môn VS Tổ hợp liên môn (Dài ra, rộng rãi) */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 mb-6">
-              <div className="flex items-center gap-2 p-1.5 bg-slate-200/80 rounded-2xl max-w-fit shadow-inner">
+            {/* Primary Category Switcher: Đề thi từng môn VS Tổ hợp liên môn */}
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-4 border-b border-slate-200 mb-6">
+              <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-slate-200/80 rounded-2xl w-full xl:w-auto max-w-full shadow-inner">
                 <button
                   onClick={() => setHomeTab('single')}
-                  className={`py-3 px-8 text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer min-w-[240px] ${
+                  className={`flex-1 xl:flex-initial py-2.5 px-5 text-xs sm:text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
                     homeTab === 'single'
-                      ? 'bg-white text-slate-900 shadow-sm scale-101'
+                      ? 'bg-white text-slate-900 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <BookOpen className="w-4 h-4 text-blue-600" />
+                  <BookOpen className="w-4 h-4 text-blue-600 shrink-0" />
                   <span>Đề thi theo môn lẻ ({visibleLibraryExams.length})</span>
                 </button>
                 <button
                   onClick={() => setHomeTab('bundle')}
-                  className={`py-3 px-8 text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer min-w-[240px] ${
+                  className={`flex-1 xl:flex-initial py-2.5 px-5 text-xs sm:text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
                     homeTab === 'bundle'
-                      ? 'bg-white text-purple-900 shadow-sm scale-101'
+                      ? 'bg-white text-purple-900 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <Layers className="w-4 h-4 text-purple-600" />
+                  <Layers className="w-4 h-4 text-purple-600 shrink-0" />
                   <span>Tổ hợp thi liên môn ({visibleLibraryBundles.length})</span>
                 </button>
               </div>
@@ -3200,6 +3201,7 @@ export default function App() {
       {presentingExamForStage && isActualTeacher && (
         <ExamScorePresentationView
           exams={exams}
+          bundles={bundles}
           results={results}
           classrooms={classrooms}
           initialExamId={presentingExamForStage.id}
