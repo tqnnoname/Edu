@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   CandidateAnswerValue, 
   Exam, 
@@ -33,8 +33,16 @@ import {
 import { MiniCalculator } from './MiniCalculator';
 import { ScratchpadModal } from './ScratchpadModal';
 import { RichContentRenderer } from './RichContentRenderer';
+import { MatchingQuestionView } from './MatchingQuestionView';
 import { ConfirmModal } from './ConfirmModal';
-import { gradeEntireExam } from '../utils/scoring';
+import { RoomLockGuard, tryEnterKioskFullscreen } from './RoomLockGuard';
+import {
+  gradeEntireExam,
+  shuffleExamQuestionsAndOptions,
+  buildQuestionClusters,
+  formatShortAnswerDecimalComma,
+} from '../utils/scoring';
+import { renderMath } from '../utils/renderMath';
 
 interface ElectiveClusterTakingViewProps {
   bundle: ExamBundle;
@@ -55,14 +63,24 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
   onComplete,
   onExit,
 }) => {
-  // Duration for the cluster = Maximum duration of a single elective exam in the cluster!
-  const clusterDurationMinutes = useMemo(() => {
-    if (!electiveExams || electiveExams.length === 0) return 45;
-    return Math.max(...electiveExams.map((e) => e.durationMinutes || 45));
+  const preparedElectiveExams = useMemo(() => {
+    return (electiveExams || []).map((ex) =>
+      shuffleExamQuestionsAndOptions(
+        ex,
+        Boolean(ex.settings?.shuffleQuestions),
+        Boolean(ex.settings?.shuffleOptions)
+      )
+    );
   }, [electiveExams]);
 
+  // Duration for the cluster = Maximum duration of a single elective exam in the cluster!
+  const clusterDurationMinutes = useMemo(() => {
+    if (!preparedElectiveExams || preparedElectiveExams.length === 0) return 45;
+    return Math.max(...preparedElectiveExams.map((e) => e.durationMinutes || 45));
+  }, [preparedElectiveExams]);
+
   const [activeSubjectIndex, setActiveSubjectIndex] = useState(0);
-  const currentExam: Exam = electiveExams[activeSubjectIndex] || electiveExams[0];
+  const currentExam: Exam = preparedElectiveExams[activeSubjectIndex] || preparedElectiveExams[0];
 
   // Answers & flags per exam: keyed by examId -> questionId -> answer
   const [answersMap, setAnswersMap] = useState<Record<string, Record<string, CandidateAnswerValue>>>({});
@@ -87,14 +105,23 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
   const [showCalculator, setShowCalculator] = useState(false);
   const [showScratchpad, setShowScratchpad] = useState(false);
   const [fontSize, setFontSize] = useState<'normal' | 'large'>('normal');
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [copyToastNotice, setCopyToastNotice] = useState<string | null>(null);
+
+  const isRoomLockActive = Boolean(
+    bundle.lockExitUntilTimeout && userRole === 'student' && remainingSeconds > 0
+  );
 
   // Tab switch anti-cheat
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
   const [showTabSwitchWarning, setShowTabSwitchWarning] = useState(false);
 
   const currentQuestion: Question | undefined = currentExam?.questions[currentIndex];
+  const questionBodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    renderMath(questionBodyRef.current);
+  }, [activeSubjectIndex, currentIndex, currentQuestion?.id, fontSize]);
 
   // Early submit lockout check
   const minSubmitMinutes = bundle.minSubmitMinutes || 0;
@@ -110,7 +137,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
   const clusterStats = useMemo(() => {
     let totalQuestions = 0;
     let totalAnswered = 0;
-    const subjectBreakdown = electiveExams.map((exam) => {
+    const subjectBreakdown = preparedElectiveExams.map((exam) => {
       const qCount = exam.questions.length;
       totalQuestions += qCount;
       const examAns = answersMap[exam.id] || {};
@@ -142,13 +169,13 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
       subjectBreakdown,
       overallProgressPct: totalQuestions > 0 ? Math.round((totalAnswered / totalQuestions) * 100) : 0,
     };
-  }, [electiveExams, answersMap]);
+  }, [preparedElectiveExams, answersMap]);
 
   // Submit all elective exams in the cluster
   const handleSubmitCluster = useCallback((customReason?: string) => {
     const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
 
-    const results: ExamResult[] = electiveExams.map((exam) => {
+    const results: ExamResult[] = preparedElectiveExams.map((exam) => {
       const subAnswers = answersMap[exam.id] || {};
       const res = gradeEntireExam(exam, subAnswers, elapsedSeconds);
       res.studentName = candidateName;
@@ -158,14 +185,20 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
       if (customReason) {
         res.submissionReason = customReason;
       }
-      res.showScoreAfterExam = bundle.showAnswersAfterExam ?? true;
-      res.showAnswersAfterExam = bundle.showAnswersAfterExam ?? true;
-      res.showOnlyStudentAnswersAfterExam = bundle.showOnlyStudentAnswersAfterExam ?? false;
+      res.showScoreAfterExam =
+        (bundle.showScoreAfterExam ?? true) &&
+        (exam.showScoreAfterExam ?? exam.settings?.showScoreAfterExam ?? true);
+      res.showAnswersAfterExam =
+        (bundle.showAnswersAfterExam ?? true) &&
+        (exam.showAnswersAfterExam ?? exam.settings?.showAnswersAfterExam ?? true);
+      res.showOnlyStudentAnswersAfterExam =
+        Boolean(bundle.showOnlyStudentAnswersAfterExam) ||
+        Boolean(exam.showOnlyStudentAnswersAfterExam);
       return res;
     });
 
     onComplete(results);
-  }, [electiveExams, answersMap, startTime, candidateName, studentCode, bundle, tabSwitchCount, onComplete]);
+  }, [preparedElectiveExams, answersMap, startTime, candidateName, studentCode, bundle, tabSwitchCount, onComplete]);
 
   // Countdown timer effect
   useEffect(() => {
@@ -183,28 +216,72 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
     return () => clearInterval(timer);
   }, [handleSubmitCluster]);
 
-  // Anti-cheat tab switch listener
+  // Sync browser fullscreen state
+  useEffect(() => {
+    const syncFs = () => {
+      const docAny = document as any;
+      setIsFullscreen(Boolean(document.fullscreenElement || docAny.webkitFullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', syncFs);
+    document.addEventListener('webkitfullscreenchange', syncFs);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFs);
+      document.removeEventListener('webkitfullscreenchange', syncFs);
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      void tryEnterKioskFullscreen().then((res) => {
+        if (res.ok) setIsFullscreen(true);
+      });
+    } else if (!isRoomLockActive) {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    } else {
+      setIsLockdownNoticeOpen(true);
+    }
+  };
+
+  // Anti-cheat tab switch & window blur listener
   useEffect(() => {
     const maxSwitches = bundle.maxTabSwitches ?? 0;
     if (maxSwitches <= 0) return;
 
+    let lastViolationMs = 0;
+    const registerViolation = () => {
+      const now = Date.now();
+      if (now - lastViolationMs < 800) return;
+      lastViolationMs = now;
+      setTabSwitchCount((prev) => {
+        const next = prev + 1;
+        if (next >= maxSwitches) {
+          handleSubmitCluster(`Tự động thu bài do rời màn hình quá số lần quy định (${next}/${maxSwitches} lần)`);
+        } else {
+          setShowTabSwitchWarning(true);
+        }
+        return next;
+      });
+    };
+
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        setTabSwitchCount((prev) => {
-          const next = prev + 1;
-          if (next >= maxSwitches) {
-            handleSubmitCluster(`Tự động thu bài do rời màn hình quá số lần quy định (${next}/${maxSwitches} lần)`);
-          } else {
-            setShowTabSwitchWarning(true);
-          }
-          return next;
-        });
+        registerViolation();
       }
     };
 
+    const handleWindowBlur = () => {
+      setTimeout(() => {
+        if (!document.hasFocus() || document.hidden) {
+          registerViolation();
+        }
+      }, 80);
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
     };
   }, [bundle.maxTabSwitches, handleSubmitCluster]);
 
@@ -268,14 +345,14 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
   };
 
   const handleSwitchSubject = (newSubjectIndex: number) => {
-    if (newSubjectIndex < 0 || newSubjectIndex >= electiveExams.length) return;
+    if (newSubjectIndex < 0 || newSubjectIndex >= preparedElectiveExams.length) return;
     setActiveSubjectIndex(newSubjectIndex);
   };
 
   const handleNextQuestionOrNextSubject = () => {
     if (currentIndex < currentExam.questions.length - 1) {
       handleSetCurrentIndex(currentIndex + 1);
-    } else if (activeSubjectIndex < electiveExams.length - 1) {
+    } else if (activeSubjectIndex < preparedElectiveExams.length - 1) {
       // Jump to next subject in cluster!
       handleSwitchSubject(activeSubjectIndex + 1);
     }
@@ -291,8 +368,13 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
 
   const isTimerCritical = remainingSeconds <= 300; // <= 5 mins
 
-  // Filtered questions in active subject
+  // Filtered questions & question-type clusters in active subject
   const currentExamQuestions = currentExam?.questions || [];
+  const isCurrentExamGrouped = Boolean(currentExam?.settings?.groupByQuestionType);
+  const currentQuestionClusters = useMemo(() => {
+    if (!isCurrentExamGrouped || !currentExam) return [];
+    return buildQuestionClusters(currentExamQuestions, currentExam.settings?.questionTypeOrder);
+  }, [isCurrentExamGrouped, currentExam, currentExamQuestions]);
   const filteredQuestions = useMemo(() => {
     return currentExamQuestions.map((q, idx) => ({ q, idx })).filter(({ q }) => {
       const val = currentAnswers[q.id];
@@ -384,6 +466,31 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
               >
                 {fontSize === 'normal' ? 'A+' : 'A-'}
               </button>
+
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className={`p-2 rounded-lg border transition-colors cursor-pointer ${
+                  isRoomLockActive
+                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+                title={
+                  isRoomLockActive
+                    ? 'Phòng thi đang khóa toàn màn hình'
+                    : isFullscreen
+                    ? 'Thu nhỏ'
+                    : 'Toàn màn hình'
+                }
+              >
+                {isRoomLockActive ? (
+                  <Lock className="w-4 h-4" />
+                ) : isFullscreen ? (
+                  <Minimize2 className="w-4 h-4" />
+                ) : (
+                  <Maximize2 className="w-4 h-4" />
+                )}
+              </button>
             </div>
 
             {/* Submit Cluster Button */}
@@ -414,7 +521,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                 Các môn trong cụm:
               </span>
 
-              {electiveExams.map((exam, idx) => {
+              {preparedElectiveExams.map((exam, idx) => {
                 const isActive = idx === activeSubjectIndex;
                 const stat = clusterStats.subjectBreakdown[idx];
                 const answered = stat?.ansCount || 0;
@@ -480,6 +587,17 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
               <span className="px-3 py-1 rounded-lg text-xs font-extrabold bg-purple-100 text-purple-900 border border-purple-200">
                 Môn: {currentExam.title}
               </span>
+              {(() => {
+                const activeCluster = isCurrentExamGrouped
+                  ? currentQuestionClusters.find((c) => c.items.some((it) => it.flatIndex === currentIndex))
+                  : undefined;
+                if (!activeCluster) return null;
+                return (
+                  <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-800 border border-indigo-200">
+                    Phần {activeCluster.roman} · {activeCluster.shortLabel}
+                  </span>
+                );
+              })()}
               <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white text-slate-800 border border-slate-200">
                 Câu {currentIndex + 1} / {currentExam.questions.length}
               </span>
@@ -506,23 +624,41 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
           </div>
 
           {/* Question Body */}
-          <div className="p-4 sm:p-6 flex-1 overflow-y-auto space-y-6">
+          <div ref={questionBodyRef} className="p-4 sm:p-6 flex-1 overflow-y-auto space-y-6">
             {currentQuestion ? (
-              <div>
-                {/* Question Text with Rich LaTeX Math Renderer */}
-                <div className="text-slate-900 leading-relaxed font-medium mb-6 text-base sm:text-lg">
-                  <RichContentRenderer content={currentQuestion.question} />
-                </div>
+              <div key={currentQuestion.id}>
+                {/* Matching type handles prompt + 2 columns + orientation bar natively */}
+                {currentQuestion.type === 'matching' ? (
+                  <MatchingQuestionView
+                    question={currentQuestion}
+                    mode="taking"
+                    userAnswer={
+                      (typeof currentAnswers[currentQuestion.id] === 'object' &&
+                      !Array.isArray(currentAnswers[currentQuestion.id])
+                        ? (currentAnswers[currentQuestion.id] as { [leftId: string]: string })
+                        : {})
+                    }
+                    onChange={(updated) => handleAnswerChange(updated)}
+                    fontSize={fontSize === 'large' ? 'large' : 'normal'}
+                  />
+                ) : (
+                  <>
+                    {/* Question Text with Rich LaTeX Math Renderer */}
+                    <div className="text-slate-900 leading-relaxed font-medium mb-6 text-base sm:text-lg">
+                      <RichContentRenderer content={currentQuestion.question} />
+                    </div>
 
-                {/* Question Image if any */}
-                {currentQuestion.imageUrl && (
-                  <div className="mb-6 rounded-xl overflow-hidden border border-slate-200 max-w-lg">
-                    <img 
-                      src={currentQuestion.imageUrl} 
-                      alt="Minh họa câu hỏi" 
-                      className="w-full object-contain max-h-80 bg-slate-50"
-                    />
-                  </div>
+                    {/* Question Image if any */}
+                    {currentQuestion.imageUrl && (
+                      <div className="mb-6 rounded-xl overflow-hidden border border-slate-200 max-w-lg">
+                        <img 
+                          src={currentQuestion.imageUrl} 
+                          alt="Minh họa câu hỏi" 
+                          className="w-full object-contain max-h-80 bg-slate-50"
+                        />
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {/* Formats rendering */}
@@ -697,11 +833,17 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                       type="text"
                       value={typeof currentAnswers[currentQuestion.id] === 'string' ? (currentAnswers[currentQuestion.id] as string) : ''}
                       onChange={(e) => handleAnswerChange(e.target.value)}
-                      placeholder="Ví dụ: 3.5 hoặc -12 hoặc 7/2..."
+                      onBlur={(e) => {
+                        const formatted = formatShortAnswerDecimalComma(e.target.value);
+                        if (formatted !== e.target.value) {
+                          handleAnswerChange(formatted);
+                        }
+                      }}
+                      placeholder="Ví dụ: 3,5 hoặc 7/2..."
                       className="w-full px-4 py-3 text-base font-mono rounded-xl border border-slate-300 focus:outline-hidden focus:border-purple-600 focus:ring-2 focus:ring-purple-100"
                     />
                     <p className="text-xs text-slate-400">
-                      Điền số hoặc kết quả vào ô trống (dùng dấu chấm "." hoặc phẩy "," cho số thập phân).
+                      Điền số hoặc kết quả vào ô trống (viết số thập phân dưới dạng dấu phẩy &quot;,&quot;, ví dụ: 3,5).
                     </p>
                   </div>
                 )}
@@ -775,7 +917,13 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                                 type="text"
                                 value={typeof subAns === 'string' ? subAns : ''}
                                 onChange={(e) => handleSubAnsChange(e.target.value)}
-                                placeholder="Nhập đáp án ngắn..."
+                                onBlur={(e) => {
+                                  const formatted = formatShortAnswerDecimalComma(e.target.value);
+                                  if (formatted !== e.target.value) {
+                                    handleSubAnsChange(formatted);
+                                  }
+                                }}
+                                placeholder="Nhập đáp án ngắn (số thập phân dùng dấu phẩy, vd: 3,5)..."
                                 className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 focus:outline-hidden focus:border-purple-600 bg-white"
                               />
                             </div>
@@ -804,7 +952,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                 } else if (activeSubjectIndex > 0) {
                   // Jump to previous subject's last question
                   const prevSubjIdx = activeSubjectIndex - 1;
-                  const prevExam = electiveExams[prevSubjIdx];
+                  const prevExam = preparedElectiveExams[prevSubjIdx];
                   setActiveSubjectIndex(prevSubjIdx);
                   setSubjectQuestionIndices((prev) => ({
                     ...prev,
@@ -820,7 +968,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
 
             {/* Middle Quick Switcher Indicator */}
             <div className="text-xs text-slate-500 font-mono hidden sm:inline">
-              Môn {activeSubjectIndex + 1}/{electiveExams.length}: {currentExam.title} (Câu {currentIndex + 1}/{currentExam.questions.length})
+              Môn {activeSubjectIndex + 1}/{preparedElectiveExams.length}: {currentExam.title} (Câu {currentIndex + 1}/{currentExam.questions.length})
             </div>
 
             {/* Next button: handles both next question & next subject in cluster! */}
@@ -833,14 +981,14 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                 <span>Câu tiếp theo</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
-            ) : activeSubjectIndex < electiveExams.length - 1 ? (
+            ) : activeSubjectIndex < preparedElectiveExams.length - 1 ? (
               <button
                 type="button"
                 onClick={() => handleSwitchSubject(activeSubjectIndex + 1)}
                 className="py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold bg-amber-600 hover:bg-amber-500 text-white shadow-xs flex items-center gap-1.5 cursor-pointer"
                 title="Chuyển sang môn tiếp theo trong cụm tự chọn"
               >
-                <span>Chuyển sang môn: {electiveExams[activeSubjectIndex + 1].title}</span>
+                <span>Chuyển sang môn: {preparedElectiveExams[activeSubjectIndex + 1].title}</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
             ) : (
@@ -909,37 +1057,93 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
               </div>
             </div>
 
-            {/* Grid of question buttons */}
-            <div className="grid grid-cols-5 gap-2 max-h-64 overflow-y-auto p-1">
-              {filteredQuestions.map(({ q, idx }) => {
-                const val = currentAnswers[q.id];
-                const hasAnswer = val !== undefined && val !== null && val !== '' &&
-                  (!Array.isArray(val) || val.length > 0) &&
-                  (typeof val !== 'object' || Array.isArray(val) || Object.keys(val).length > 0);
-                const isFlag = Boolean(currentFlagged[q.id]);
-                const isCurrent = idx === currentIndex;
+            {/* Grid of question buttons (Grouped by Question-Type Cluster when enabled) */}
+            {isCurrentExamGrouped && currentQuestionClusters.length > 0 ? (
+              <div className="space-y-3 max-h-64 overflow-y-auto p-1">
+                {currentQuestionClusters.map((cluster) => {
+                  const clusterFiltered = cluster.items.filter(({ question: q }) => {
+                    const val = currentAnswers[q.id];
+                    const hasAns = val !== undefined && val !== null && val !== '' &&
+                      (!Array.isArray(val) || val.length > 0) &&
+                      (typeof val !== 'object' || Array.isArray(val) || Object.keys(val).length > 0);
+                    const isFlag = Boolean(currentFlagged[q.id]);
+                    if (filterMode === 'unanswered') return !hasAns;
+                    if (filterMode === 'flagged') return isFlag;
+                    return true;
+                  });
+                  if (clusterFiltered.length === 0) return null;
+                  return (
+                    <div key={`${cluster.type}_${cluster.partIndex}`} className="space-y-1.5">
+                      <div className="flex items-center justify-between px-2 py-1 rounded bg-indigo-50 border border-indigo-200 text-[10px] font-bold text-indigo-900">
+                        <span>Phần {cluster.roman}: {cluster.shortLabel}</span>
+                        <span className="font-mono">{cluster.items.length} câu</span>
+                      </div>
+                      <div className="grid grid-cols-5 gap-2">
+                        {clusterFiltered.map(({ question: q, flatIndex: idx }) => {
+                          const val = currentAnswers[q.id];
+                          const hasAnswer = val !== undefined && val !== null && val !== '' &&
+                            (!Array.isArray(val) || val.length > 0) &&
+                            (typeof val !== 'object' || Array.isArray(val) || Object.keys(val).length > 0);
+                          const isFlag = Boolean(currentFlagged[q.id]);
+                          const isCurrent = idx === currentIndex;
 
-                return (
-                  <button
-                    key={q.id}
-                    type="button"
-                    onClick={() => handleSetCurrentIndex(idx)}
-                    className={`h-9 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer relative border ${
-                      isCurrent
-                        ? 'ring-2 ring-purple-600 border-purple-600 bg-purple-50 text-purple-950 font-extrabold'
-                        : hasAnswer
-                          ? 'bg-purple-600 text-white border-purple-700 shadow-2xs'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                    }`}
-                  >
-                    <span>{idx + 1}</span>
-                    {isFlag && (
-                      <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-500 ring-1 ring-white" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+                          return (
+                            <button
+                              key={q.id}
+                              type="button"
+                              onClick={() => handleSetCurrentIndex(idx)}
+                              className={`h-9 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer relative border ${
+                                isCurrent
+                                  ? 'ring-2 ring-purple-600 border-purple-600 bg-purple-50 text-purple-950 font-extrabold'
+                                  : hasAnswer
+                                    ? 'bg-purple-600 text-white border-purple-700 shadow-2xs'
+                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              <span>{idx + 1}</span>
+                              {isFlag && (
+                                <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-500 ring-1 ring-white" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="grid grid-cols-5 gap-2 max-h-64 overflow-y-auto p-1">
+                {filteredQuestions.map(({ q, idx }) => {
+                  const val = currentAnswers[q.id];
+                  const hasAnswer = val !== undefined && val !== null && val !== '' &&
+                    (!Array.isArray(val) || val.length > 0) &&
+                    (typeof val !== 'object' || Array.isArray(val) || Object.keys(val).length > 0);
+                  const isFlag = Boolean(currentFlagged[q.id]);
+                  const isCurrent = idx === currentIndex;
+
+                  return (
+                    <button
+                      key={q.id}
+                      type="button"
+                      onClick={() => handleSetCurrentIndex(idx)}
+                      className={`h-9 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer relative border ${
+                        isCurrent
+                          ? 'ring-2 ring-purple-600 border-purple-600 bg-purple-50 text-purple-950 font-extrabold'
+                          : hasAnswer
+                            ? 'bg-purple-600 text-white border-purple-700 shadow-2xs'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span>{idx + 1}</span>
+                      {isFlag && (
+                        <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-500 ring-1 ring-white" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Quick legend */}
             <div className="flex items-center justify-between text-[10px] text-slate-500 pt-3 border-t border-slate-100 mt-3 flex-wrap gap-2">
@@ -1152,6 +1356,52 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
           </div>
         </div>
       )}
+
+      {/* Lockdown Notice Modal */}
+      {isLockdownNoticeOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 text-center shadow-2xl border-2 border-purple-500 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center mx-auto">
+              <Lock className="w-7 h-7" />
+            </div>
+            <h3 className="text-base font-extrabold text-slate-900">
+              Phòng thi đang khóa toàn màn hình!
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Tổ hợp thi này đang bật chế độ khóa toàn màn hình cho đến khi hết giờ hoặc hoàn tất nộp bài.
+            </p>
+            <button
+              type="button"
+              onClick={() => setIsLockdownNoticeOpen(false)}
+              className="w-full py-2.5 px-4 rounded-xl text-xs font-bold bg-purple-700 hover:bg-purple-800 text-white transition-colors cursor-pointer"
+            >
+              Tiếp tục làm bài
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Fullscreen Kiosk Room Lock Enforcement */}
+      <RoomLockGuard
+        active={isRoomLockActive}
+        title={bundle.title}
+        subtitle={
+          candidateName
+            ? `Thí sinh: ${candidateName}${studentCode ? ` (${studentCode})` : ''}`
+            : undefined
+        }
+        remainingLabel={timeFormatted}
+      />
+
+      <ConfirmModal
+        isOpen={isExitConfirmOpen}
+        title="Xác nhận thoát bài thi"
+        message="Bạn có chắc muốn thoát buổi thi cụm tự chọn?"
+        confirmText="Rời phòng thi"
+        cancelText="Tiếp tục làm bài"
+        onConfirm={onExit}
+        onClose={() => setIsExitConfirmOpen(false)}
+      />
 
     </div>
   );

@@ -1,9 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Question, QuestionType, TrueFalseItem, TrueFalseScoringMode } from '../types/exam';
+import {
+  MatchingItem,
+  MatchingLabelStyle,
+  Question,
+  QuestionType,
+  TrueFalseItem,
+  TrueFalseScoringMode,
+} from '../types/exam';
 import { X, Save, Trash2, Plus, Sparkles, Image as ImageIcon, Upload, Eye } from 'lucide-react';
 import { MathToolbar } from './MathToolbar';
 import { RichContentRenderer } from './RichContentRenderer';
+import { MatchingQuestionEditor } from './MatchingQuestionEditor';
 import { processImageFile } from '../utils/imageUpload';
+import { formatShortAnswerDecimalComma, parseAcceptedShortAnswers } from '../utils/scoring';
+import { CopyContentButton } from './CopyContentButton';
+import { formatQuestionForCopy } from '../utils/clipboard';
 
 interface QuickQuestionEditorModalProps {
   isOpen: boolean;
@@ -20,32 +31,47 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
   onDelete,
   onClose,
 }) => {
-  if (!isOpen || !question) return null;
-
-  const [qText, setQText] = useState(question.question);
-  const [imageUrl, setImageUrl] = useState(question.imageUrl || '');
-  const [points, setPoints] = useState(question.points || 1.0);
-  const [topic, setTopic] = useState(question.topic || '');
-  const [explanation, setExplanation] = useState(question.explanation || '');
-  const [options, setOptions] = useState<string[]>(question.options ? [...question.options] : []);
+  const modalBodyRef = React.useRef<HTMLDivElement>(null);
+  const [qText, setQText] = useState(question?.question || '');
+  const [imageUrl, setImageUrl] = useState(question?.imageUrl || '');
+  const [points, setPoints] = useState(question?.points || 1.0);
+  const [topic, setTopic] = useState(question?.topic || '');
+  const [explanation, setExplanation] = useState(question?.explanation || '');
+  const [sampleAnswer, setSampleAnswer] = useState(question?.sampleAnswer || '');
+  const [options, setOptions] = useState<string[]>(question?.options ? [...question.options] : []);
   const [optionImages, setOptionImages] = useState<(string | undefined)[]>(
-    question.optionImages ? [...question.optionImages] : []
+    question?.optionImages ? [...question.optionImages] : []
   );
-  const [correctAnswer, setCorrectAnswer] = useState(question.correctAnswer ?? 0);
+  const [correctAnswer, setCorrectAnswer] = useState(question?.correctAnswer ?? 0);
   const [tfItems, setTfItems] = useState<TrueFalseItem[]>(
-    question.tfItems ? JSON.parse(JSON.stringify(question.tfItems)) : []
+    question?.tfItems ? JSON.parse(JSON.stringify(question.tfItems)) : []
   );
   const [tfScoringMode, setTfScoringMode] = useState<TrueFalseScoringMode>(
-    question.tfScoringMode || 'standard_ministry'
+    question?.tfScoringMode || 'standard_ministry'
   );
   const [tfTierPoints, setTfTierPoints] = useState<number[]>(
-    question.tfTierPoints || [0.1, 0.25, 0.5, 1.0]
+    question?.tfTierPoints || [0.1, 0.25, 0.5, 1.0]
   );
   const [acceptedAnswers, setAcceptedAnswers] = useState<string[]>(
-    question.acceptedAnswers ? [...question.acceptedAnswers] : ['']
+    question?.acceptedAnswers ? [...question.acceptedAnswers] : ['']
   );
   const [subQuestions, setSubQuestions] = useState<Question[]>(
-    question.subQuestions ? JSON.parse(JSON.stringify(question.subQuestions)) : []
+    question?.subQuestions ? JSON.parse(JSON.stringify(question.subQuestions)) : []
+  );
+  const [matchingLeftLabelStyle, setMatchingLeftLabelStyle] = useState<MatchingLabelStyle>(
+    question?.matchingLeftLabelStyle || 'number'
+  );
+  const [matchingRightLabelStyle, setMatchingRightLabelStyle] = useState<MatchingLabelStyle>(
+    question?.matchingRightLabelStyle || 'upper_alpha'
+  );
+  const [matchingLeftItems, setMatchingLeftItems] = useState<MatchingItem[]>(
+    question?.matchingLeftItems ? JSON.parse(JSON.stringify(question.matchingLeftItems)) : []
+  );
+  const [matchingRightItems, setMatchingRightItems] = useState<MatchingItem[]>(
+    question?.matchingRightItems ? JSON.parse(JSON.stringify(question.matchingRightItems)) : []
+  );
+  const [matchingCorrectPairs, setMatchingCorrectPairs] = useState<{ [leftId: string]: string }>(
+    question?.matchingCorrectPairs ? { ...question.matchingCorrectPairs } : {}
   );
   const [activeOptImgEdit, setActiveOptImgEdit] = useState<number | null>(null);
   const [activeSubOptImgEdit, setActiveSubOptImgEdit] = useState<{ subIdx: number; optIdx: number } | null>(null);
@@ -54,12 +80,25 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
   const [savedSuccessToast, setSavedSuccessToast] = useState<string | null>(null);
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
+  const lastInitializedKeyRef = React.useRef<string>('');
+
   useEffect(() => {
+    if (!isOpen || !question) {
+      lastInitializedKeyRef.current = '';
+      return;
+    }
+    const initKey = `${question.id}`;
+    if (lastInitializedKeyRef.current === initKey) {
+      // Tránh ghi đè nội dung đang soạn thảo khi component cha re-render hoặc đồng bộ nền
+      return;
+    }
+    lastInitializedKeyRef.current = initKey;
     setQText(question.question);
     setImageUrl(question.imageUrl || '');
     setPoints(question.points || 1.0);
     setTopic(question.topic || '');
     setExplanation(question.explanation || '');
+    setSampleAnswer(question.sampleAnswer || '');
     setOptions(question.options ? [...question.options] : []);
     setOptionImages(question.optionImages ? [...question.optionImages] : []);
     setCorrectAnswer(question.correctAnswer ?? 0);
@@ -68,12 +107,25 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
     setTfTierPoints(question.tfTierPoints || [0.1, 0.25, 0.5, 1.0]);
     setAcceptedAnswers(question.acceptedAnswers ? [...question.acceptedAnswers] : ['']);
     setSubQuestions(question.subQuestions ? JSON.parse(JSON.stringify(question.subQuestions)) : []);
+    setMatchingLeftLabelStyle(question.matchingLeftLabelStyle || 'number');
+    setMatchingRightLabelStyle(question.matchingRightLabelStyle || 'upper_alpha');
+    setMatchingLeftItems(
+      question.matchingLeftItems ? JSON.parse(JSON.stringify(question.matchingLeftItems)) : []
+    );
+    setMatchingRightItems(
+      question.matchingRightItems ? JSON.parse(JSON.stringify(question.matchingRightItems)) : []
+    );
+    setMatchingCorrectPairs(
+      question.matchingCorrectPairs ? { ...question.matchingCorrectPairs } : {}
+    );
     setActiveOptImgEdit(null);
     setActiveSubOptImgEdit(null);
     setErrorMessage(null);
     setSavedSuccessToast(null);
     setIsConfirmingDelete(false);
-  }, [question]);
+  }, [isOpen, question]);
+
+  if (!isOpen || !question) return null;
 
   const handleFileUploadMainImage = async (file: File) => {
     if (!file) return;
@@ -148,9 +200,30 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
       tfTierPoints: question.type === 'true_false' ? tfTierPoints : question.tfTierPoints,
       acceptedAnswers:
         question.type === 'text_input'
-          ? acceptedAnswers.map((a) => a.trim()).filter(Boolean)
+          ? parseAcceptedShortAnswers(acceptedAnswers.join('; '))
           : question.acceptedAnswers,
-      subQuestions: question.type === 'grouped' ? subQuestions : question.subQuestions,
+      sampleAnswer: question.type === 'essay' ? sampleAnswer.trim() || undefined : question.sampleAnswer,
+      matchingLeftLabelStyle:
+        question.type === 'matching' ? matchingLeftLabelStyle : question.matchingLeftLabelStyle,
+      matchingRightLabelStyle:
+        question.type === 'matching' ? matchingRightLabelStyle : question.matchingRightLabelStyle,
+      matchingLeftItems:
+        question.type === 'matching' ? matchingLeftItems : question.matchingLeftItems,
+      matchingRightItems:
+        question.type === 'matching' ? matchingRightItems : question.matchingRightItems,
+      matchingCorrectPairs:
+        question.type === 'matching' ? matchingCorrectPairs : question.matchingCorrectPairs,
+      subQuestions:
+        question.type === 'grouped'
+          ? subQuestions.map((sub) =>
+              sub.type === 'text_input'
+                ? {
+                    ...sub,
+                    acceptedAnswers: parseAcceptedShortAnswers((sub.acceptedAnswers || []).join('; ')),
+                  }
+                : sub
+            )
+          : question.subQuestions,
     };
   };
 
@@ -188,32 +261,69 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
               Bạn có toàn quyền viết lại, sửa công thức, đổi phương án đúng hoặc xóa câu này
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <CopyContentButton
+              compact
+              label="Sao chép cả câu"
+              getText={() =>
+                formatQuestionForCopy({
+                  ...question,
+                  question: qText,
+                  imageUrl: imageUrl.trim() || undefined,
+                  options: question.type === 'single_choice' ? options : question.options,
+                  correctAnswer: question.type === 'single_choice' ? correctAnswer : question.correctAnswer,
+                  tfItems: question.type === 'true_false' ? tfItems : question.tfItems,
+                  acceptedAnswers:
+                    question.type === 'text_input'
+                      ? acceptedAnswers.filter((a) => a.trim())
+                      : question.acceptedAnswers,
+                  sampleAnswer: question.type === 'essay' ? sampleAnswer : question.sampleAnswer,
+                  matchingLeftItems: question.type === 'matching' ? matchingLeftItems : question.matchingLeftItems,
+                  matchingRightItems: question.type === 'matching' ? matchingRightItems : question.matchingRightItems,
+                  subQuestions: question.type === 'grouped' ? subQuestions : question.subQuestions,
+                  explanation,
+                })
+              }
+            />
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Body */}
-        <div className="p-4 sm:p-6 space-y-5 flex-1">
+        <div ref={modalBodyRef} className="p-4 sm:p-6 space-y-5 flex-1">
           {/* Question text */}
           <div>
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
               <label className="text-xs font-bold text-slate-700">
                 Nội dung câu hỏi (Hỗ trợ KaTeX Math $\LaTeX$)
               </label>
-              <button
-                type="button"
-                onClick={() => setPreview(!preview)}
-                className="text-xs font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
-              >
-                {preview ? 'Ẩn xem trước' : 'Xem trước hiển thị'}
-              </button>
+              <div className="flex items-center gap-2">
+                <CopyContentButton compact getText={() => qText} />
+                <button
+                  type="button"
+                  onClick={() => setPreview(!preview)}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
+                >
+                  {preview ? 'Ẩn xem trước' : 'Xem trước hiển thị'}
+                </button>
+              </div>
             </div>
 
-            <MathToolbar onInsert={(latex) => setQText((prev) => prev + latex)} />
+            <MathToolbar
+              containerRef={modalBodyRef}
+              onInsert={(latex) => {
+                setQText((prev) => {
+                  const isBlock = latex.trim().startsWith('|') || latex.includes('\n');
+                  return prev ? (isBlock ? `${prev}\n${latex}` : `${prev} ${latex}`) : latex;
+                });
+                setPreview(true);
+              }}
+            />
 
             <textarea
               rows={4}
@@ -310,7 +420,7 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
                 type="text"
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
-                placeholder="VD: Khảo sát hàm số, Hình không gian..."
+                placeholder="Nhập chuyên đề / dạng bài..."
                 className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
               />
             </div>
@@ -655,18 +765,50 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
           {question.type === 'text_input' && (
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                Các đáp án chấp nhận (cách nhau bởi dấu phẩy):
+                Các đáp án chấp nhận (số thập phân dùng dấu phẩy &quot;,&quot;, ngăn cách bằng dấu chấm phẩy &quot;;&quot;):
               </label>
               <input
                 type="text"
-                value={acceptedAnswers.join(', ')}
+                value={acceptedAnswers.map((s) => formatShortAnswerDecimalComma(s)).join('; ')}
                 onChange={(e) =>
-                  setAcceptedAnswers(e.target.value.split(',').map((s) => s.trim()))
+                  setAcceptedAnswers(e.target.value.split(';').map((s) => s.trim()))
                 }
-                placeholder="VD: 5, 5.0, 10/2"
-                className="w-full px-3 py-2 text-xs sm:text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
+                onBlur={(e) => setAcceptedAnswers(parseAcceptedShortAnswers(e.target.value))}
+                placeholder="Ví dụ: 3,5; 7/2; -1,25"
+                className="w-full px-3 py-2 text-xs sm:text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 font-mono"
               />
             </div>
+          )}
+
+          {question.type === 'matching' && (
+            <MatchingQuestionEditor
+              question={{
+                ...question,
+                matchingLeftLabelStyle,
+                matchingRightLabelStyle,
+                matchingLeftItems,
+                matchingRightItems,
+                matchingCorrectPairs,
+              }}
+              onChange={(fields) => {
+                if (fields.matchingLeftLabelStyle !== undefined) {
+                  setMatchingLeftLabelStyle(fields.matchingLeftLabelStyle);
+                }
+                if (fields.matchingRightLabelStyle !== undefined) {
+                  setMatchingRightLabelStyle(fields.matchingRightLabelStyle);
+                }
+                if (fields.matchingLeftItems !== undefined) {
+                  setMatchingLeftItems(fields.matchingLeftItems);
+                }
+                if (fields.matchingRightItems !== undefined) {
+                  setMatchingRightItems(fields.matchingRightItems);
+                }
+                if (fields.matchingCorrectPairs !== undefined) {
+                  setMatchingCorrectPairs(fields.matchingCorrectPairs);
+                }
+              }}
+              idPrefix={question.id}
+            />
           )}
 
           {question.type === 'grouped' && (
@@ -1045,26 +1187,34 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
                 {/* Format B: Short answer (Trả lời ngắn) */}
                 {subQ.type === 'text_input' && (
                   <div className="p-3 bg-purple-50/70 rounded-xl border border-purple-200 space-y-2">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-1">
                       <label className="text-xs font-bold text-purple-950">
-                        Các đáp án được chấp nhận (cách nhau bởi dấu phẩy):
+                        Các đáp án được chấp nhận (ngăn cách bởi dấu chấm phẩy &quot;;&quot;):
                       </label>
                       <span className="text-[11px] text-purple-700 font-medium">
-                        Tự động chuẩn hóa dấu phẩy/chấm và chữ hoa/thường
+                        Số thập phân dùng dấu phẩy (vd: 3,5)
                       </span>
                     </div>
                     <input
                       type="text"
-                      value={(subQ.acceptedAnswers || []).join(', ')}
+                      value={(subQ.acceptedAnswers || []).map((s) => formatShortAnswerDecimalComma(s)).join('; ')}
                       onChange={(e) => {
                         const nextSubs = [...subQuestions];
                         nextSubs[sIdx] = {
                           ...nextSubs[sIdx],
-                          acceptedAnswers: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                          acceptedAnswers: e.target.value.split(';').map((s) => s.trim()),
                         };
                         setSubQuestions(nextSubs);
                       }}
-                      placeholder="Ví dụ: 3.14, 22/7, pi, x=2, BaCl2"
+                      onBlur={(e) => {
+                        const nextSubs = [...subQuestions];
+                        nextSubs[sIdx] = {
+                          ...nextSubs[sIdx],
+                          acceptedAnswers: parseAcceptedShortAnswers(e.target.value),
+                        };
+                        setSubQuestions(nextSubs);
+                      }}
+                      placeholder="Ví dụ: 3,5; 7/2"
                       className="w-full px-3 py-2 text-xs font-mono bg-white border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600"
                     />
                     <p className="text-[11px] text-slate-500">
@@ -1077,11 +1227,32 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
             </div>
           )}
 
+          {question.type === 'essay' && (
+            <div className="p-3.5 bg-cyan-50/50 border border-cyan-200 rounded-xl space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <label className="block text-xs font-bold text-cyan-950">
+                  Đáp án tham khảo / Gợi ý chấm điểm tự luận (Tùy chọn)
+                </label>
+                <CopyContentButton compact getText={() => sampleAnswer} />
+              </div>
+              <textarea
+                rows={3}
+                value={sampleAnswer}
+                onChange={(e) => setSampleAnswer(e.target.value)}
+                placeholder="Nhập đáp án mẫu hoặc biểu điểm gợi ý..."
+                className="w-full p-2.5 text-xs bg-white border border-cyan-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-600 font-mono"
+              />
+            </div>
+          )}
+
           {/* Explanation */}
           <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1">
-              Lời giải chi tiết
-            </label>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label className="block text-xs font-bold text-slate-700">
+                Lời giải chi tiết
+              </label>
+              <CopyContentButton compact getText={() => explanation} />
+            </div>
             <textarea
               rows={3}
               value={explanation}

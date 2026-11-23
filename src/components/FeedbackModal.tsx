@@ -226,7 +226,7 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({
                         type="text"
                         value={userName}
                         onChange={(e) => setUserName(e.target.value)}
-                        placeholder="VD: Thầy Nam / Em Lan"
+                        placeholder="Nhập họ và tên của bạn..."
                         className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600"
                       />
                     </div>

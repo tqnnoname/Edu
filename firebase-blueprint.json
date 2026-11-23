@@ -1,0 +1,1562 @@
+{
+  "entities": {
+    "TestConnection": {
+      "title": "TestConnection",
+      "description": "Read-only connection probe document for verifying Firestore connectivity on startup.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "Whether connection check succeeded."
+        },
+        "checkedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Timestamp string of connection probe."
+        }
+      },
+      "required": ["ok"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "EduTest user account record isolated per user or Master Admin.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "role": {
+          "type": "string",
+          "enum": ["student", "teacher"]
+        },
+        "isMasterAdmin": {
+          "type": "boolean"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "school": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "studentCode": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "avatar": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "isGoogleAuth": {
+          "type": "boolean"
+        },
+        "legacyUserIds": {
+          "type": "array"
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "uid", "email", "username", "fullName", "role", "updatedAt"]
+    },
+    "AccountLookupDoc": {
+      "title": "AccountLookupDoc",
+      "description": "SHA-256 hash-keyed username/email index pointing to unified users/{uid} email without storing credentials.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(email|uname)_[a-f0-9]{64}$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["email", "username"]
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "type", "userId", "updatedAt"]
+    },
+    "QuestionDoc": {
+      "title": "QuestionDoc",
+      "description": "Standalone question bank document.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "creatorUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "updatedAt"]
+    },
+    "ExamDoc": {
+      "title": "ExamDoc",
+      "description": "Custom exam with native question objects, visibility controls, and classroom access lists.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "grade": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "durationMinutes": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "settings": {
+          "type": "object"
+        },
+        "parts": {
+          "type": "array",
+          "description": "Exam parts / sections definition."
+        },
+        "attachedFile": {
+          "type": "object",
+          "description": "Integrated source exam document metadata and dataUrl/url."
+        },
+        "questions": {
+          "type": "array",
+          "description": "Up to 300 structured question maps."
+        },
+        "totalQuestions": {
+          "type": "number"
+        },
+        "totalPoints": {
+          "type": "number"
+        },
+        "isCustom": {
+          "type": "boolean"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public", "exam_only", "private", "class", "bundle_only"]
+        },
+        "assignedClassId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "assignedClassName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "allowedEmails": {
+          "type": "array",
+          "description": "Normalized list of permitted student/teacher emails for class exams."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "scheduled", "open", "closed", "published"]
+        },
+        "openTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "closeTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "modeType": {
+          "type": "string",
+          "enum": ["both", "exam_only", "practice_only"]
+        },
+        "maxAttempts": {
+          "type": "number"
+        },
+        "maxTabSwitches": {
+          "type": "number"
+        },
+        "allowCopy": {
+          "type": "boolean"
+        },
+        "showAnswersAfterExam": {
+          "type": "boolean"
+        },
+        "showOnlyStudentAnswersAfterExam": {
+          "type": "boolean"
+        },
+        "showLiveScoreDuringExam": {
+          "type": "boolean"
+        },
+        "showScoreAfterExam": {
+          "type": "boolean"
+        },
+        "examCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "randomQuestionCount": {
+          "type": "number"
+        },
+        "lockExitUntilTimeout": {
+          "type": "boolean"
+        },
+        "minSubmitMinutes": {
+          "type": "number"
+        },
+        "requireAccessCode": {
+          "type": "boolean"
+        },
+        "accessSecurityCode": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "accessMode": {
+          "type": "string",
+          "enum": ["direct_and_code", "code_only"]
+        },
+        "teacherMode": {
+          "type": "string",
+          "enum": ["normal", "creator", "grading", "presenting"]
+        },
+        "isCreatorOnlyMode": {
+          "type": "boolean"
+        },
+        "isOfficialClassExam": {
+          "type": "boolean"
+        },
+        "preExamLockMinutes": {
+          "type": "number"
+        },
+        "allowExitAfterSubmit": {
+          "type": "boolean"
+        },
+        "creatorId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "creatorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "creatorEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "creatorName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "subject", "questions", "visibility", "status", "creatorUid", "creatorEmail", "createdAt", "updatedAt"]
+    },
+    "BundleDoc": {
+      "title": "BundleDoc",
+      "description": "Multi-subject exam bundle definition.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "bundleCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "breakMinutes": {
+          "type": "number"
+        },
+        "intermissionMinutes": {
+          "type": "number"
+        },
+        "examIds": {
+          "type": "array"
+        },
+        "selectionMode": {
+          "type": "string",
+          "enum": ["all_compulsory", "has_electives"]
+        },
+        "timingMode": {
+          "type": "string",
+          "enum": ["compulsory_seq_elective_cluster_max", "all_sequential_independent"]
+        },
+        "compulsoryExamIds": {
+          "type": "array"
+        },
+        "electiveGroups": {
+          "type": "array"
+        },
+        "minGroupsToSelect": {
+          "type": "number"
+        },
+        "maxGroupsToSelect": {
+          "type": "number"
+        },
+        "selectionTimeLimitSeconds": {
+          "type": "number"
+        },
+        "randomQuestionCountPerExam": {
+          "type": "object"
+        },
+        "openTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "closeTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "scheduled", "open", "closed", "published"]
+        },
+        "maxAttempts": {
+          "type": "number"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public", "exam_only", "private", "class", "bundle_only"]
+        },
+        "assignedClassId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "assignedClassName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "allowedEmails": {
+          "type": "array"
+        },
+        "accessMode": {
+          "type": "string",
+          "enum": ["direct_and_code", "code_only"]
+        },
+        "lockExitUntilTimeout": {
+          "type": "boolean"
+        },
+        "showScoreAfterExam": {
+          "type": "boolean"
+        },
+        "showAnswersAfterExam": {
+          "type": "boolean"
+        },
+        "showOnlyStudentAnswersAfterExam": {
+          "type": "boolean"
+        },
+        "minSubmitMinutes": {
+          "type": "number"
+        },
+        "requireAccessCode": {
+          "type": "boolean"
+        },
+        "accessSecurityCode": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "allowCopy": {
+          "type": "boolean"
+        },
+        "maxTabSwitches": {
+          "type": "number"
+        },
+        "sections": {
+          "type": "array"
+        },
+        "isCustom": {
+          "type": "boolean"
+        },
+        "creatorId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "creatorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "creatorEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "creatorName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "examIds", "visibility", "status", "creatorUid", "creatorEmail", "createdAt", "updatedAt"]
+    },
+    "CourseDoc": {
+      "title": "CourseDoc",
+      "description": "Micro-course containing chapters, lessons, blocks, and SCORM metadata.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "grade": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "instructor": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "chapters": {
+          "type": "array"
+        },
+        "lessons": {
+          "type": "array"
+        },
+        "finalExamId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "finalExamTitle": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "scheduled", "open", "closed", "published"]
+        },
+        "openTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "closeTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public", "exam_only", "private", "class", "bundle_only"]
+        },
+        "assignedClassId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "assignedClassName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "allowedEmails": {
+          "type": "array"
+        },
+        "creatorId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "creatorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "creatorEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "creatorName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "isScormEnabled": {
+          "type": "boolean"
+        },
+        "scormVersion": {
+          "type": "string",
+          "enum": ["1.2", "2004"]
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "subject", "visibility", "status", "creatorUid", "creatorEmail", "createdAt", "updatedAt"]
+    },
+    "ClassroomDoc": {
+      "title": "ClassroomDoc",
+      "description": "Classroom record owned by a teacher with explicit member email allowlist.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "grade": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "teacherId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "teacherUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "teacherName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "teacherEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "students": {
+          "type": "array"
+        },
+        "memberEmails": {
+          "type": "array"
+        },
+        "pendingRequests": {
+          "type": "array"
+        },
+        "assignedExamIds": {
+          "type": "array"
+        },
+        "assignedCourseIds": {
+          "type": "array"
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "code", "teacherUid", "teacherEmail", "students", "assignedExamIds", "createdAt", "updatedAt"]
+    },
+    "ClassroomCodeIndex": {
+      "title": "ClassroomCodeIndex",
+      "description": "Publicly queryable non-PII lookup index mapping classroom code to classroomId for join requests.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "classroomId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "className": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "teacherUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "teacherEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "teacherName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["code", "classroomId", "className", "teacherUid", "teacherEmail", "createdAt", "updatedAt"]
+    },
+    "ClassJoinRequestDoc": {
+      "title": "ClassJoinRequestDoc",
+      "description": "Subcollection join request under a classroom.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "classId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "className": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "classCode": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "studentUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "studentEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "studentCode": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "classId", "studentUid", "studentId", "studentName", "studentEmail", "status", "createdAt", "updatedAt"]
+    },
+    "ExamResultDoc": {
+      "title": "ExamResultDoc",
+      "description": "Student exam attempt result record.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "examId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "examTitle": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "subject": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "grade": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "studentUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "userEmail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "teacherEmail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "studentName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "studentCode": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "classId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "className": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "earnedPoints": {
+          "type": "number"
+        },
+        "totalPoints": {
+          "type": "number"
+        },
+        "scoreOnTenScale": {
+          "type": "number"
+        },
+        "score": {
+          "type": "number"
+        },
+        "percentage": {
+          "type": "number"
+        },
+        "correctCount": {
+          "type": "number"
+        },
+        "partialCount": {
+          "type": "number"
+        },
+        "wrongCount": {
+          "type": "number"
+        },
+        "skippedCount": {
+          "type": "number"
+        },
+        "totalQuestions": {
+          "type": "number"
+        },
+        "timeSpentSeconds": {
+          "type": "number"
+        },
+        "totalDurationSeconds": {
+          "type": "number"
+        },
+        "completedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "examCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "submissionReason": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "tabSwitchCount": {
+          "type": "number"
+        },
+        "answers": {
+          "type": "object"
+        },
+        "questions": {
+          "type": "array"
+        },
+        "scoreDetails": {
+          "type": "object"
+        },
+        "topicBreakdown": {
+          "type": "object"
+        },
+        "partBreakdowns": {
+          "type": "array"
+        },
+        "showScoreAfterExam": {
+          "type": "boolean"
+        },
+        "showAnswersAfterExam": {
+          "type": "boolean"
+        },
+        "showOnlyStudentAnswersAfterExam": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "examId", "examTitle", "studentUid", "userEmail", "score", "completedAt", "createdAt", "updatedAt"]
+    },
+    "CourseProgressDoc": {
+      "title": "CourseProgressDoc",
+      "description": "Student granular SCORM and lesson progress in a course.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "courseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "studentUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "studentEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "teacherEmail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "completedLessonIds": {
+          "type": "array"
+        },
+        "completedBlockIds": {
+          "type": "array"
+        },
+        "currentChapterId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "currentLessonId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "currentBlockIdsByLesson": {
+          "type": "object"
+        },
+        "interactiveAnswers": {
+          "type": "object"
+        },
+        "completedExamIds": {
+          "type": "array"
+        },
+        "scormData": {
+          "type": "object"
+        },
+        "lastStudiedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "courseId", "studentId", "studentUid", "studentEmail", "completedLessonIds", "lastStudiedAt", "createdAt", "updatedAt"]
+    },
+    "ClassroomHomeworkDoc": {
+      "title": "ClassroomHomeworkDoc",
+      "description": "Homework assignment created inside a classroom.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "classId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 20000
+        },
+        "attachments": {
+          "type": "array"
+        },
+        "openTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "closeTime": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "maxScore": {
+          "type": "number"
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "teacherUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "teacherEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "allowedEmails": {
+          "type": "array"
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "classId", "title", "teacherUid", "teacherEmail", "createdAt", "updatedAt"]
+    },
+    "HomeworkSubmissionDoc": {
+      "title": "HomeworkSubmissionDoc",
+      "description": "Student homework submission with text/formula response, images, attachments, and teacher grading.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "classId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "homeworkId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "homeworkTitle": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "courseId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "courseTitle": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "lessonId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "lessonTitle": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "studentUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "studentEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "studentCode": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "teacherEmail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "imageUrls": {
+          "type": "array"
+        },
+        "attachments": {
+          "type": "array"
+        },
+        "textAnswer": {
+          "type": "string",
+          "maxLength": 50000
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "submittedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "score": {
+          "type": "number"
+        },
+        "maxScore": {
+          "type": "number"
+        },
+        "teacherFeedback": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "gradedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "gradedBy": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "studentUid", "studentId", "studentName", "studentEmail", "imageUrls", "submittedAt", "createdAt", "updatedAt"]
+    },
+    "TeacherRoleRequestDoc": {
+      "title": "TeacherRoleRequestDoc",
+      "description": "Request by a student account to be upgraded to teacher role.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "userEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "userName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "schoolName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "subject": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "reviewedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "reviewedBy": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "userUid", "userId", "userEmail", "userName", "status", "createdAt", "updatedAt"]
+    },
+    "FeedbackDoc": {
+      "title": "FeedbackDoc",
+      "description": "User feedback item.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "rating": {
+          "type": "number"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["ui", "exams", "feature", "bug", "general"]
+        },
+        "comments": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "userName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "userRole": {
+          "type": "string",
+          "enum": ["student", "teacher"]
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "authorUid", "rating", "category", "comments", "createdAt", "updatedAt"]
+    },
+    "SiteConfigDoc": {
+      "title": "SiteConfigDoc",
+      "description": "Non-PII global site configuration (subjects, navTabs, liveText, tombstones).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": ["subjects", "navTabs", "liveText", "tombstones"]
+        },
+        "items": {
+          "type": "array"
+        },
+        "overrides": {
+          "type": "object"
+        },
+        "deletedExamIds": {
+          "type": "array"
+        },
+        "deletedBundleIds": {
+          "type": "array"
+        },
+        "deletedClassroomIds": {
+          "type": "array"
+        },
+        "deletedCourseIds": {
+          "type": "array"
+        },
+        "deletedUserIds": {
+          "type": "array"
+        },
+        "deletedResultIds": {
+          "type": "array"
+        },
+        "deletedHomeworkIds": {
+          "type": "array"
+        },
+        "deletedClassroomHomeworkIds": {
+          "type": "array"
+        },
+        "deletedSubjectIds": {
+          "type": "array"
+        },
+        "deletedScoreboardIds": {
+          "type": "array"
+        },
+        "updatedById": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "createdAt", "updatedAt"]
+    },
+    "ScoreboardDoc": {
+      "title": "ScoreboardDoc",
+      "description": "Teacher-managed dynamic competition scoreboard supporting 1v1, group, and Top N modes with per-round scores and live reveal state.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["1v1", "group", "top_n"]
+        },
+        "topN": {
+          "type": "number"
+        },
+        "specialMode": {
+          "type": "string",
+          "enum": ["normal", "creator", "grading", "presenting"]
+        },
+        "classId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "className": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "rounds": {
+          "type": "array"
+        },
+        "participants": {
+          "type": "array"
+        },
+        "creatorId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "creatorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "creatorEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "creatorName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "mode", "specialMode", "rounds", "participants", "creatorUid", "creatorEmail", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/test/connection": {
+      "schema": { "$ref": "#/entities/TestConnection" },
+      "description": "Connection validation probe document."
+    },
+    "/accountLookups/{lookupId}": {
+      "schema": { "$ref": "#/entities/AccountLookupDoc" },
+      "description": "Deterministic SHA-256 lookup index for email, username, and password uniqueness without exposing user list."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Lightweight (<1KB) unified user profile keyed by Firebase Auth UID."
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "#/entities/ExamDoc" },
+      "description": "Exams collection supporting public discovery, creator ownership, and classroom access lists."
+    },
+    "/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/QuestionDoc" },
+      "description": "Standalone question items for authenticated authors and learners."
+    },
+    "/bundles/{bundleId}": {
+      "schema": { "$ref": "#/entities/BundleDoc" },
+      "description": "Exam bundles collection supporting public discovery, creator ownership, and classroom access lists."
+    },
+    "/courses/{courseId}": {
+      "schema": { "$ref": "#/entities/CourseDoc" },
+      "description": "Micro-courses collection with chapters, lessons, and blocks."
+    },
+    "/classrooms/{classroomId}": {
+      "schema": { "$ref": "#/entities/ClassroomDoc" },
+      "description": "Classrooms collection accessible to authenticated teachers, students, and Master Admin."
+    },
+    "/classrooms/{classroomId}/joinRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/ClassJoinRequestDoc" },
+      "description": "Subcollection of student requests to join a classroom."
+    },
+    "/joinRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/ClassJoinRequestDoc" },
+      "description": "Top-level join requests collection for classroom membership workflows."
+    },
+    "/classroomCodes/{code}": {
+      "schema": { "$ref": "#/entities/ClassroomCodeIndex" },
+      "description": "Lookup index mapping class codes to classroom metadata."
+    },
+    "/results/{resultId}": {
+      "schema": { "$ref": "#/entities/ExamResultDoc" },
+      "description": "Exam result records."
+    },
+    "/submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/HomeworkSubmissionDoc" },
+      "description": "Exam/homework submission records."
+    },
+    "/courseProgress/{progressId}": {
+      "schema": { "$ref": "#/entities/CourseProgressDoc" },
+      "description": "Granular SCORM course learning progress."
+    },
+    "/classroomHomeworks/{homeworkId}": {
+      "schema": { "$ref": "#/entities/ClassroomHomeworkDoc" },
+      "description": "Classroom homework assignments."
+    },
+    "/homeworkSubmissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/HomeworkSubmissionDoc" },
+      "description": "Student homework submissions."
+    },
+    "/teacherRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/TeacherRoleRequestDoc" },
+      "description": "Teacher role elevation requests."
+    },
+    "/feedbacks/{feedbackId}": {
+      "schema": { "$ref": "#/entities/FeedbackDoc" },
+      "description": "Application feedback submissions."
+    },
+    "/siteConfig/{configId}": {
+      "schema": { "$ref": "#/entities/SiteConfigDoc" },
+      "description": "Shared non-PII site metadata (subjects, navigation tabs, live text overrides, deletion tombstones)."
+    },
+    "/scoreboards/{scoreboardId}": {
+      "schema": { "$ref": "#/entities/ScoreboardDoc" },
+      "description": "Dynamic competition scoreboards managed by teachers."
+    }
+  }
+}

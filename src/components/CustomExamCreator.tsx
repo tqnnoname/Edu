@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Exam, Question, QuestionType, SubjectType, TrueFalseItem, TrueFalseScoringMode, ExamVisibility, ExamStatus } from '../types/exam';
+import type { UnsavedNavigationGuard } from './UnsavedChangesModal';
 import { 
   Plus, 
   Trash2, 
@@ -27,119 +28,389 @@ import {
   CopySlash,
   EyeClosed,
   CheckSquare,
-  Clock
+  Clock,
+  ArrowUp,
+  ArrowDown,
+  Copy,
+  CopyPlus,
+  FilePlus2,
+  Edit3
 } from 'lucide-react';
+import {
+  DEFAULT_QUESTION_TYPE_ORDER,
+  QUESTION_TYPE_CLUSTER_META,
+  formatAcceptedShortAnswersList,
+  formatShortAnswerDecimalComma,
+  formatTrueFalseScoringRule,
+  normalizeQuestionTypeOrder,
+  parseAcceptedShortAnswers,
+  toRomanNumeral,
+} from '../utils/scoring';
 import { MathToolbar } from './MathToolbar';
 import { RichContentRenderer } from './RichContentRenderer';
-import { getAllClassrooms, getAllSubjects, generate8DigitExamCode, saveCustomExam } from '../utils/storage';
+import { MatchingQuestionEditor } from './MatchingQuestionEditor';
+import { MatchingQuestionView } from './MatchingQuestionView';
+import { ExamPreviewModal } from './ExamPreviewModal';
+import { ImportQuestionsModal, cloneQuestionWithFreshIds } from './ImportQuestionsModal';
+import { createDefaultMatchingData } from '../utils/matching';
+import {
+  getAllClassrooms,
+  getAllSubjects,
+  generate8DigitExamCode,
+  saveCustomExam,
+  getCurrentUser,
+  getVisibleClassrooms,
+  syncClassAssignmentForItem,
+} from '../utils/storage';
 import { processImageFile } from '../utils/imageUpload';
+import { CopyContentButton } from './CopyContentButton';
+import { formatQuestionForCopy } from '../utils/clipboard';
+
+interface ExamCreatorDraftPayload {
+  title: string;
+  examCode: string;
+  randomQuestionCount: number;
+  subject: SubjectType;
+  isCustomSubject: boolean;
+  customSubjectName: string;
+  grade: string;
+  durationMinutes: number;
+  description: string;
+  instructions: string;
+  shuffleQuestions: boolean;
+  shuffleOptions: boolean;
+  groupByQuestionType: boolean;
+  questionTypeOrder: QuestionType[];
+  visibility: ExamVisibility;
+  assignedClassId: string;
+  status: ExamStatus;
+  openTime: string;
+  closeTime: string;
+  maxAttempts: number;
+  maxTabSwitches: number;
+  modeType: 'both' | 'exam_only' | 'practice_only';
+  allowCopy: boolean;
+  showAnswersAfterExam: boolean;
+  showLiveScoreDuringExam: boolean;
+  showScoreAfterExam: boolean;
+  lockExitUntilTimeout: boolean;
+  showOnlyStudentAnswersAfterExam: boolean;
+  minSubmitMinutes: number;
+  requireAccessCode: boolean;
+  accessSecurityCode: string;
+  teacherMode: 'normal' | 'creator' | 'grading' | 'presenting';
+  isOfficialClassExam: boolean;
+  preExamLockMinutes: number;
+  allowExitAfterSubmit: boolean;
+  activeTab: 'manual' | 'quickImport' | 'json';
+  questions: Question[];
+  rawText: string;
+  baselineSnapshot?: string;
+}
+
+function readExamCreatorDraft(draftKey: string): ExamCreatorDraftPayload | null {
+  try {
+    const raw = sessionStorage.getItem(draftKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.questions)) {
+      return parsed as ExamCreatorDraftPayload;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function sanitizeQuestionByActiveType(q: Question): Question {
+  const cleaned: Question = {
+    id: q.id,
+    type: q.type,
+    points: q.points,
+    question: q.question,
+    imageUrl: q.imageUrl,
+    explanation: q.explanation,
+    topic: q.topic,
+    difficulty: q.difficulty,
+    caseSensitive: q.caseSensitive,
+  };
+
+  if (q.type === 'single_choice' || q.type === 'multiple_choice') {
+    cleaned.options = q.options;
+    cleaned.optionImages = q.optionImages;
+    cleaned.correctAnswer = q.type === 'single_choice' ? q.correctAnswer : undefined;
+    cleaned.correctAnswers = q.type === 'multiple_choice' ? q.correctAnswers : undefined;
+  } else if (q.type === 'true_false') {
+    cleaned.tfItems = q.tfItems;
+    cleaned.tfScoringMode = q.tfScoringMode;
+    cleaned.tfTierPoints = q.tfTierPoints;
+  } else if (q.type === 'text_input') {
+    cleaned.acceptedAnswers = parseAcceptedShortAnswers((q.acceptedAnswers || []).join('; '));
+  } else if (q.type === 'essay') {
+    cleaned.sampleAnswer = q.sampleAnswer;
+  } else if (q.type === 'matching') {
+    cleaned.matchingLeftLabelStyle = q.matchingLeftLabelStyle;
+    cleaned.matchingRightLabelStyle = q.matchingRightLabelStyle;
+    cleaned.matchingLeftItems = q.matchingLeftItems;
+    cleaned.matchingRightItems = q.matchingRightItems;
+    cleaned.matchingCorrectPairs = q.matchingCorrectPairs;
+  } else if (q.type === 'grouped') {
+    cleaned.subQuestions = (q.subQuestions || []).map((sub) =>
+      sub.type === 'text_input'
+        ? {
+            ...sub,
+            acceptedAnswers: parseAcceptedShortAnswers((sub.acceptedAnswers || []).join('; ')),
+          }
+        : sub
+    );
+  }
+
+  return cleaned;
+}
+
+function genFreshQuestionId(prefix = 'q'): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+}
+
+function applyPreviousQuestionFormat(prevQ: Question, existingTarget?: Question): Question {
+  const newId = existingTarget?.id || genFreshQuestionId('q');
+  const next: Question = {
+    id: newId,
+    type: prevQ.type || 'single_choice',
+    points: prevQ.points || 1.0,
+    question: existingTarget?.question || '',
+    imageUrl: existingTarget?.imageUrl,
+    explanation: existingTarget?.explanation || '',
+    topic: existingTarget?.topic || prevQ.topic || '',
+    difficulty: prevQ.difficulty || 'medium',
+    caseSensitive: prevQ.caseSensitive,
+  };
+
+  if (next.type === 'single_choice' || next.type === 'multiple_choice') {
+    const optCount = Math.max(2, prevQ.options?.length || 4);
+    next.options = Array.from({ length: optCount }, () => '');
+    if (next.type === 'single_choice') {
+      next.correctAnswer = 0;
+    } else {
+      next.correctAnswers = [];
+    }
+  } else if (next.type === 'true_false') {
+    const count = Math.max(1, prevQ.tfItems?.length || 4);
+    next.tfScoringMode = prevQ.tfScoringMode || 'standard_ministry';
+    next.tfTierPoints = prevQ.tfTierPoints ? [...prevQ.tfTierPoints] : [0.1, 0.25, 0.5, 1.0];
+    next.tfItems = Array.from({ length: count }, (_, i) => ({
+      id: `${newId}_tf_${i}`,
+      statement: '',
+      isCorrect: prevQ.tfItems?.[i]?.isCorrect ?? (i % 2 === 0),
+      points: prevQ.tfItems?.[i]?.points,
+    }));
+  } else if (next.type === 'text_input') {
+    next.acceptedAnswers = [''];
+  } else if (next.type === 'essay') {
+    next.sampleAnswer = '';
+  } else if (next.type === 'matching') {
+    const leftCount = Math.max(1, prevQ.matchingLeftItems?.length || 3);
+    const rightCount = Math.max(leftCount, prevQ.matchingRightItems?.length || 4);
+    next.matchingLeftLabelStyle = prevQ.matchingLeftLabelStyle || 'number';
+    next.matchingRightLabelStyle = prevQ.matchingRightLabelStyle || 'upper_alpha';
+    next.matchingLeftItems = Array.from({ length: leftCount }, (_, i) => ({
+      id: `${newId}_L_${i}`,
+      content: '',
+    }));
+    next.matchingRightItems = Array.from({ length: rightCount }, (_, i) => ({
+      id: `${newId}_R_${i}`,
+      content: '',
+    }));
+    next.matchingCorrectPairs = {};
+  } else if (next.type === 'grouped') {
+    const subs = prevQ.subQuestions && prevQ.subQuestions.length > 0 ? prevQ.subQuestions : [];
+    next.subQuestions = subs.length > 0
+      ? subs.map((s, sIdx) => ({
+          ...applyPreviousQuestionFormat(s),
+          id: `${newId}_sub${sIdx}`,
+        }))
+      : [
+          {
+            id: `${newId}_sub0`,
+            type: 'single_choice',
+            points: 0.5,
+            question: '',
+            options: ['', '', '', ''],
+            correctAnswer: 0,
+            explanation: '',
+          },
+        ];
+  }
+
+  return next;
+}
 
 interface CustomExamCreatorProps {
   initialExam?: Exam | null;
   onSave: (exam: Exam) => void;
   onCancel: () => void;
+  onRegisterUnsavedGuard?: (guard: UnsavedNavigationGuard | null) => void;
 }
 
 export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
   initialExam,
   onSave,
   onCancel,
+  onRegisterUnsavedGuard,
 }) => {
   const isEditing = Boolean(initialExam);
-  const availableClassrooms = getAllClassrooms();
+  const currentUser = getCurrentUser();
+  const availableClassrooms = getVisibleClassrooms(getAllClassrooms(), currentUser);
   const availableSubjects = getAllSubjects();
 
-  const [title, setTitle] = useState(initialExam?.title || '');
+  const draftStorageKey = `edutest_exam_creator_draft_${initialExam?.id || 'new'}`;
+  const restoredDraftRef = useRef<ExamCreatorDraftPayload | null | undefined>(undefined);
+  if (restoredDraftRef.current === undefined) {
+    restoredDraftRef.current = readExamCreatorDraft(draftStorageKey);
+  }
+  const restoredDraft = restoredDraftRef.current;
+
+  const [title, setTitle] = useState(restoredDraft?.title ?? initialExam?.title ?? '');
   const [examCode, setExamCode] = useState<string>(
-    initialExam?.examCode || generate8DigitExamCode()
+    restoredDraft?.examCode ?? initialExam?.examCode ?? generate8DigitExamCode()
   );
   const [randomQuestionCount, setRandomQuestionCount] = useState<number>(
-    initialExam?.randomQuestionCount ?? 0
+    restoredDraft?.randomQuestionCount ?? initialExam?.randomQuestionCount ?? 0
   );
   const [savedQuestionBadgeIndex, setSavedQuestionBadgeIndex] = useState<number | null>(null);
 
-  const [subject, setSubject] = useState<SubjectType>(initialExam?.subject || 'math');
+  const [subject, setSubject] = useState<SubjectType>(
+    restoredDraft?.subject ?? initialExam?.subject ?? 'math'
+  );
   const [isCustomSubject, setIsCustomSubject] = useState<boolean>(() => {
+    if (restoredDraft) return restoredDraft.isCustomSubject;
     if (!initialExam?.subject) return false;
     return !availableSubjects.some((s) => s.id === initialExam.subject);
   });
   const [customSubjectName, setCustomSubjectName] = useState<string>(() => {
+    if (restoredDraft) return restoredDraft.customSubjectName;
     if (!initialExam?.subject) return '';
     return availableSubjects.some((s) => s.id === initialExam.subject) ? '' : initialExam.subject;
   });
 
-  const [grade, setGrade] = useState(initialExam?.grade || 'Lớp 12 / THPT Quốc Gia');
-  const [durationMinutes, setDurationMinutes] = useState(initialExam?.durationMinutes || 45);
-  const [description, setDescription] = useState(initialExam?.description || '');
+  const [grade, setGrade] = useState(restoredDraft?.grade ?? initialExam?.grade ?? '');
+  const [durationMinutes, setDurationMinutes] = useState(
+    restoredDraft?.durationMinutes ?? initialExam?.durationMinutes ?? 45
+  );
+  const [description, setDescription] = useState(
+    restoredDraft?.description ?? initialExam?.description ?? ''
+  );
   const [instructions, setInstructions] = useState(
-    initialExam?.instructions ||
-    'Thí sinh đọc kỹ đề bài trước khi làm. Được sử dụng máy tính bỏ túi và bảng nháp. Đối với câu trắc nghiệm Đúng/Sai, mỗi ý đúng được tính điểm riêng.'
+    restoredDraft?.instructions ?? initialExam?.instructions ?? ''
   );
   const [shuffleQuestions, setShuffleQuestions] = useState(
-    Boolean(initialExam?.settings?.shuffleQuestions)
+    restoredDraft?.shuffleQuestions ?? Boolean(initialExam?.settings?.shuffleQuestions)
   );
   const [shuffleOptions, setShuffleOptions] = useState(
-    Boolean(initialExam?.settings?.shuffleOptions)
+    restoredDraft?.shuffleOptions ?? Boolean(initialExam?.settings?.shuffleOptions)
+  );
+  const [groupByQuestionType, setGroupByQuestionType] = useState(
+    restoredDraft?.groupByQuestionType ?? Boolean(initialExam?.settings?.groupByQuestionType)
+  );
+  const [questionTypeOrder, setQuestionTypeOrder] = useState<QuestionType[]>(() =>
+    restoredDraft?.questionTypeOrder ?? normalizeQuestionTypeOrder(initialExam?.settings?.questionTypeOrder)
   );
 
   // New features: Visibility, Status, Scheduling, Limits, Mode, Security
-  const [visibility, setVisibility] = useState<ExamVisibility>(initialExam?.visibility || 'public');
-  const [assignedClassId, setAssignedClassId] = useState<string>(
-    initialExam?.assignedClassId || (availableClassrooms[0]?.id || '')
+  const [visibility, setVisibility] = useState<ExamVisibility>(
+    restoredDraft?.visibility ?? initialExam?.visibility ?? 'public'
   );
-  const [status, setStatus] = useState<ExamStatus>(initialExam?.status || 'open');
-  const [openTime, setOpenTime] = useState(initialExam?.openTime || '');
-  const [closeTime, setCloseTime] = useState(initialExam?.closeTime || '');
-  const [maxAttempts, setMaxAttempts] = useState<number>(initialExam?.maxAttempts ?? 0);
-  const [maxTabSwitches, setMaxTabSwitches] = useState<number>(initialExam?.maxTabSwitches ?? 0);
+  const [assignedClassId, setAssignedClassId] = useState<string>(
+    restoredDraft?.assignedClassId ?? initialExam?.assignedClassId ?? (availableClassrooms[0]?.id || '')
+  );
+  const [status, setStatus] = useState<ExamStatus>(
+    restoredDraft?.status ?? initialExam?.status ?? 'open'
+  );
+  const [openTime, setOpenTime] = useState(restoredDraft?.openTime ?? initialExam?.openTime ?? '');
+  const [closeTime, setCloseTime] = useState(restoredDraft?.closeTime ?? initialExam?.closeTime ?? '');
+  const [maxAttempts, setMaxAttempts] = useState<number>(
+    restoredDraft?.maxAttempts ?? initialExam?.maxAttempts ?? 0
+  );
+  const [maxTabSwitches, setMaxTabSwitches] = useState<number>(
+    restoredDraft?.maxTabSwitches ?? initialExam?.maxTabSwitches ?? 0
+  );
 
   // Mode: Exam vs Practice
   const [modeType, setModeType] = useState<'both' | 'exam_only' | 'practice_only'>(
-    initialExam?.modeType || 'both'
+    restoredDraft?.modeType ?? initialExam?.modeType ?? 'both'
   );
 
   // Anti-copy
   const [allowCopy, setAllowCopy] = useState<boolean>(
-    initialExam?.allowCopy ?? initialExam?.settings?.allowCopy ?? false
+    restoredDraft?.allowCopy ?? initialExam?.allowCopy ?? initialExam?.settings?.allowCopy ?? false
   );
 
   // Answers & Score display toggles
   const [showAnswersAfterExam, setShowAnswersAfterExam] = useState<boolean>(
-    initialExam?.showAnswersAfterExam ?? initialExam?.settings?.showAnswersAfterExam ?? true
+    restoredDraft?.showAnswersAfterExam ??
+      initialExam?.showAnswersAfterExam ??
+      initialExam?.settings?.showAnswersAfterExam ??
+      true
   );
   const [showLiveScoreDuringExam, setShowLiveScoreDuringExam] = useState<boolean>(
-    initialExam?.showLiveScoreDuringExam ?? initialExam?.settings?.showLiveScoreDuringExam ?? false
+    restoredDraft?.showLiveScoreDuringExam ??
+      initialExam?.showLiveScoreDuringExam ??
+      initialExam?.settings?.showLiveScoreDuringExam ??
+      false
   );
   const [showScoreAfterExam, setShowScoreAfterExam] = useState<boolean>(
-    initialExam?.showScoreAfterExam ?? initialExam?.settings?.showScoreAfterExam ?? true
+    restoredDraft?.showScoreAfterExam ??
+      initialExam?.showScoreAfterExam ??
+      initialExam?.settings?.showScoreAfterExam ??
+      true
   );
 
   // Strict exam room controls & candidate code restrictions
   const [lockExitUntilTimeout, setLockExitUntilTimeout] = useState<boolean>(
-    initialExam?.lockExitUntilTimeout ?? false
+    restoredDraft?.lockExitUntilTimeout ?? initialExam?.lockExitUntilTimeout ?? false
   );
   const [showOnlyStudentAnswersAfterExam, setShowOnlyStudentAnswersAfterExam] = useState<boolean>(
-    initialExam?.showOnlyStudentAnswersAfterExam ?? false
+    restoredDraft?.showOnlyStudentAnswersAfterExam ?? initialExam?.showOnlyStudentAnswersAfterExam ?? false
   );
   const [minSubmitMinutes, setMinSubmitMinutes] = useState<number>(
-    initialExam?.minSubmitMinutes ?? 0
+    restoredDraft?.minSubmitMinutes ?? initialExam?.minSubmitMinutes ?? 0
   );
   const [requireAccessCode, setRequireAccessCode] = useState<boolean>(
-    initialExam?.requireAccessCode ?? false
+    restoredDraft?.requireAccessCode ?? initialExam?.requireAccessCode ?? false
   );
   const [accessSecurityCode, setAccessSecurityCode] = useState<string>(
-    initialExam?.accessSecurityCode || ''
+    restoredDraft?.accessSecurityCode ?? initialExam?.accessSecurityCode ?? ''
+  );
+  const [teacherMode, setTeacherMode] = useState<'normal' | 'creator' | 'grading' | 'presenting'>(
+    restoredDraft?.teacherMode ??
+      initialExam?.teacherMode ??
+      (initialExam?.visibility === 'private' || initialExam?.isCreatorOnlyMode ? 'creator' : 'normal')
+  );
+  const [isOfficialClassExam, setIsOfficialClassExam] = useState<boolean>(
+    restoredDraft?.isOfficialClassExam ?? Boolean(initialExam?.isOfficialClassExam)
+  );
+  const [preExamLockMinutes, setPreExamLockMinutes] = useState<number>(
+    restoredDraft?.preExamLockMinutes ?? initialExam?.preExamLockMinutes ?? 5
+  );
+  const [allowExitAfterSubmit, setAllowExitAfterSubmit] = useState<boolean>(
+    restoredDraft?.allowExitAfterSubmit ?? initialExam?.allowExitAfterSubmit ?? false
   );
   const [inPlaceSaveToast, setInPlaceSaveToast] = useState<string | null>(null);
+  const [isImportQuestionsOpen, setIsImportQuestionsOpen] = useState(false);
 
   // Active option image editor toggle (which question index & option index is open for image editing)
   const [activeOptImgEdit, setActiveOptImgEdit] = useState<{ qIdx: number; optIdx: number } | null>(null);
   const [activeSubOptImgEdit, setActiveSubOptImgEdit] = useState<{ qIdx: number; subIdx: number; optIdx: number } | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'manual' | 'quickImport' | 'json'>('manual');
+  const [activeTab, setActiveTab] = useState<'manual' | 'quickImport' | 'json'>(
+    restoredDraft?.activeTab ?? 'manual'
+  );
 
   // Manual questions list
   const [questions, setQuestions] = useState<Question[]>(() => {
+    if (restoredDraft?.questions && restoredDraft.questions.length > 0) {
+      return restoredDraft.questions;
+    }
     if (initialExam?.questions && initialExam.questions.length > 0) {
       return JSON.parse(JSON.stringify(initialExam.questions));
     }
@@ -148,56 +419,49 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
         id: 'q1',
         type: 'single_choice',
         points: 1.0,
-        question: 'Cho hàm số $y = f(x)$ có đạo hàm $f\'(x) = x(x - 2)^2$. Số điểm cực trị của hàm số đã cho là:',
-        options: ['1', '2', '3', '0'],
+        question: '',
+        options: ['', '', '', ''],
         correctAnswer: 0,
-        explanation: 'Ta có $f\'(x) = 0 \\iff x = 0$ hoặc $x = 2$. Do $x = 2$ là nghiệm bội chẵn nên $f\'(x)$ không đổi dấu khi qua $x = 2$. Đạo hàm chỉ đổi dấu khi qua nghiệm đơn $x = 0$. Vậy hàm số có đúng 1 điểm cực trị.',
-        topic: 'Hàm số & Cực trị',
+        explanation: '',
+        topic: '',
         difficulty: 'easy',
       },
     ];
   });
 
   const [previewMap, setPreviewMap] = useState<{ [qId: string]: boolean }>({});
+  const [isFullPreviewOpen, setIsFullPreviewOpen] = useState(false);
+  const questionCardRefs = React.useRef<{ [qId: string]: HTMLDivElement | null }>({});
   const [jsonText, setJsonText] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successNotice, setSuccessNotice] = useState('');
 
-  const [rawText, setRawText] = useState(
-`Câu 1: Cho hàm số y = f(x). Điểm cực đại của hàm số là gì?
-A. x = 1
-B. x = 2
-C. x = 3
-D. x = 4
-Đáp án: A
-Lời giải: Dựa vào bảng biến thiên, hàm số đạt cực đại tại x = 1.
-
-Câu 2: Các mệnh đề sau Đúng hay Sai?
-a) 1 là số nguyên tố
-b) 2 là số nguyên tố chẵn duy nhất
-Đáp án: a: S, b: Đ
-Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố chẵn duy nhất.`
-  );
+  const [rawText, setRawText] = useState(restoredDraft?.rawText ?? '');
 
   const handleTogglePreview = (id: string) => {
     setPreviewMap((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const handleInsertSnippet = (qIndex: number, snippet: string) => {
+    const targetQ = questions[qIndex];
     setQuestions((prev) => {
       const next = [...prev];
       const cur = next[qIndex].question;
+      const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
       next[qIndex] = {
         ...next[qIndex],
-        question: cur ? `${cur}\n${snippet}` : snippet,
+        question: cur ? (isBlock ? `${cur}\n${snippet}` : `${cur} ${snippet}`) : snippet,
       };
       return next;
     });
+    if (targetQ) {
+      setPreviewMap((prev) => ({ ...prev, [targetQ.id]: true }));
+    }
   };
 
   // Add empty manual question
   const handleAddQuestion = (type: QuestionType = 'single_choice') => {
-    const newId = 'q_' + Date.now() + Math.random().toString(36).substring(2, 5);
+    const newId = genFreshQuestionId('q');
     let newQ: Question = {
       id: newId,
       type,
@@ -222,6 +486,10 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
       ];
     } else if (type === 'text_input') {
       newQ.acceptedAnswers = [''];
+    } else if (type === 'essay') {
+      newQ.sampleAnswer = '';
+    } else if (type === 'matching') {
+      Object.assign(newQ, createDefaultMatchingData(newId));
     } else if (type === 'grouped') {
       newQ.subQuestions = [
         {
@@ -237,6 +505,47 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
     }
 
     setQuestions([...questions, newQ]);
+  };
+
+  // Tạo bản sao cho câu hỏi (chèn ngay bên dưới câu gốc)
+  const handleDuplicateQuestion = (qIdx: number) => {
+    const source = questions[qIdx];
+    if (!source) return;
+    const cloned = cloneQuestionWithFreshIds(source);
+    setQuestions((prev) => {
+      const next = [...prev];
+      next.splice(qIdx + 1, 0, cloned);
+      return next;
+    });
+    setSuccessNotice(`✓ Đã tạo bản sao Câu ${qIdx + 1} thành Câu ${qIdx + 2}!`);
+    setTimeout(() => setSuccessNotice(''), 3000);
+  };
+
+  // Copy định dạng của câu hỏi ngay trước đó áp dụng cho câu hiện tại (hoặc thêm câu mới giống câu cuối)
+  const handleCopyFormatFromPrevious = (qIdx: number) => {
+    if (qIdx <= 0 || !questions[qIdx - 1]) return;
+    const prevQ = questions[qIdx - 1];
+    const currentQ = questions[qIdx];
+    const formatted = applyPreviousQuestionFormat(prevQ, currentQ);
+    setQuestions((prev) => {
+      const next = [...prev];
+      next[qIdx] = formatted;
+      return next;
+    });
+    setSuccessNotice(`✓ Đã sao chép định dạng từ Câu ${qIdx} sang Câu ${qIdx + 1}!`);
+    setTimeout(() => setSuccessNotice(''), 3000);
+  };
+
+  const handleAddQuestionWithLastFormat = () => {
+    if (questions.length === 0) {
+      handleAddQuestion('single_choice');
+      return;
+    }
+    const lastQ = questions[questions.length - 1];
+    const nextQ = applyPreviousQuestionFormat(lastQ);
+    setQuestions((prev) => [...prev, nextQ]);
+    setSuccessNotice(`✓ Đã thêm Câu ${questions.length + 1} theo đúng định dạng Câu ${questions.length}!`);
+    setTimeout(() => setSuccessNotice(''), 3000);
   };
 
   const handleUpdateQuestion = (index: number, updated: Partial<Question>) => {
@@ -526,14 +835,14 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
     }
   };
 
-  const handleFinalSave = (stayInEditor: boolean = false) => {
+  const handleFinalSave = (stayInEditor: boolean = false): boolean => {
     if (!title.trim()) {
       setErrorMessage('Vui lòng nhập tên đề thi!');
-      return;
+      return false;
     }
     if (questions.length === 0) {
       setErrorMessage('Đề thi phải có ít nhất 1 câu hỏi!');
-      return;
+      return false;
     }
 
     // Calculate total points
@@ -541,27 +850,39 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
     const finalSubject = isCustomSubject ? (customSubjectName.trim() || 'Tổng hợp') : subject;
     const chosenClass = availableClassrooms.find((c) => c.id === assignedClassId);
 
-    const newExam: Exam = {
+    if (visibility === 'class' && !chosenClass) {
+      setErrorMessage('Bạn chưa có lớp học nào để gán đề thi! Hãy tạo lớp học trong mục Lớp học hoặc chọn phạm vi hiển thị khác.');
+      return false;
+    }
+
+    const sanitizedQuestions = questions.map((q) => sanitizeQuestionByActiveType(q));
+
+      const newExam: Exam = {
       id: initialExam?.id || ('custom-' + Date.now()),
       title: title.trim(),
       subject: finalSubject,
       grade,
       durationMinutes: Number(durationMinutes) || 45,
-      description: description.trim() || `Đề thi trắc nghiệm gồm ${questions.length} câu hỏi.`,
+      description: description.trim() || `Đề thi trắc nghiệm gồm ${sanitizedQuestions.length} câu hỏi.`,
       instructions: instructions.trim(),
       settings: {
         shuffleQuestions,
         shuffleOptions,
+        groupByQuestionType,
+        questionTypeOrder: groupByQuestionType ? questionTypeOrder : undefined,
         allowCopy,
         showAnswersAfterExam,
         showLiveScoreDuringExam,
         showScoreAfterExam,
       },
-      questions,
-      totalQuestions: questions.length,
+      questions: sanitizedQuestions,
+      totalQuestions: sanitizedQuestions.length,
       totalPoints: Number(totalPts.toFixed(2)),
       createdAt: initialExam?.createdAt || new Date().toISOString().split('T')[0],
       isCustom: true,
+      creatorId: initialExam?.creatorId || currentUser?.id,
+      creatorEmail: initialExam?.creatorEmail || currentUser?.email,
+      creatorName: initialExam?.creatorName || currentUser?.fullName,
       visibility,
       assignedClassId: visibility === 'class' ? assignedClassId : undefined,
       assignedClassName: visibility === 'class' ? (chosenClass?.name || 'Lớp riêng') : undefined,
@@ -579,11 +900,32 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
       lockExitUntilTimeout,
       minSubmitMinutes: Number(minSubmitMinutes) > 0 ? Number(minSubmitMinutes) : undefined,
       requireAccessCode,
-      accessSecurityCode: requireAccessCode ? (accessSecurityCode.trim() || '123456') : undefined,
+      accessSecurityCode: requireAccessCode
+        ? accessSecurityCode.trim() || Math.floor(100000 + Math.random() * 900000).toString()
+        : undefined,
       examCode: examCode.trim() || generate8DigitExamCode(),
       randomQuestionCount: Number(randomQuestionCount) > 0 ? Number(randomQuestionCount) : undefined,
+      teacherMode,
+      isCreatorOnlyMode: teacherMode === 'creator' || visibility === 'private',
+      isOfficialClassExam: visibility === 'class' ? isOfficialClassExam : false,
+      preExamLockMinutes:
+        visibility === 'class' && isOfficialClassExam
+          ? Math.max(0, Number(preExamLockMinutes) || 0)
+          : undefined,
+      allowExitAfterSubmit:
+        visibility === 'class' && isOfficialClassExam ? allowExitAfterSubmit : undefined,
     };
 
+    if (newExam.visibility === 'class' && newExam.assignedClassId) {
+      syncClassAssignmentForItem('exam', newExam.id, newExam.visibility, newExam.assignedClassId);
+    }
+
+    savedSnapshotRef.current = currentSnapshot;
+    try {
+      sessionStorage.removeItem(draftStorageKey);
+    } catch {
+      // ignore storage errors
+    }
     if (stayInEditor) {
       saveCustomExam(newExam);
       const timeStr = new Date().toLocaleTimeString('vi-VN');
@@ -592,14 +934,255 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
     } else {
       onSave(newExam);
     }
+    return true;
   };
+
+  const buildDraftExamObject = (): Exam => {
+    const totalPts = questions.reduce((acc, q) => acc + (q.points || 1.0), 0);
+    const finalSubject = isCustomSubject ? (customSubjectName.trim() || 'Tổng hợp') : subject;
+    const chosenClass = availableClassrooms.find((c) => c.id === assignedClassId);
+    const sanitizedQuestions = questions.map((q) => sanitizeQuestionByActiveType(q));
+
+    return {
+      id: initialExam?.id || ('draft-preview-' + Date.now()),
+      title: title.trim() || 'Đề thi xem trước (Bản đang soạn)',
+      subject: finalSubject,
+      grade,
+      durationMinutes: Number(durationMinutes) || 45,
+      description: description.trim() || `Đề thi gồm ${sanitizedQuestions.length} câu hỏi.`,
+      instructions: instructions.trim(),
+      settings: {
+        shuffleQuestions,
+        shuffleOptions,
+        groupByQuestionType,
+        questionTypeOrder: groupByQuestionType ? questionTypeOrder : undefined,
+        allowCopy,
+        showAnswersAfterExam,
+        showLiveScoreDuringExam,
+        showScoreAfterExam,
+      },
+      questions: sanitizedQuestions,
+      totalQuestions: sanitizedQuestions.length,
+      totalPoints: Number(totalPts.toFixed(2)),
+      createdAt: initialExam?.createdAt || new Date().toISOString().split('T')[0],
+      isCustom: true,
+      creatorId: initialExam?.creatorId || currentUser?.id,
+      creatorEmail: initialExam?.creatorEmail || currentUser?.email,
+      creatorName: initialExam?.creatorName || currentUser?.fullName,
+      visibility,
+      assignedClassId: visibility === 'class' ? assignedClassId : undefined,
+      assignedClassName: visibility === 'class' ? (chosenClass?.name || 'Lớp riêng') : undefined,
+      status,
+      openTime: openTime ? openTime : undefined,
+      closeTime: closeTime ? closeTime : undefined,
+      modeType,
+      maxAttempts: maxAttempts > 0 ? Number(maxAttempts) : undefined,
+      maxTabSwitches: maxTabSwitches > 0 ? Number(maxTabSwitches) : undefined,
+      allowCopy,
+      showAnswersAfterExam,
+      showOnlyStudentAnswersAfterExam,
+      showLiveScoreDuringExam,
+      showScoreAfterExam,
+      lockExitUntilTimeout,
+      minSubmitMinutes: Number(minSubmitMinutes) > 0 ? Number(minSubmitMinutes) : undefined,
+      requireAccessCode,
+      accessSecurityCode: requireAccessCode
+        ? accessSecurityCode.trim() || Math.floor(100000 + Math.random() * 900000).toString()
+        : undefined,
+      examCode: examCode.trim() || generate8DigitExamCode(),
+      randomQuestionCount: Number(randomQuestionCount) > 0 ? Number(randomQuestionCount) : undefined,
+      teacherMode,
+      isCreatorOnlyMode: teacherMode === 'creator' || visibility === 'private',
+      isOfficialClassExam: visibility === 'class' ? isOfficialClassExam : false,
+      preExamLockMinutes:
+        visibility === 'class' && isOfficialClassExam
+          ? Math.max(0, Number(preExamLockMinutes) || 0)
+          : undefined,
+      allowExitAfterSubmit:
+        visibility === 'class' && isOfficialClassExam ? allowExitAfterSubmit : undefined,
+    };
+  };
+
+  const currentSnapshot = JSON.stringify({
+    title,
+    subject,
+    customSubjectName,
+    grade,
+    durationMinutes,
+    description,
+    instructions,
+    shuffleQuestions,
+    shuffleOptions,
+    groupByQuestionType,
+    questionTypeOrder,
+    visibility,
+    assignedClassId,
+    status,
+    openTime,
+    closeTime,
+    maxAttempts,
+    maxTabSwitches,
+    modeType,
+    allowCopy,
+    showAnswersAfterExam,
+    showLiveScoreDuringExam,
+    showScoreAfterExam,
+    lockExitUntilTimeout,
+    showOnlyStudentAnswersAfterExam,
+    minSubmitMinutes,
+    requireAccessCode,
+    accessSecurityCode,
+    teacherMode,
+    isOfficialClassExam,
+    preExamLockMinutes,
+    allowExitAfterSubmit,
+    randomQuestionCount,
+    rawText,
+    questions,
+  });
+
+  const savedSnapshotRef = useRef<string>(
+    restoredDraft?.baselineSnapshot ?? currentSnapshot
+  );
+  const latestSnapshotRef = useRef<string>(currentSnapshot);
+  latestSnapshotRef.current = currentSnapshot;
+  const lastInitialExamIdRef = useRef<string | undefined>(initialExam?.id);
+
+  const saveHandlerRef = useRef<() => boolean>(() => false);
+  saveHandlerRef.current = () => handleFinalSave(true);
+
+  useEffect(() => {
+    if (lastInitialExamIdRef.current !== initialExam?.id) {
+      lastInitialExamIdRef.current = initialExam?.id;
+      savedSnapshotRef.current = latestSnapshotRef.current;
+    }
+  }, [initialExam?.id]);
+
+  // Bảo toàn bản nháp khi re-render hoặc đổi chế độ tạm thời
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        if (latestSnapshotRef.current === savedSnapshotRef.current) {
+          sessionStorage.removeItem(draftStorageKey);
+          return;
+        }
+        const payload: ExamCreatorDraftPayload = {
+          title,
+          examCode,
+          randomQuestionCount,
+          subject,
+          isCustomSubject,
+          customSubjectName,
+          grade,
+          durationMinutes,
+          description,
+          instructions,
+          shuffleQuestions,
+          shuffleOptions,
+          groupByQuestionType,
+          questionTypeOrder,
+          visibility,
+          assignedClassId,
+          status,
+          openTime,
+          closeTime,
+          maxAttempts,
+          maxTabSwitches,
+          modeType,
+          allowCopy,
+          showAnswersAfterExam,
+          showLiveScoreDuringExam,
+          showScoreAfterExam,
+          lockExitUntilTimeout,
+          showOnlyStudentAnswersAfterExam,
+          minSubmitMinutes,
+          requireAccessCode,
+          accessSecurityCode,
+          teacherMode,
+          isOfficialClassExam,
+          preExamLockMinutes,
+          allowExitAfterSubmit,
+          activeTab,
+          questions,
+          rawText,
+          baselineSnapshot: savedSnapshotRef.current,
+        };
+        sessionStorage.setItem(draftStorageKey, JSON.stringify(payload));
+      } catch {
+        // ignore quota errors
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [
+    draftStorageKey,
+    currentSnapshot,
+    isCustomSubject,
+    examCode,
+    activeTab,
+    rawText,
+    title,
+    randomQuestionCount,
+    subject,
+    customSubjectName,
+    grade,
+    durationMinutes,
+    description,
+    instructions,
+    shuffleQuestions,
+    shuffleOptions,
+    groupByQuestionType,
+    questionTypeOrder,
+    visibility,
+    assignedClassId,
+    status,
+    openTime,
+    closeTime,
+    maxAttempts,
+    maxTabSwitches,
+    modeType,
+    allowCopy,
+    showAnswersAfterExam,
+    showLiveScoreDuringExam,
+    showScoreAfterExam,
+    lockExitUntilTimeout,
+    showOnlyStudentAnswersAfterExam,
+    minSubmitMinutes,
+    requireAccessCode,
+    accessSecurityCode,
+    teacherMode,
+    isOfficialClassExam,
+    preExamLockMinutes,
+    allowExitAfterSubmit,
+    questions,
+  ]);
+
+  useEffect(() => {
+    if (!onRegisterUnsavedGuard) return;
+    onRegisterUnsavedGuard({
+      title: isEditing ? 'Chưa lưu chỉnh sửa đề thi' : 'Đề thi đang soạn chưa được lưu',
+      message:
+        'Bạn đang soạn thảo nội dung đề thi. Bạn có muốn lưu lại đề thi trước khi chuyển sang mục khác không?',
+      isDirty: () => latestSnapshotRef.current !== savedSnapshotRef.current,
+      saveAndExit: () => saveHandlerRef.current(),
+      discardChanges: () => {
+        try {
+          sessionStorage.removeItem(draftStorageKey);
+        } catch {
+          // ignore
+        }
+      },
+    });
+    return () => {
+      onRegisterUnsavedGuard(null);
+    };
+  }, [onRegisterUnsavedGuard, isEditing, draftStorageKey]);
 
   const totalCalculatedPoints = questions.reduce((acc, q) => acc + (q.points || 1.0), 0);
 
   return (
     <div className="max-w-5xl mx-auto py-8 px-4 sm:px-6 font-sans">
       {/* Top Header */}
-      <div className="flex items-center justify-between pb-6 border-b border-slate-200 mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-6 border-b border-slate-200 mb-6">
         <div className="flex items-center gap-3">
           <button
             onClick={onCancel}
@@ -620,18 +1203,30 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
             <p className="text-xs text-slate-500 mt-0.5">
               {isEditing
                 ? 'Bạn có toàn quyền viết thêm, sửa đổi nội dung, công thức, đáp án hoặc xóa bớt câu hỏi.'
-                : 'Hỗ trợ trắc nghiệm đơn, Đúng/Sai từng ý, điền ô chữ/số, câu hỏi chùm, điểm câu & điểm ý'}
+                : 'Hỗ trợ trắc nghiệm đơn, Đúng/Sai từng ý, trả lời ngắn, ghép đôi, câu hỏi chùm và tự luận soạn thảo'}
             </p>
           </div>
         </div>
 
-        <button
-          onClick={() => handleFinalSave(false)}
-          className="py-2.5 px-5 text-xs sm:text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
-        >
-          <Save className="w-4 h-4" />
-          <span>{isEditing ? 'Lưu thay đổi đề thi' : 'Lưu & Xuất bản đề thi'}</span>
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setIsFullPreviewOpen(true)}
+            className="py-2.5 px-4 text-xs sm:text-sm font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Xem trước toàn bộ đề thi kèm đáp án và lời giải chi tiết"
+          >
+            <Eye className="w-4 h-4 text-blue-600" />
+            <span>Xem trước toàn bộ đề ({questions.length} câu)</span>
+          </button>
+
+          <button
+            onClick={() => handleFinalSave(false)}
+            className="py-2.5 px-5 text-xs sm:text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+          >
+            <Save className="w-4 h-4" />
+            <span>{isEditing ? 'Lưu thay đổi đề thi' : 'Lưu & Xuất bản đề thi'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Notices */}
@@ -668,7 +1263,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="VD: Đề kiểm tra Toán 12 - Khảo sát hàm số & Tích phân"
+              placeholder="Nhập tiêu đề đề thi..."
               className="w-full px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </div>
@@ -692,7 +1287,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                 type="text"
                 value={customSubjectName}
                 onChange={(e) => setCustomSubjectName(e.target.value)}
-                placeholder="Nhập tên môn học mới (VD: GDQP, Pháp luật đại cương, Triết học...)"
+                placeholder="Nhập tên môn học mới..."
                 className="w-full px-3.5 py-2 text-sm bg-white border border-blue-400 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
               />
             ) : (
@@ -718,7 +1313,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               type="text"
               value={grade}
               onChange={(e) => setGrade(e.target.value)}
-              placeholder="VD: Lớp 12, Đại học, Khảo sát năng lực"
+              placeholder="Nhập khối lớp hoặc đối tượng dự thi..."
               className="w-full px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </div>
@@ -745,7 +1340,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="VD: Đề thi cấu trúc mới gồm đầy đủ các dạng câu..."
+              placeholder="Nhập mô tả ngắn về đề thi..."
               className="w-full px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </div>
@@ -772,7 +1367,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               maxLength={8}
               value={examCode}
               onChange={(e) => setExamCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
-              placeholder="VD: 18492034"
+              placeholder="Nhập mã đề gồm 8 chữ số..."
               className="w-full px-3 py-2 text-sm font-mono font-bold tracking-widest text-slate-900 bg-white border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
             />
             <p className="text-[11px] text-blue-800/80 mt-1">
@@ -821,33 +1416,138 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
             />
           </div>
 
-          {/* Shuffle Checkboxes */}
-          <div className="md:col-span-2 pt-2 border-t border-slate-100 flex flex-wrap items-center gap-6">
-            <label className="flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={shuffleQuestions}
-                onChange={(e) => setShuffleQuestions(e.target.checked)}
-                className="w-4 h-4 text-slate-900 rounded border-slate-300 focus:ring-slate-900"
-              />
-              <span className="flex items-center gap-1">
-                <Shuffle className="w-3.5 h-3.5 text-slate-500" />
-                Đảo ngẫu nhiên thứ tự câu hỏi khi thí sinh vào thi
-              </span>
-            </label>
+          {/* Shuffle & Cluster-by-Type Checkboxes */}
+          <div className="md:col-span-2 pt-3 border-t border-slate-100 space-y-3">
+            <div className="flex flex-wrap items-center gap-6">
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={shuffleQuestions}
+                  onChange={(e) => setShuffleQuestions(e.target.checked)}
+                  className="w-4 h-4 text-slate-900 rounded border-slate-300 focus:ring-slate-900"
+                />
+                <span className="flex items-center gap-1">
+                  <Shuffle className="w-3.5 h-3.5 text-slate-500" />
+                  {groupByQuestionType
+                    ? 'Đảo thứ tự câu hỏi (chỉ tráo đổi bên trong từng cụm dạng câu)'
+                    : 'Đảo ngẫu nhiên thứ tự câu hỏi khi thí sinh vào thi'}
+                </span>
+              </label>
 
-            <label className="flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={shuffleOptions}
-                onChange={(e) => setShuffleOptions(e.target.checked)}
-                className="w-4 h-4 text-slate-900 rounded border-slate-300 focus:ring-slate-900"
-              />
-              <span className="flex items-center gap-1">
-                <Shuffle className="w-3.5 h-3.5 text-slate-500" />
-                Đảo ngẫu nhiên thứ tự các phương án lựa chọn (A, B, C, D...)
-              </span>
-            </label>
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={shuffleOptions}
+                  onChange={(e) => setShuffleOptions(e.target.checked)}
+                  className="w-4 h-4 text-slate-900 rounded border-slate-300 focus:ring-slate-900"
+                />
+                <span className="flex items-center gap-1">
+                  <Shuffle className="w-3.5 h-3.5 text-slate-500" />
+                  Đảo ngẫu nhiên thứ tự các phương án lựa chọn (A, B, C, D...)
+                </span>
+              </label>
+            </div>
+
+            {/* Group By Question Type Cluster Option */}
+            <div className={`p-3.5 rounded-xl border transition-colors ${
+              groupByQuestionType
+                ? 'bg-indigo-50/70 border-indigo-300'
+                : 'bg-slate-50/70 border-slate-200'
+            }`}>
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={groupByQuestionType}
+                  onChange={(e) => setGroupByQuestionType(e.target.checked)}
+                  className="w-4 h-4 text-indigo-600 rounded border-slate-300 mt-0.5 focus:ring-indigo-600"
+                />
+                <div>
+                  <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Chế độ chia mỗi dạng câu hỏi thành từng cụm (Phần I, II, III...)</span>
+                  </span>
+                  <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                    Thứ tự các cụm dạng câu hỏi luôn giữ cố định. Nếu bật Đảo câu hỏi, hệ thống chỉ tráo đổi các câu hỏi ở bên trong từng cụm với nhau.
+                  </p>
+                </div>
+              </label>
+
+              {groupByQuestionType && (
+                <div className="mt-3 pt-3 border-t border-indigo-200/80 space-y-2">
+                  <div className="text-[11px] font-bold text-indigo-950 uppercase tracking-wide flex items-center justify-between">
+                    <span>Thứ tự cố định của các cụm dạng câu hỏi:</span>
+                    <button
+                      type="button"
+                      onClick={() => setQuestionTypeOrder([...DEFAULT_QUESTION_TYPE_ORDER])}
+                      className="text-[11px] font-medium text-indigo-700 hover:underline normal-case cursor-pointer"
+                    >
+                      Khôi phục thứ tự mặc định
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {(() => {
+                      let partNum = 0;
+                      return questionTypeOrder.map((qType, orderIdx) => {
+                        const count = questions.filter((q) => (q.type || 'single_choice') === qType).length;
+                        if (count > 0) partNum += 1;
+                        const meta = QUESTION_TYPE_CLUSTER_META[qType];
+                        const moveCluster = (dir: -1 | 1) => {
+                          const targetIdx = orderIdx + dir;
+                          if (targetIdx < 0 || targetIdx >= questionTypeOrder.length) return;
+                          const next = [...questionTypeOrder];
+                          [next[orderIdx], next[targetIdx]] = [next[targetIdx], next[orderIdx]];
+                          setQuestionTypeOrder(next);
+                        };
+                        return (
+                          <div
+                            key={qType}
+                            className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-xs ${
+                              count > 0
+                                ? 'bg-white border-indigo-200 text-slate-900 shadow-2xs'
+                                : 'bg-slate-100/70 border-slate-200 text-slate-400'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="font-bold truncate flex items-center gap-1.5">
+                                {count > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-indigo-100 text-indigo-800 shrink-0">
+                                    Phần {toRomanNumeral(partNum)}
+                                  </span>
+                                )}
+                                <span className="truncate">{meta.shortLabel}</span>
+                              </div>
+                              <div className="text-[10px] font-mono mt-0.5">
+                                {count} câu trong đề
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                disabled={orderIdx === 0}
+                                onClick={() => moveCluster(-1)}
+                                className="p-1 rounded border border-slate-200 bg-white hover:bg-indigo-50 disabled:opacity-30 cursor-pointer"
+                                title="Đưa cụm này lên trước"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={orderIdx === questionTypeOrder.length - 1}
+                                onClick={() => moveCluster(1)}
+                                className="p-1 rounded border border-slate-200 bg-white hover:bg-indigo-50 disabled:opacity-30 cursor-pointer"
+                                title="Đưa cụm này xuống sau"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Visibility & Status Section */}
@@ -891,7 +1591,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                     <span>Giới hạn trong Lớp</span>
                   </div>
                   <p className="text-[10px] text-slate-500 font-normal mt-1 leading-tight">
-                    Chỉ người trong lớp mới xem & làm bài
+                    Chỉ thành viên lớp được chọn, người ra đề &amp; QTV tối cao nhìn thấy
                   </p>
                 </button>
 
@@ -909,7 +1609,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                     <span>Người ra đề (Riêng tư)</span>
                   </div>
                   <p className="text-[10px] text-slate-500 font-normal mt-1 leading-tight">
-                    Không ai khác được xem thử (kể cả HS), khi mở mới cho xem
+                    Chỉ người ra đề và Quản trị viên tối cao nhìn thấy
                   </p>
                 </button>
 
@@ -934,24 +1634,146 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
 
               {/* Classroom Selector if Class Visibility */}
               {visibility === 'class' && (
-                <div className="mt-2.5 p-3 bg-blue-50/60 rounded-lg border border-blue-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="font-semibold text-blue-900 flex items-center gap-1.5">
-                    <Users className="w-3.5 h-3.5 text-blue-700" />
-                    <span>Chọn Lớp học được phép xem và làm bài thi:</span>
+                <div className="mt-2.5 space-y-2.5">
+                  <div className="p-3 bg-blue-50/60 rounded-lg border border-blue-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="font-semibold text-blue-900 flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-blue-700" />
+                      <span>Chọn Lớp học được phép xem và làm bài thi:</span>
+                    </div>
+                    {availableClassrooms.length === 0 ? (
+                      <span className="text-xs font-semibold text-rose-600">
+                        Bạn chưa tạo lớp học nào. Hãy tạo lớp trong mục Lớp học trước.
+                      </span>
+                    ) : (
+                      <select
+                        value={assignedClassId}
+                        onChange={(e) => setAssignedClassId(e.target.value)}
+                        className="px-3 py-1.5 text-xs bg-white border border-blue-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-600 font-semibold text-slate-900"
+                      >
+                        {availableClassrooms.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.grade} - {c.students?.length || 0} HS)
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
-                  <select
-                    value={assignedClassId}
-                    onChange={(e) => setAssignedClassId(e.target.value)}
-                    className="px-3 py-1.5 text-xs bg-white border border-blue-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-600 font-semibold text-slate-900"
-                  >
-                    {availableClassrooms.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({c.grade} - {c.students?.length || 0} HS)
-                      </option>
-                    ))}
-                  </select>
+
+                  {/* Official Class Exam Navigation Lockdown Controls */}
+                  <div className="p-3.5 bg-rose-50/60 rounded-xl border border-rose-200 text-xs space-y-2.5">
+                    <div className="flex items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        id="chk_officialClassExam"
+                        checked={isOfficialClassExam}
+                        onChange={(e) => setIsOfficialClassExam(e.target.checked)}
+                        className="w-4 h-4 text-rose-600 rounded border-slate-300 mt-0.5 focus:ring-rose-600"
+                      />
+                      <div>
+                        <label
+                          htmlFor="chk_officialClassExam"
+                          className="font-bold text-rose-950 flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Lock className="w-3.5 h-3.5 text-rose-600" />
+                          <span>Đánh dấu Kỳ thi chính thức của lớp (Khóa phòng Toàn màn hình)</span>
+                        </label>
+                        <p className="text-[11px] text-rose-900/80 mt-0.5 leading-snug">
+                          Chỉ áp dụng cho học sinh đã tham gia lớp này: tự động bật chế độ Toàn màn hình (ẩn tab trình duyệt Chrome/Cốc Cốc & thanh Taskbar), khóa phím tắt/điều hướng từ phòng chờ đến khi hết giờ đóng đề.
+                        </p>
+                      </div>
+                    </div>
+
+                    {isOfficialClassExam && (
+                      <div className="pl-6 space-y-2 pt-1 border-t border-rose-200/70">
+                        {(!openTime || !closeTime) && (
+                          <div className="p-2 bg-amber-50 border border-amber-300 rounded-lg text-[11px] font-semibold text-amber-900 flex items-center gap-1.5">
+                            <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            <span>Vui lòng đặt đủ Thời gian mở đề và Thời gian đóng đề bên dưới để kích hoạt khóa phòng thi chính thức.</span>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-3">
+                          <label className="font-semibold text-rose-950">
+                            Khóa điều hướng trước giờ mở đề:
+                          </label>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              max={60}
+                              value={preExamLockMinutes}
+                              onChange={(e) => setPreExamLockMinutes(Math.max(0, Number(e.target.value)))}
+                              className="w-20 px-2.5 py-1 bg-white border border-rose-300 rounded-lg text-xs font-bold text-rose-950"
+                            />
+                            <span className="text-rose-900 font-medium">phút</span>
+                          </div>
+                        </div>
+                        <label className="flex items-center gap-2 cursor-pointer text-[11px] font-semibold text-rose-950">
+                          <input
+                            type="checkbox"
+                            checked={allowExitAfterSubmit}
+                            onChange={(e) => setAllowExitAfterSubmit(e.target.checked)}
+                            className="w-3.5 h-3.5 text-rose-600 rounded border-slate-300"
+                          />
+                          <span>Cho phép học sinh rời chế độ khóa sau khi đã nộp bài xong</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
+
+              {/* Teacher Special Mode Selector (Syncs immediately with class/student hiding rule) */}
+              <div className="mt-2.5 p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <ShieldAlert className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Trạng thái chế độ Giáo viên cho đề này:</span>
+                  </span>
+                  {teacherMode === 'creator' && (
+                    <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-bold">
+                      Đang ẩn hoàn toàn với Học sinh
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  {[
+                    { id: 'normal', label: 'Bình thường' },
+                    { id: 'creator', label: 'Người ra đề (Ẩn HS)' },
+                    { id: 'grading', label: 'Đang chấm điểm' },
+                    { id: 'presenting', label: 'Trình chiếu công bố' },
+                  ].map((tm) => (
+                    <button
+                      key={tm.id}
+                      type="button"
+                      onClick={() => {
+                        const mode = tm.id as 'normal' | 'creator' | 'grading' | 'presenting';
+                        setTeacherMode(mode);
+                        if (isEditing && initialExam) {
+                          const synced: Exam = {
+                            ...initialExam,
+                            teacherMode: mode,
+                            isCreatorOnlyMode: mode === 'creator' || visibility === 'private',
+                          };
+                          saveCustomExam(synced);
+                        }
+                      }}
+                      className={`px-2 py-1.5 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer ${
+                        teacherMode === tm.id
+                          ? tm.id === 'creator'
+                            ? 'bg-rose-600 text-white border-rose-600 shadow-2xs'
+                            : tm.id === 'grading'
+                            ? 'bg-amber-500 text-white border-amber-500 shadow-2xs'
+                            : tm.id === 'presenting'
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                            : 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {tm.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Exam Status */}
@@ -1200,10 +2022,10 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                   <div>
                     <label htmlFor="chk_lockExit" className="font-bold text-purple-950 flex items-center gap-1.5 cursor-pointer">
                       <Lock className="w-3.5 h-3.5 text-purple-600" />
-                      <span>Không cho thoát khỏi giao diện thi đến khi hết giờ</span>
+                      <span>Khóa phòng Toàn màn hình đến khi hết giờ</span>
                     </label>
                     <p className="text-[11px] text-purple-900/80 mt-0.5 leading-tight">
-                      Khi bật: Thí sinh không thể bấm thoát hoặc rời khỏi phòng thi trước khi hết thời gian làm bài quy định.
+                      Khi bật: Bắt buộc Toàn màn hình ẩn thanh tab (Chrome, Cốc Cốc...) & thanh Taskbar máy tính, khóa phím Esc/phím tắt trình duyệt và chặn thoát phòng thi đến hết giờ.
                     </p>
                   </div>
                 </div>
@@ -1283,7 +2105,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                         type="text"
                         value={accessSecurityCode}
                         onChange={(e) => setAccessSecurityCode(e.target.value)}
-                        placeholder="VD: 202612 hoặc PIN"
+                        placeholder="Nhập mã bảo mật hoặc PIN..."
                         className="px-2.5 py-1 text-xs bg-white border border-amber-300 rounded font-mono font-bold text-amber-950 w-36 uppercase tracking-wider"
                       />
                     </div>
@@ -1296,28 +2118,40 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
       </div>
 
       {/* Mode Tabs */}
-      <div className="flex items-center gap-1 p-1 bg-slate-200/60 rounded-xl mb-6 max-w-fit text-xs font-medium">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div className="flex items-center gap-1 p-1 bg-slate-200/60 rounded-xl max-w-fit text-xs font-medium">
+          <button
+            onClick={() => setActiveTab('manual')}
+            className={`py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'manual'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            <span>Danh sách câu hỏi ({questions.length})</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('quickImport')}
+            className={`py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'quickImport'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Upload className="w-4 h-4 text-blue-600" />
+            <span>Nhập nhanh từ văn bản</span>
+          </button>
+        </div>
+
         <button
-          onClick={() => setActiveTab('manual')}
-          className={`py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
-            activeTab === 'manual'
-              ? 'bg-white text-slate-900 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
+          type="button"
+          onClick={() => setIsImportQuestionsOpen(true)}
+          className="py-2 px-4 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs transition-colors"
+          title="Xem và chọn câu hỏi từ các đề đã có của giáo viên khác hoặc của bạn (chỉ sao chép, không sửa đề gốc)"
         >
-          <FileText className="w-4 h-4" />
-          <span>Danh sách câu hỏi ({questions.length})</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('quickImport')}
-          className={`py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
-            activeTab === 'quickImport'
-              ? 'bg-white text-slate-900 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <Upload className="w-4 h-4 text-blue-600" />
-          <span>Nhập nhanh từ văn bản</span>
+          <CopyPlus className="w-4 h-4 text-blue-600" />
+          <span>Lấy câu hỏi từ đề khác</span>
         </button>
       </div>
 
@@ -1327,11 +2161,14 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
           {questions.map((q, qIdx) => (
             <div
               key={q.id || qIdx}
+              ref={(el) => {
+                questionCardRefs.current[q.id] = el;
+              }}
               className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs relative"
             >
               {/* Question Item Header */}
               <div className="flex flex-wrap items-center justify-between pb-3 border-b border-slate-100 mb-4 gap-2">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-bold text-slate-900">
                     Câu {qIdx + 1}
                   </span>
@@ -1341,16 +2178,23 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                     value={q.type}
                     onChange={(e) => {
                       const newType = e.target.value as QuestionType;
+                      const matchingDefaults =
+                        newType === 'matching' && (!q.matchingLeftItems || !q.matchingRightItems)
+                          ? createDefaultMatchingData(q.id)
+                          : {};
+                      // Bảo toàn dữ liệu các dạng khác đã nhập phòng trường hợp đổi nhầm dạng câu hỏi
                       handleUpdateQuestion(qIdx, {
                         type: newType,
-                        options: newType === 'single_choice' ? (q.options || ['', '', '', '']) : undefined,
-                        correctAnswer: newType === 'single_choice' ? (q.correctAnswer ?? 0) : undefined,
+                        options: newType === 'single_choice' ? (q.options || ['', '', '', '']) : q.options,
+                        correctAnswer: newType === 'single_choice' ? (q.correctAnswer ?? 0) : q.correctAnswer,
                         tfItems: newType === 'true_false' ? (q.tfItems || [
                           { id: q.id + '_a', statement: '', isCorrect: true },
                           { id: q.id + '_b', statement: '', isCorrect: false },
-                        ]) : undefined,
-                        acceptedAnswers: newType === 'text_input' ? (q.acceptedAnswers || ['']) : undefined,
-                        subQuestions: newType === 'grouped' ? (q.subQuestions || []) : undefined,
+                        ]) : q.tfItems,
+                        acceptedAnswers: newType === 'text_input' ? (q.acceptedAnswers || ['']) : q.acceptedAnswers,
+                        sampleAnswer: newType === 'essay' ? (q.sampleAnswer ?? '') : q.sampleAnswer,
+                        subQuestions: newType === 'grouped' ? (q.subQuestions || []) : q.subQuestions,
+                        ...matchingDefaults,
                       });
                     }}
                     className="px-2.5 py-1 text-xs font-semibold bg-slate-100 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-slate-900"
@@ -1358,7 +2202,9 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                     <option value="single_choice">Dạng 1: Trắc nghiệm 1 đáp án</option>
                     <option value="true_false">Dạng 2: Trắc nghiệm Đúng / Sai từng ý</option>
                     <option value="text_input">Dạng 3: Trả lời ngắn / Nhập ô văn bản</option>
-                    <option value="grouped">Dạng 4: Câu hỏi chùm (Đọc hiểu / Bối cảnh)</option>
+                    <option value="matching">Dạng 4: Ghép đôi hai cột (Tự chọn nhãn & nhiễu)</option>
+                    <option value="grouped">Dạng 5: Câu hỏi chùm (Đọc hiểu / Bối cảnh)</option>
+                    <option value="essay">Dạng 6: Tự luận / Soạn thảo văn bản (Có công thức)</option>
                   </select>
 
                   {/* Points Input for Question */}
@@ -1375,7 +2221,36 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {qIdx > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleCopyFormatFromPrevious(qIdx)}
+                      className="px-2.5 py-1 text-xs rounded-md border bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100 flex items-center gap-1 transition-colors cursor-pointer"
+                      title={`Sao chép dạng câu, thang điểm và số ý/phương án từ Câu ${qIdx} sang Câu ${qIdx + 1}`}
+                    >
+                      <FilePlus2 className="w-3.5 h-3.5" />
+                      <span>Copy định dạng câu {qIdx}</span>
+                    </button>
+                  )}
+
+                  <CopyContentButton
+                    compact
+                    label="Sao chép cả câu"
+                    getText={() => formatQuestionForCopy(q, qIdx + 1)}
+                    title="Sao chép đầy đủ nội dung, đáp án và lời giải của câu này"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => handleDuplicateQuestion(qIdx)}
+                    className="px-2.5 py-1 text-xs rounded-md border bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100 flex items-center gap-1 transition-colors cursor-pointer"
+                    title="Nhân bản câu hỏi này (bao gồm cả đáp án & công thức) thành một câu mới ngay bên dưới"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-slate-600" />
+                    <span>Tạo bản sao</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -1405,7 +2280,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                         ? 'bg-blue-600 text-white border-blue-600'
                         : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                     }`}
-                    title="Xem trước kết quả hiển thị"
+                    title="Xem trước kết quả hiển thị (gồm đáp án & lời giải)"
                   >
                     {previewMap[q.id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                     <span>{previewMap[q.id] ? 'Tắt xem trước' : 'Xem trước'}</span>
@@ -1415,7 +2290,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                     type="text"
                     value={q.topic || ''}
                     onChange={(e) => handleUpdateQuestion(qIdx, { topic: e.target.value })}
-                    placeholder="Chuyên đề (VD: Hàm số)"
+                    placeholder="Nhập chuyên đề..."
                     className="px-2.5 py-1 text-xs border border-slate-200 rounded-md bg-slate-50 focus:outline-none focus:ring-1 focus:ring-slate-900 w-32"
                   />
 
@@ -1429,17 +2304,21 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                 </div>
               </div>
 
-              {/* Math & Table Toolbar */}
+              {/* Math & Table Toolbar — chèn ngay tại vị trí con trỏ của ô đang nhập trong câu này */}
               <MathToolbar
+                getContainerEl={() => questionCardRefs.current[q.id] || null}
                 onInsert={(snippet) => handleInsertSnippet(qIdx, snippet)}
                 onInsertImage={(url) => handleUpdateQuestion(qIdx, { imageUrl: url })}
               />
 
               {/* Question Statement */}
               <div className="mb-4">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  {q.type === 'grouped' ? 'Đoạn văn bối cảnh chung / Dữ kiện dùng chung:' : 'Nội dung câu hỏi (hỗ trợ công thức $x^2$, bảng biến thiên):'}
-                </label>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    {q.type === 'grouped' ? 'Đoạn văn bối cảnh chung / Dữ kiện dùng chung:' : 'Nội dung câu hỏi (hỗ trợ công thức $x^2$, bảng biến thiên):'}
+                  </label>
+                  <CopyContentButton compact getText={() => q.question} />
+                </div>
                 <textarea
                   rows={q.type === 'grouped' ? 4 : 2}
                   value={q.question}
@@ -1565,6 +2444,75 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                             </div>
                           );
                         })}
+                      </div>
+                    )}
+
+                    {/* Preview for true_false */}
+                    {q.type === 'true_false' && q.tfItems && (
+                      <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                        <div className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
+                          ⚖ {formatTrueFalseScoringRule(q)}
+                        </div>
+                        {q.tfItems.map((it, itIdx) => (
+                          <div key={it.id} className="p-2 rounded-lg border border-slate-200 bg-slate-50/70 text-xs flex items-center justify-between gap-2">
+                            <div className="flex items-start gap-1.5 flex-1">
+                              <span className="font-bold text-slate-700">{String.fromCharCode(97 + itIdx)})</span>
+                              <RichContentRenderer content={it.statement || 'Chưa nhập ý'} />
+                            </div>
+                            <span className={`px-2 py-0.5 rounded font-bold text-[11px] ${it.isCorrect ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                              {it.isCorrect ? 'ĐÚNG' : 'SAI'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Preview for text_input */}
+                    {q.type === 'text_input' && (
+                      <div className="pt-2 border-t border-slate-100 text-xs">
+                        <span className="font-semibold text-slate-600">Đáp án chấp nhận: </span>
+                        <span className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                          {formatAcceptedShortAnswersList(q.acceptedAnswers) || 'Chưa thiết lập'}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Preview for matching */}
+                    {q.type === 'matching' && (
+                      <div className="pt-2 border-t border-slate-100">
+                        <MatchingQuestionView
+                          question={q}
+                          mode="preview"
+                          showSolutions={true}
+                          hidePrompt={true}
+                        />
+                      </div>
+                    )}
+
+                    {/* Preview for essay */}
+                    {q.type === 'essay' && (
+                      <div className="pt-2 border-t border-slate-100 space-y-2 text-xs">
+                        <div className="text-slate-500 italic">
+                          [Học sinh soạn thảo tự luận trực tuyến có thanh công thức toán học]
+                        </div>
+                        {q.sampleAnswer && q.sampleAnswer.trim() && (
+                          <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg">
+                            <div className="font-bold text-emerald-900 uppercase text-[10px] mb-1">
+                              Đáp án tham khảo / Thang chấm:
+                            </div>
+                            <RichContentRenderer content={q.sampleAnswer} />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Preview solution/explanation */}
+                    {q.explanation && q.explanation.trim() && (
+                      <div className="p-2.5 bg-blue-50/70 border border-blue-200 rounded-lg text-xs">
+                        <div className="font-bold text-blue-900 uppercase text-[10px] mb-1">
+                          Lời giải chi tiết:
+                        </div>
+                        <RichContentRenderer content={q.explanation} />
                       </div>
                     )}
                   </div>
@@ -1970,25 +2918,40 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               {q.type === 'text_input' && (
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 mb-4 space-y-2">
                   <label className="block text-xs font-semibold text-slate-700">
-                    Các đáp án được chấp nhận (cách nhau bởi dấu phẩy hoặc nhấn Enter):
+                    Các đáp án được chấp nhận (viết số thập phân bằng dấu phẩy &quot;,&quot;, ngăn cách các đáp án đúng bằng dấu chấm phẩy &quot;;&quot;):
                   </label>
                   <input
                     type="text"
-                    value={(q.acceptedAnswers || []).join(', ')}
+                    value={(q.acceptedAnswers || []).map((s) => formatShortAnswerDecimalComma(s)).join('; ')}
                     onChange={(e) => {
-                      const list = e.target.value.split(',').map((s) => s.trim()).filter(Boolean);
+                      const list = e.target.value.split(';').map((s) => s.trim());
                       handleUpdateQuestion(qIdx, { acceptedAnswers: list });
                     }}
-                    placeholder="VD: 3.5, 7/2, 3,5"
+                    onBlur={(e) => {
+                      const list = parseAcceptedShortAnswers(e.target.value);
+                      handleUpdateQuestion(qIdx, { acceptedAnswers: list });
+                    }}
+                    placeholder="Ví dụ: 3,5; 7/2; -1,25"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono"
                   />
                   <div className="text-[11px] text-slate-500">
-                    Mẹo: Có thể nhập nhiều cách viết tương đương nhau để hệ thống tự chấm đúng (ví dụ: cả số thập phân và phân số).
+                    Mẹo: Số thập phân viết dưới dạng dấu phẩy (vd: 3,5). Ngăn cách nhiều đáp án đúng bằng dấu chấm phẩy &quot;;&quot;.
                   </div>
                 </div>
               )}
 
-              {/* --- DẠNG 4: Grouped Subquestions Editor --- */}
+              {/* --- DẠNG 4: Matching Two-Column Editor --- */}
+              {q.type === 'matching' && (
+                <div className="mb-4">
+                  <MatchingQuestionEditor
+                    question={q}
+                    onChange={(fields) => handleUpdateQuestion(qIdx, fields)}
+                    idPrefix={q.id}
+                  />
+                </div>
+              )}
+
+              {/* --- DẠNG 5: Grouped Subquestions Editor --- */}
               {q.type === 'grouped' && (
                 <div className="space-y-4 mb-4 p-4 bg-purple-50/40 rounded-xl border border-purple-200">
                   <div className="flex items-center justify-between">
@@ -2327,26 +3290,34 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                       {/* Format B: Short answer (Trả lời ngắn) */}
                       {subQ.type === 'text_input' && (
                         <div className="p-3 bg-purple-50/70 rounded-xl border border-purple-200 space-y-2">
-                          <div className="flex items-center justify-between">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
                             <label className="text-xs font-bold text-purple-950">
-                              Các đáp án được chấp nhận (cách nhau bởi dấu phẩy):
+                              Các đáp án được chấp nhận (ngăn cách bởi dấu chấm phẩy &quot;;&quot;):
                             </label>
                             <span className="text-[11px] text-purple-700 font-medium">
-                              Tự động chuẩn hóa dấu phẩy/chấm và chữ hoa/thường
+                              Số thập phân dùng dấu phẩy (vd: 3,5)
                             </span>
                           </div>
                           <input
                             type="text"
-                            value={(subQ.acceptedAnswers || []).join(', ')}
+                            value={(subQ.acceptedAnswers || []).map((s) => formatShortAnswerDecimalComma(s)).join('; ')}
                             onChange={(e) => {
                               const nextSubs = [...(q.subQuestions || [])];
                               nextSubs[sIdx] = {
                                 ...nextSubs[sIdx],
-                                acceptedAnswers: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                                acceptedAnswers: e.target.value.split(';').map((s) => s.trim()),
                               };
                               handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
                             }}
-                            placeholder="Ví dụ: 3.14, 22/7, pi, x=2, BaCl2"
+                            onBlur={(e) => {
+                              const nextSubs = [...(q.subQuestions || [])];
+                              nextSubs[sIdx] = {
+                                ...nextSubs[sIdx],
+                                acceptedAnswers: parseAcceptedShortAnswers(e.target.value),
+                              };
+                              handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                            }}
+                            placeholder="Ví dụ: 3,5; 7/2"
                             className="w-full px-3 py-2 text-xs font-mono bg-white border border-purple-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600"
                           />
                           <p className="text-[11px] text-slate-500">
@@ -2359,11 +3330,44 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                 </div>
               )}
 
+              {/* --- DẠNG 6: Essay / Online Written Editor --- */}
+              {q.type === 'essay' && (
+                <div className="p-4 bg-cyan-50/50 rounded-xl border border-cyan-200 mb-4 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <label className="text-xs font-bold text-cyan-950 flex items-center gap-1.5">
+                      <Edit3 className="w-3.5 h-3.5 text-cyan-700" />
+                      <span>Cài đặt câu Tự luận / Soạn thảo văn bản trực tuyến</span>
+                    </label>
+                    <span className="text-[11px] text-cyan-800">
+                      Thí sinh có khung soạn thảo + thanh công thức Toán đầy đủ
+                    </span>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Đáp án tham khảo / Biểu điểm gợi ý (Tùy chọn — dùng công thức trên thanh công cụ tại vị trí con trỏ):
+                      </label>
+                      <CopyContentButton compact getText={() => q.sampleAnswer || ''} />
+                    </div>
+                    <textarea
+                      rows={3}
+                      value={q.sampleAnswer || ''}
+                      onChange={(e) => handleUpdateQuestion(qIdx, { sampleAnswer: e.target.value })}
+                      placeholder="Nhập bài giải mẫu hoặc các ý cần đạt để học sinh đối chiếu sau khi thi..."
+                      className="w-full px-3 py-2 text-xs font-mono bg-white border border-cyan-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-600"
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Explanation Input */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Lời giải thích chi tiết:
-                </label>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Lời giải thích chi tiết:
+                  </label>
+                  <CopyContentButton compact getText={() => q.explanation || ''} />
+                </div>
                 <textarea
                   rows={2}
                   value={q.explanation}
@@ -2377,7 +3381,19 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
 
           {/* Add Question Buttons per type */}
           <div className="flex flex-wrap items-center gap-2 pt-2">
+            {questions.length > 0 && (
+              <button
+                type="button"
+                onClick={handleAddQuestionWithLastFormat}
+                className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                title="Thêm ngay 1 câu mới có cùng dạng, thang điểm và cấu trúc với câu cuối cùng"
+              >
+                <FilePlus2 className="w-4 h-4" />
+                <span>+ Thêm câu giống định dạng câu cuối</span>
+              </button>
+            )}
             <button
+              type="button"
               onClick={() => handleAddQuestion('single_choice')}
               className="py-2.5 px-4 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
             >
@@ -2385,6 +3401,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               <span>+ Thêm câu Trắc nghiệm 1 đáp án</span>
             </button>
             <button
+              type="button"
               onClick={() => handleAddQuestion('true_false')}
               className="py-2.5 px-4 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
             >
@@ -2392,6 +3409,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               <span>+ Thêm câu Trắc nghiệm Đúng / Sai</span>
             </button>
             <button
+              type="button"
               onClick={() => handleAddQuestion('text_input')}
               className="py-2.5 px-4 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
             >
@@ -2399,11 +3417,36 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
               <span>+ Thêm câu Trả lời ngắn</span>
             </button>
             <button
+              type="button"
+              onClick={() => handleAddQuestion('matching')}
+              className="py-2.5 px-4 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4 text-indigo-600" />
+              <span>+ Thêm câu Ghép đôi (2 cột)</span>
+            </button>
+            <button
+              type="button"
               onClick={() => handleAddQuestion('grouped')}
               className="py-2.5 px-4 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
             >
               <Plus className="w-4 h-4 text-purple-600" />
               <span>+ Thêm câu hỏi chùm (Đọc hiểu)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAddQuestion('essay')}
+              className="py-2.5 px-4 bg-white border border-slate-200 hover:bg-cyan-50 rounded-xl text-xs font-semibold text-slate-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4 text-cyan-700" />
+              <span>+ Thêm câu Tự luận (Soạn thảo)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsImportQuestionsOpen(true)}
+              className="py-2.5 px-4 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-xl text-xs font-bold text-blue-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
+            >
+              <CopyPlus className="w-4 h-4 text-blue-600" />
+              <span>+ Lấy câu hỏi từ đề khác</span>
             </button>
           </div>
         </div>
@@ -2412,7 +3455,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
       {/* Tab 2: Quick Import from Text */}
       {activeTab === 'quickImport' && (
         <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 mb-4">
             <div>
               <h2 className="text-sm font-bold text-slate-900">
                 Nhập đề tự động từ văn bản (Word / PDF / Ghi chú)
@@ -2421,6 +3464,7 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
                 Hỗ trợ cả trắc nghiệm chọn phương án (A, B, C, D) và trắc nghiệm Đúng / Sai theo từng ý (a, b, c, d)
               </p>
             </div>
+            <CopyContentButton compact getText={() => rawText} />
           </div>
 
           <textarea
@@ -2464,7 +3508,15 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setIsFullPreviewOpen(true)}
+            className="py-2.5 px-4 text-xs sm:text-sm font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+          >
+            <Eye className="w-4 h-4 text-blue-600" />
+            <span>Xem trước toàn bộ câu hỏi</span>
+          </button>
           <button
             type="button"
             onClick={onCancel}
@@ -2482,6 +3534,32 @@ Lời giải: 1 không phải là số nguyên tố. 2 là số nguyên tố ch�
           </button>
         </div>
       </div>
+
+      {/* Full Draft Exam Preview Modal (Shows Prompts, Answers, Solutions) */}
+      <ExamPreviewModal
+        isOpen={isFullPreviewOpen}
+        exam={isFullPreviewOpen ? buildDraftExamObject() : null}
+        userRole="teacher"
+        isTaking={false}
+        onClose={() => setIsFullPreviewOpen(false)}
+      />
+
+      {/* Import Questions from Other Teachers' Exams (Read-Only Clones) */}
+      <ImportQuestionsModal
+        isOpen={isImportQuestionsOpen}
+        onClose={() => setIsImportQuestionsOpen(false)}
+        currentExamId={initialExam?.id}
+        currentUser={currentUser}
+        onImportQuestions={(clonedQuestions) => {
+          setQuestions((prev) => [...prev, ...clonedQuestions]);
+          setActiveTab('manual');
+          setErrorMessage('');
+          setSuccessNotice(
+            `✓ Đã thêm ${clonedQuestions.length} câu hỏi (bản sao độc lập) vào đề thi đang soạn!`
+          );
+          setTimeout(() => setSuccessNotice(''), 4000);
+        }}
+      />
     </div>
   );
 };

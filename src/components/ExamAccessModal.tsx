@@ -15,7 +15,15 @@ import {
   Calendar,
   Coffee
 } from 'lucide-react';
-import { getCandidateProfile, saveCandidateProfile, isItemScheduleOpen, getAllClassrooms } from '../utils/storage';
+import {
+  getCandidateProfile,
+  saveCandidateProfile,
+  isItemScheduleOpen,
+  getAllClassrooms,
+  getCurrentUser,
+  canUserAccessProtectedItem,
+  canShowInPublicLibrary,
+} from '../utils/storage';
 
 interface ExamAccessModalProps {
   isOpen: boolean;
@@ -98,15 +106,18 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
       return;
     }
 
+    const currentUser = getCurrentUser();
+    const allCls = getAllClassrooms();
+
     // Process Single Exam
     if (matchedExam) {
-      // Role-based visibility check
-      if (userRole === 'student') {
-        if (matchedExam.visibility === 'private' || matchedExam.status === 'draft') {
-          setErrorMsg('Đề thi này đang ở chế độ người ra đề (riêng tư/bản nháp). Chỉ giáo viên ra đề mới được phép xem và mở!');
-          return;
-        }
+      const accessCheck = canUserAccessProtectedItem(matchedExam, currentUser, userRole, allCls);
+      if (!accessCheck.allowed) {
+        setErrorMsg(accessCheck.reason || 'Bạn không có quyền truy cập đề thi này!');
+        return;
+      }
 
+      if (userRole === 'student') {
         const sched = isItemScheduleOpen({
           openTime: matchedExam.openTime,
           closeTime: matchedExam.closeTime,
@@ -115,26 +126,6 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
         if (!sched.isOpen) {
           setErrorMsg(sched.reason || 'Đề thi hiện tại không trong thời gian mở.');
           return;
-        }
-
-        // Kiểm tra nghiêm ngặt danh sách lớp nếu đề giới hạn trong lớp
-        if (matchedExam.visibility === 'class' || matchedExam.assignedClassId) {
-          if (!cleanSbd) {
-            setErrorMsg('Đề thi này giới hạn trong lớp học. Vui lòng nhập Số báo danh (SBD) để đối soát với danh sách lớp!');
-            return;
-          }
-          const allCls = getAllClassrooms();
-          const targetClass = allCls.find((c) => c.id === matchedExam.assignedClassId || c.name === matchedExam.assignedClassName);
-          if (targetClass && targetClass.students && targetClass.students.length > 0) {
-            const isMatch = targetClass.students.some(
-              (s) => s.name.trim().toLowerCase() === cleanName.toLowerCase() &&
-                     s.studentCode.trim().toLowerCase() === cleanSbd.toLowerCase()
-            );
-            if (!isMatch) {
-              setErrorMsg(`Bạn không có tên trong danh sách lớp "${targetClass.name}" hoặc Số báo danh (${cleanSbd}) không khớp! Chỉ học sinh thuộc lớp mới được làm đề này.`);
-              return;
-            }
-          }
         }
       }
 
@@ -151,12 +142,13 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
 
     // Process Multi-Subject Bundle
     if (matchedBundle) {
-      if (userRole === 'student') {
-        if (matchedBundle.visibility === 'private' || matchedBundle.status === 'draft') {
-          setErrorMsg('Tổ hợp môn này đang ở chế độ người ra đề (riêng tư/bản nháp). Chỉ giáo viên ra đề mới được phép mở!');
-          return;
-        }
+      const accessCheck = canUserAccessProtectedItem(matchedBundle, currentUser, userRole, allCls);
+      if (!accessCheck.allowed) {
+        setErrorMsg(accessCheck.reason || 'Bạn không có quyền truy cập tổ hợp thi này!');
+        return;
+      }
 
+      if (userRole === 'student') {
         const sched = isItemScheduleOpen({
           openTime: matchedBundle.openTime,
           closeTime: matchedBundle.closeTime,
@@ -180,13 +172,23 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
     }
   };
 
-  // Quick pick available items
+  const currentUser = getCurrentUser();
+  const allCls = getAllClassrooms();
+
+  const canPreviewMatchedExam = Boolean(
+    matchedExam && canUserAccessProtectedItem(matchedExam, currentUser, userRole, allCls).allowed
+  );
+  const canPreviewMatchedBundle = Boolean(
+    matchedBundle && canUserAccessProtectedItem(matchedBundle, currentUser, userRole, allCls).allowed
+  );
+
+  // Quick pick available items visible to current user
   const availableOpenExams = allExams
-    .filter((e) => userRole === 'teacher' || (e.visibility !== 'private' && e.status !== 'draft'))
+    .filter((e) => canShowInPublicLibrary(e, currentUser, userRole, allCls))
     .slice(0, 4);
 
   const availableOpenBundles = (allBundles || [])
-    .filter((b) => userRole === 'teacher' || b.status !== 'draft')
+    .filter((b) => canShowInPublicLibrary(b, currentUser, userRole, allCls))
     .slice(0, 3);
 
   const handleQuickFillExam = (ex: Exam) => {
@@ -248,7 +250,7 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
                   setCodeInputValue(val);
                   setErrorMsg(null);
                 }}
-                placeholder="VD: 20261201 hoặc 88129034"
+                placeholder="Nhập mã đề thi hoặc mã tổ hợp..."
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl font-mono text-base font-bold tracking-widest text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all uppercase"
                 autoFocus
               />
@@ -259,7 +261,7 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
           </div>
 
           {/* Matched Exam Preview Banner */}
-          {matchedExam && (
+          {matchedExam && canPreviewMatchedExam && (
             <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/70 text-xs">
               <div className="flex items-center justify-between mb-1">
                 <span className="font-semibold text-emerald-800 flex items-center gap-1">
@@ -302,7 +304,7 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
           )}
 
           {/* Matched Bundle Preview Banner */}
-          {matchedBundle && (
+          {matchedBundle && canPreviewMatchedBundle && (
             <div className="p-3.5 rounded-xl border border-purple-200 bg-purple-50/70 text-xs">
               <div className="flex items-center justify-between mb-1">
                 <span className="font-semibold text-purple-800 flex items-center gap-1">
@@ -339,10 +341,10 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
             </div>
           )}
 
-          {!matchedExam && !matchedBundle && codeInputValue.trim().length >= 4 && (
+          {((!matchedExam && !matchedBundle) || (!canPreviewMatchedExam && !canPreviewMatchedBundle)) && codeInputValue.trim().length >= 4 && (
             <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 text-xs text-slate-500 flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" />
-              <span>Chưa tìm thấy đề hoặc tổ hợp có mã <strong>"{codeInputValue}"</strong>. Kiểm tra lại mã số từ giáo viên.</span>
+              <span>Chưa tìm thấy đề hoặc tổ hợp khả dụng với mã <strong>"{codeInputValue}"</strong>. Kiểm tra lại mã số hoặc quyền truy cập của bạn.</span>
             </div>
           )}
 
@@ -358,7 +360,7 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
                 type="text"
                 value={candidateName}
                 onChange={(e) => setCandidateName(e.target.value)}
-                placeholder="Nhập họ và tên đầy đủ (VD: Nguyễn Văn An)"
+                placeholder="Nhập họ và tên đầy đủ..."
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all"
               />
             </div>
@@ -376,7 +378,7 @@ export const ExamAccessModal: React.FC<ExamAccessModalProps> = ({
                   type="text"
                   value={studentCode}
                   onChange={(e) => setStudentCode(e.target.value)}
-                  placeholder="VD: SBD-1205"
+                  placeholder="Nhập SBD hoặc mã sinh viên..."
                   className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
               </div>

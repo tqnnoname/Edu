@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   CandidateAnswerValue, 
   Exam, 
@@ -34,10 +34,22 @@ import {
 import { MiniCalculator } from './MiniCalculator';
 import { ScratchpadModal } from './ScratchpadModal';
 import { RichContentRenderer } from './RichContentRenderer';
+import { MatchingQuestionView } from './MatchingQuestionView';
 import { QuickQuestionEditorModal } from './QuickQuestionEditorModal';
 import { ConfirmModal } from './ConfirmModal';
 import { ExamPreviewModal } from './ExamPreviewModal';
-import { gradeEntireExam, shuffleExamQuestionsAndOptions, formatTrueFalseScoringRule } from '../utils/scoring';
+import { MathToolbar } from './MathToolbar';
+import { CopyContentButton } from './CopyContentButton';
+import { RoomLockGuard, tryEnterKioskFullscreen } from './RoomLockGuard';
+import { insertTextAtEditableElement } from '../utils/cursorInsert';
+import {
+  gradeEntireExam,
+  shuffleExamQuestionsAndOptions,
+  formatTrueFalseScoringRule,
+  buildQuestionClusters,
+  formatShortAnswerDecimalComma,
+} from '../utils/scoring';
+import { renderMath } from '../utils/renderMath';
 import { saveCustomExam, saveActiveSession } from '../utils/storage';
 
 interface ExamTakingViewProps {
@@ -49,6 +61,7 @@ interface ExamTakingViewProps {
   onComplete: (result: ExamResult) => void;
   onExit: () => void;
   onUpdateExam?: (updatedExam: Exam) => void;
+  isOfficialLocked?: boolean;
 }
 
 export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
@@ -60,6 +73,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   onComplete,
   onExit,
   onUpdateExam,
+  isOfficialLocked = false,
 }) => {
   const [liveExam, setLiveExam] = useState<Exam>(initialExam);
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
@@ -73,10 +87,16 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     Boolean(initialExam.settings?.shuffleOptions)
   );
 
-  // The active exam instance (may be shuffled)
+  // The active exam instance (may be shuffled — cluster order preserved if groupByQuestionType is on)
   const exam = useMemo(() => {
     return shuffleExamQuestionsAndOptions(liveExam, shuffleQuestions, shuffleOptions);
   }, [liveExam, shuffleQuestions, shuffleOptions]);
+
+  const isGroupedByType = Boolean(exam.settings?.groupByQuestionType);
+  const questionClusters = useMemo(() => {
+    if (!isGroupedByType) return [];
+    return buildQuestionClusters(exam.questions, exam.settings?.questionTypeOrder);
+  }, [exam.questions, isGroupedByType, exam.settings?.questionTypeOrder]);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<{ [questionId: string]: CandidateAnswerValue }>({});
@@ -135,9 +155,16 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   const [showScratchpad, setShowScratchpad] = useState(false);
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [fontSize, setFontSize] = useState<'normal' | 'large'>('normal');
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [isSplitView, setIsSplitView] = useState(true);
   const [revealedExplanations, setRevealedExplanations] = useState<{ [questionId: string]: boolean }>({});
+
+  const isRoomLockActive = Boolean(
+    (exam.lockExitUntilTimeout || isOfficialLocked) &&
+      mode === 'exam' &&
+      userRole === 'student' &&
+      remainingSeconds > 0
+  );
 
   // Tab switch anti-cheat state
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
@@ -146,6 +173,14 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
   const startTime = useMemo(() => Date.now(), []);
   const currentQuestion: Question = exam.questions[currentIndex] || exam.questions[0];
+  const questionContainerRef = useRef<HTMLElement>(null);
+  const essayTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const shortAnswerInputRef = useRef<HTMLInputElement>(null);
+  const [showEssayPreview, setShowEssayPreview] = useState(true);
+
+  useEffect(() => {
+    renderMath(questionContainerRef.current);
+  }, [currentIndex, currentQuestion?.id, isSplitView, fontSize, revealedExplanations, showEssayPreview, answers]);
 
   // Anti-copy enabled check
   const isAntiCopyEnabled = exam.allowCopy === false || exam.settings?.allowCopy === false;
@@ -250,19 +285,30 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   useEffect(() => {
     if (!isAntiCopyEnabled) return;
 
+    const isEditableElementTarget = (target: EventTarget | null) =>
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLInputElement ||
+      (target instanceof HTMLElement && target.isContentEditable);
+
     const handleCopy = (e: ClipboardEvent) => {
+      if (isEditableElementTarget(e.target)) return;
       e.preventDefault();
       setCopyToastNotice('🚫 Chế độ phòng thi: Đã khóa tính năng sao chép (Copy) để đảm bảo tính công bằng!');
       setTimeout(() => setCopyToastNotice(null), 3500);
     };
 
     const handleContextMenu = (e: MouseEvent) => {
+      if (isEditableElementTarget(e.target)) return;
       e.preventDefault();
       setCopyToastNotice('🚫 Chế độ phòng thi: Đã khóa thao tác chuột phải (Context Menu)!');
       setTimeout(() => setCopyToastNotice(null), 3500);
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      const isEditingInput = isEditableElementTarget(e.target);
+      if (isEditingInput && (e.ctrlKey || e.metaKey) && ['a', 'A', 'c', 'C', 'x', 'X', 'v', 'V'].includes(e.key)) {
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && ['c', 'C', 'u', 'U', 'p', 'P', 'a', 'A'].includes(e.key)) {
         e.preventDefault();
         setCopyToastNotice('🚫 Chế độ phòng thi: Phím tắt sao chép bị vô hiệu hóa!');
@@ -278,6 +324,12 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     window.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('keydown', handleKeyDown);
 
+    return () => {
+      window.removeEventListener('copy', handleCopy);
+      window.removeEventListener('cut', handleCopy);
+      window.removeEventListener('contextmenu', handleContextMenu);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [isAntiCopyEnabled]);
 
   // Lockdown room until timeout: prevent window close / refresh if lockExitUntilTimeout is on
@@ -318,12 +370,30 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     return () => clearInterval(timer);
   }, [mode, handleSubmitExam]);
 
-  // Fullscreen toggle
+  // Sync browser fullscreen state
+  useEffect(() => {
+    const syncFs = () => {
+      const docAny = document as any;
+      setIsFullscreen(Boolean(document.fullscreenElement || docAny.webkitFullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', syncFs);
+    document.addEventListener('webkitfullscreenchange', syncFs);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFs);
+      document.removeEventListener('webkitfullscreenchange', syncFs);
+    };
+  }, []);
+
+  // Fullscreen toggle (locked exams cannot manually exit fullscreen)
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
-    } else {
+      void tryEnterKioskFullscreen().then((res) => {
+        if (res.ok) setIsFullscreen(true);
+      });
+    } else if (!isRoomLockActive) {
       document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    } else {
+      setIsLockdownNoticeOpen(true);
     }
   };
 
@@ -349,8 +419,23 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
       const items = q.tfItems || [];
       return items.length > 0 && items.every((item) => map[item.id] !== undefined);
     }
-    if (q.type === 'text_input') {
+    if (q.type === 'text_input' || q.type === 'essay') {
       return typeof ans === 'string' && ans.trim().length > 0;
+    }
+    if (q.type === 'matching') {
+      const map = ans as { [leftId: string]: string };
+      const leftItems = q.matchingLeftItems || [];
+      return (
+        leftItems.length > 0 &&
+        leftItems.every((item) => {
+          const val = map[item.id];
+          if (!val) return false;
+          if (val.startsWith('__raw__:')) {
+            return val.slice('__raw__:'.length).trim().length > 0;
+          }
+          return val.trim().length > 0;
+        })
+      );
     }
     if (q.type === 'grouped') {
       const subMap = ans as { [subId: string]: CandidateAnswerValue };
@@ -404,6 +489,13 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     setAnswers((prev) => ({
       ...prev,
       [currentQuestion.id]: text,
+    }));
+  };
+
+  const handleSetMatching = (updatedMap: { [leftId: string]: string }) => {
+    setAnswers((prev) => ({
+      ...prev,
+      [currentQuestion.id]: updatedMap,
     }));
   };
 
@@ -672,10 +764,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           <div className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <label className="block text-xs font-semibold text-slate-700">
-                Nhập câu trả lời vào ô (số, phân số hoặc biểu thức):
+                Nhập câu trả lời vào ô (số thập phân viết bằng dấu phẩy &quot;,&quot;, vd: 3,5):
               </label>
               <div className="flex items-center gap-1 flex-wrap">
-                <span className="text-[11px] text-slate-400 mr-1 hidden md:inline">Chèn nhanh:</span>
+                <span className="text-[11px] text-slate-400 mr-1 hidden md:inline">Chèn tại vị trí trỏ:</span>
                 {[
                   { label: '√x', insert: '√(' },
                   { label: '∛x', insert: '∛(' },
@@ -683,22 +775,26 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                   { label: 'AB→', insert: '\\overrightarrow{AB}' },
                   { label: 'π', insert: 'π' },
                   { label: '²', insert: '²' },
+                  { label: ',', insert: ',' },
                   { label: '/', insert: '/' },
                   { label: '±', insert: '±' },
                 ].map((m, mIdx) => (
                   <button
                     key={mIdx}
                     type="button"
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
-                      const currentVal = (answers[currentQuestion.id] as string) || '';
-                      handleSetTextInput(currentVal + m.insert);
+                      if (!insertTextAtEditableElement(shortAnswerInputRef.current, m.insert)) {
+                        const currentVal = (answers[currentQuestion.id] as string) || '';
+                        handleSetTextInput(currentVal + m.insert);
+                      }
                     }}
                     className={`px-2 py-0.5 rounded text-xs font-mono font-bold transition-colors cursor-pointer ${
                       m.label.includes('√')
                         ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-2xs'
                         : 'bg-white text-slate-700 hover:bg-slate-200 border border-slate-300'
                     }`}
-                    title={`Chèn ký hiệu ${m.label}`}
+                    title={`Chèn ký hiệu ${m.label} tại vị trí con trỏ`}
                   >
                     {m.label}
                   </button>
@@ -707,11 +803,18 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             </div>
             <div className="flex items-center gap-2">
               <input
+                ref={shortAnswerInputRef}
                 type="text"
                 value={(answers[currentQuestion.id] as string) || ''}
                 onChange={(e) => handleSetTextInput(e.target.value)}
-                placeholder="VD: 3.5 hoặc 7/2 hoặc √(2) hoặc kết quả tính toán..."
-                className="flex-1 px-4 py-3 text-sm md:text-base bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono shadow-2xs"
+                onBlur={(e) => {
+                  const formatted = formatShortAnswerDecimalComma(e.target.value);
+                  if (formatted !== e.target.value) {
+                    handleSetTextInput(formatted);
+                  }
+                }}
+                placeholder="Ví dụ: 3,5 hoặc 7/2..."
+                className="flex-1 px-4 py-3 text-sm md:text-base bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono shadow-2xs select-text"
               />
               {(answers[currentQuestion.id] as string) && (
                 <button
@@ -725,6 +828,79 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
               )}
             </div>
           </div>
+        )}
+
+        {/* FORMAT 4c: Essay / Online Text & Formula Editor */}
+        {currentQuestion.type === 'essay' && (
+          <div className="p-4 sm:p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <label className="block text-xs font-bold text-slate-800">
+                  Soạn thảo bài làm tự luận trực tuyến (đặt con trỏ chuột ở đâu sẽ chèn công thức ngay tại đó):
+                </label>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Hỗ trợ gõ văn bản, công thức Toán $...$, căn thức, phân số, tích phân và bảng biến thiên.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <CopyContentButton
+                  compact
+                  getText={() => (answers[currentQuestion.id] as string) || ''}
+                  title="Sao chép toàn bộ nội dung bài làm tự luận"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEssayPreview((v) => !v)}
+                  className="px-2.5 py-1 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 rounded-lg flex items-center gap-1 cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>{showEssayPreview ? 'Ẩn xem trước' : 'Hiện xem trước'}</span>
+                </button>
+              </div>
+            </div>
+
+            <MathToolbar
+              targetRef={essayTextareaRef}
+              onInsert={(snippet) => {
+                const cur = (answers[currentQuestion.id] as string) || '';
+                const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
+                handleSetTextInput(cur ? (isBlock ? `${cur}\n${snippet}` : `${cur} ${snippet}`) : snippet);
+              }}
+            />
+
+            <textarea
+              ref={essayTextareaRef}
+              rows={8}
+              value={(answers[currentQuestion.id] as string) || ''}
+              onChange={(e) => handleSetTextInput(e.target.value)}
+              placeholder="Nhập nội dung bài làm tự luận của bạn tại đây..."
+              className="w-full p-3.5 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono leading-relaxed select-text"
+            />
+
+            {showEssayPreview && typeof answers[currentQuestion.id] === 'string' && (answers[currentQuestion.id] as string).trim() && (
+              <div className="p-3.5 bg-white border border-blue-200 rounded-xl space-y-1.5 select-text">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-blue-700">
+                  Xem trước bài tự luận đã hiển thị công thức:
+                </div>
+                <div className="text-sm text-slate-900 leading-relaxed">
+                  <RichContentRenderer content={answers[currentQuestion.id] as string} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* FORMAT 4b: Matching (Ghép đôi hai cột) */}
+        {currentQuestion.type === 'matching' && (
+          <MatchingQuestionView
+            question={currentQuestion}
+            mode="taking"
+            userAnswer={
+              (answers[currentQuestion.id] as { [leftId: string]: string }) || {}
+            }
+            onChange={handleSetMatching}
+            fontSize={fontSize}
+          />
         )}
 
         {/* FORMAT 5: Grouped Questions (Câu hỏi chùm: hỗ trợ đơn, nhiều, đúng/sai, trả lời ngắn) */}
@@ -928,7 +1104,13 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                       type="text"
                       value={(subAns as string) || ''}
                       onChange={(e) => handleSetGroupedSubAnswer(subQ.id, e.target.value)}
-                      placeholder="Nhập câu trả lời ngắn..."
+                      onBlur={(e) => {
+                        const formatted = formatShortAnswerDecimalComma(e.target.value);
+                        if (formatted !== e.target.value) {
+                          handleSetGroupedSubAnswer(subQ.id, formatted);
+                        }
+                      }}
+                      placeholder="Nhập câu trả lời ngắn (số thập phân dùng dấu phẩy, vd: 3,5)..."
                       className="w-full px-3.5 py-2.5 text-xs sm:text-sm bg-white border border-purple-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 font-mono"
                     />
                   )}
@@ -943,24 +1125,34 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col font-sans select-none">
+    <div className={`min-h-screen bg-slate-100 flex flex-col font-sans ${isAntiCopyEnabled ? 'select-none' : 'select-text'}`}>
       {/* Top Test-Taking Bar */}
       <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-4 md:px-6 py-3 flex items-center justify-between gap-4 shadow-xs">
         {/* Left: Exam title & mode */}
         <div className="flex items-center gap-3 min-w-0">
-          <button
-            onClick={() => {
-              if (exam.lockExitUntilTimeout && mode === 'exam' && userRole === 'student' && remainingSeconds > 0) {
-                setIsLockdownNoticeOpen(true);
-              } else {
-                setIsExitConfirmOpen(true);
-              }
-            }}
-            className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-            title="Thoát phòng thi"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
+          {!(isOfficialLocked && userRole === 'student') ? (
+            <button
+              onClick={() => {
+                if (exam.lockExitUntilTimeout && mode === 'exam' && userRole === 'student' && remainingSeconds > 0) {
+                  setIsLockdownNoticeOpen(true);
+                } else {
+                  setIsExitConfirmOpen(true);
+                }
+              }}
+              className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+              title="Thoát phòng thi"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          ) : (
+            <div
+              className="px-2.5 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-bold flex items-center gap-1 shrink-0"
+              title="Chế độ khóa điều hướng kỳ thi chính thức đang bật"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Thi chính thức</span>
+            </div>
+          )}
           <div className="min-w-0">
             <h1 className="text-sm md:text-base font-bold text-slate-900 truncate">
               {exam.title}
@@ -1071,10 +1263,26 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           {/* Fullscreen Toggle */}
           <button
             onClick={toggleFullscreen}
-            className="hidden md:flex p-2 text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors cursor-pointer"
-            title={isFullscreen ? 'Thu nhỏ' : 'Toàn màn hình'}
+            className={`hidden md:flex p-2 rounded-lg border transition-colors cursor-pointer ${
+              isRoomLockActive
+                ? 'text-rose-700 bg-rose-50 border-rose-200 hover:bg-rose-100'
+                : 'text-slate-600 bg-slate-50 hover:bg-slate-100 border-slate-200'
+            }`}
+            title={
+              isRoomLockActive
+                ? 'Phòng thi đang khóa toàn màn hình'
+                : isFullscreen
+                ? 'Thu nhỏ'
+                : 'Toàn màn hình'
+            }
           >
-            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            {isRoomLockActive ? (
+              <Lock className="w-4 h-4" />
+            ) : isFullscreen ? (
+              <Minimize2 className="w-4 h-4" />
+            ) : (
+              <Maximize2 className="w-4 h-4" />
+            )}
           </button>
 
           {/* Split Screen Toggle Button */}
@@ -1133,11 +1341,27 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
       {/* Main Container: 2-Column Desktop Layout */}
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left: Question Box (8 cols) */}
-        <main className="lg:col-span-8 bg-white rounded-xl border border-slate-200 p-6 md:p-8 shadow-xs flex flex-col justify-between min-h-[580px]">
-          <div>
+        <main
+          ref={questionContainerRef}
+          className="lg:col-span-8 bg-white rounded-xl border border-slate-200 p-6 md:p-8 shadow-xs flex flex-col justify-between min-h-[580px]"
+        >
+          <div key={currentQuestion.id}>
             {/* Question Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-6">
               <div className="flex items-center gap-3 flex-wrap">
+                {(() => {
+                  const activeCluster = isGroupedByType
+                    ? questionClusters.find((c) => c.items.some((item) => item.flatIndex === currentIndex))
+                    : undefined;
+                  if (!activeCluster) return null;
+                  const idxInCluster = activeCluster.items.findIndex((item) => item.flatIndex === currentIndex);
+                  return (
+                    <span className="text-xs font-bold px-2.5 py-0.5 rounded-md bg-indigo-50 text-indigo-800 border border-indigo-200">
+                      Phần {activeCluster.roman} · {activeCluster.shortLabel} ({idxInCluster + 1}/{activeCluster.items.length})
+                    </span>
+                  );
+                })()}
+
                 <span className="text-base font-bold text-slate-900">
                   Câu {currentIndex + 1} / {exam.questions.length}
                 </span>
@@ -1145,9 +1369,12 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 {/* Question Type Badge */}
                 <span className="text-xs font-medium px-2.5 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
                   {currentQuestion.type === 'single_choice' && 'Trắc nghiệm đơn'}
+                  {currentQuestion.type === 'multiple_choice' && 'Chọn nhiều đáp án'}
                   {currentQuestion.type === 'true_false' && 'Trắc nghiệm Đúng / Sai'}
                   {currentQuestion.type === 'text_input' && 'Trả lời ngắn'}
+                  {currentQuestion.type === 'matching' && 'Ghép đôi hai cột'}
                   {currentQuestion.type === 'grouped' && 'Câu hỏi chùm'}
+                  {currentQuestion.type === 'essay' && 'Tự luận / Soạn thảo'}
                 </span>
 
                 {/* Question Points Badge */}
@@ -1201,7 +1428,9 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             </div>
 
             {/* Split Screen vs Single Column Question & Answer Flow */}
-            {isSplitView ? (
+            {currentQuestion.type === 'matching' ? (
+              renderAnswerForm()
+            ) : isSplitView ? (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                 {/* Left Column: Problem Statement & Passage */}
                 <div className="lg:col-span-6 bg-slate-50/70 p-5 rounded-2xl border border-slate-200 lg:max-h-[68vh] lg:overflow-y-auto space-y-3">
@@ -1443,41 +1672,104 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
               </button>
             </div>
 
-            {/* Question matrix buttons */}
-            <div className="grid grid-cols-5 gap-2 max-h-[360px] overflow-y-auto pr-1">
-              {exam.questions.map((q, idx) => {
-                const isSelected = isQuestionAnswered(q);
-                const isFlagged = flagged[q.id];
-                const isCurrent = currentIndex === idx;
+            {/* Question matrix buttons (Grouped by Question-Type Cluster when enabled) */}
+            {isGroupedByType && questionClusters.length > 0 ? (
+              <div className="space-y-3.5 max-h-[380px] overflow-y-auto pr-1">
+                {questionClusters.map((cluster) => {
+                  const visibleItems = cluster.items.filter(({ question }) => {
+                    const isSelected = isQuestionAnswered(question);
+                    const isFlaggedItem = Boolean(flagged[question.id]);
+                    if (filterMode === 'unanswered') return !isSelected;
+                    if (filterMode === 'flagged') return isFlaggedItem;
+                    return true;
+                  });
+                  if (visibleItems.length === 0) return null;
+                  return (
+                    <div key={`${cluster.type}_${cluster.partIndex}`} className="space-y-2">
+                      <div className="flex items-center justify-between px-2 py-1 rounded-md bg-indigo-50/90 border border-indigo-200/80 text-[11px] font-bold text-indigo-950">
+                        <span>
+                          Phần {cluster.roman}: {cluster.shortLabel}
+                        </span>
+                        <span className="font-mono text-indigo-700">
+                          {cluster.items.length} câu
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-5 gap-2">
+                        {visibleItems.map(({ question: q, flatIndex: idx }) => {
+                          const isSelected = isQuestionAnswered(q);
+                          const isFlaggedItem = flagged[q.id];
+                          const isCurrent = currentIndex === idx;
 
-                let btnClass = 'bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200';
-                if (isSelected) {
-                  btnClass = 'bg-blue-600 text-white font-bold border-blue-600';
-                }
-                if (isFlagged) {
-                  btnClass = 'bg-amber-100 text-amber-900 border-amber-300 font-bold';
+                          let btnClass = 'bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200';
+                          if (isSelected) {
+                            btnClass = 'bg-blue-600 text-white font-bold border-blue-600';
+                          }
+                          if (isFlaggedItem) {
+                            btnClass = 'bg-amber-100 text-amber-900 border-amber-300 font-bold';
+                            if (isSelected) {
+                              btnClass = 'bg-blue-600 text-white border-amber-400 ring-2 ring-amber-400';
+                            }
+                          }
+                          if (isCurrent) {
+                            btnClass += ' ring-2 ring-slate-900 ring-offset-1';
+                          }
+
+                          return (
+                            <button
+                              key={q.id}
+                              onClick={() => setCurrentIndex(idx)}
+                              className={`relative h-10 rounded-lg text-xs font-semibold border flex items-center justify-center transition-all cursor-pointer ${btnClass}`}
+                            >
+                              <span>{idx + 1}</span>
+                              {isFlaggedItem && (
+                                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border border-white" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="grid grid-cols-5 gap-2 max-h-[360px] overflow-y-auto pr-1">
+                {exam.questions.map((q, idx) => {
+                  const isSelected = isQuestionAnswered(q);
+                  const isFlaggedItem = flagged[q.id];
+                  if (filterMode === 'unanswered' && isSelected) return null;
+                  if (filterMode === 'flagged' && !isFlaggedItem) return null;
+                  const isCurrent = currentIndex === idx;
+
+                  let btnClass = 'bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200';
                   if (isSelected) {
-                    btnClass = 'bg-blue-600 text-white border-amber-400 ring-2 ring-amber-400';
+                    btnClass = 'bg-blue-600 text-white font-bold border-blue-600';
                   }
-                }
-                if (isCurrent) {
-                  btnClass += ' ring-2 ring-slate-900 ring-offset-1';
-                }
+                  if (isFlaggedItem) {
+                    btnClass = 'bg-amber-100 text-amber-900 border-amber-300 font-bold';
+                    if (isSelected) {
+                      btnClass = 'bg-blue-600 text-white border-amber-400 ring-2 ring-amber-400';
+                    }
+                  }
+                  if (isCurrent) {
+                    btnClass += ' ring-2 ring-slate-900 ring-offset-1';
+                  }
 
-                return (
-                  <button
-                    key={q.id}
-                    onClick={() => setCurrentIndex(idx)}
-                    className={`relative h-10 rounded-lg text-xs font-semibold border flex items-center justify-center transition-all cursor-pointer ${btnClass}`}
-                  >
-                    <span>{idx + 1}</span>
-                    {isFlagged && (
-                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border border-white" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+                  return (
+                    <button
+                      key={q.id}
+                      onClick={() => setCurrentIndex(idx)}
+                      className={`relative h-10 rounded-lg text-xs font-semibold border flex items-center justify-center transition-all cursor-pointer ${btnClass}`}
+                    >
+                      <span>{idx + 1}</span>
+                      {isFlaggedItem && (
+                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border border-white" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Quick tips & submit button */}
@@ -1742,6 +2034,18 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
         cancelText="Tiếp tục làm bài"
         onConfirm={onExit}
         onClose={() => setIsExitConfirmOpen(false)}
+      />
+
+      {/* Fullscreen Kiosk Room Lock Enforcement */}
+      <RoomLockGuard
+        active={isRoomLockActive}
+        title={exam.title}
+        subtitle={
+          candidateName
+            ? `Thí sinh: ${candidateName}${studentCode ? ` (${studentCode})` : ''}`
+            : undefined
+        }
+        remainingLabel={formatTime(remainingSeconds)}
       />
     </div>
   );

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Exam, ExamResult } from '../types/exam';
 import { Coffee, ArrowRight, CheckCircle2, Clock, Eye, Sparkles } from 'lucide-react';
+import { RoomLockGuard } from './RoomLockGuard';
 
 interface IntermissionBreakViewProps {
   completedExam: Exam;
@@ -11,18 +12,20 @@ interface IntermissionBreakViewProps {
   nextIndex: number;
   totalExams: number;
   breakMinutes: number;
+  isRoomLocked?: boolean;
   onStartNext: () => void;
 }
 
 export const IntermissionBreakView: React.FC<IntermissionBreakViewProps> = ({
   completedExam,
-  completedResult,
+  completedResult: _completedResult,
   nextExam,
   nextClusterExams,
   nextClusterMaxDuration,
   nextIndex,
   totalExams,
   breakMinutes,
+  isRoomLocked = false,
   onStartNext,
 }) => {
   const [secondsLeft, setSecondsLeft] = useState(breakMinutes * 60);
@@ -89,20 +92,16 @@ export const IntermissionBreakView: React.FC<IntermissionBreakViewProps> = ({
           </span>
         </div>
 
-        {/* Quick Review of Previous Subject Score */}
-        <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-left">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+        {/* Neutral Submission Confirmation (Results announced only after completing the entire bundle) */}
+        <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 mb-6 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-left">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <div>
-              <div className="font-semibold text-slate-900">{completedExam.title}</div>
-              <div className="text-slate-500">Đúng {completedResult.correctCount}/{completedResult.totalQuestions} câu</div>
+              <div className="font-semibold text-slate-900">Đã ghi nhận bài làm: {completedExam.title}</div>
+              <div className="text-slate-500 mt-0.5">
+                Kết quả và điểm số sẽ được công bố sau khi hoàn thành toàn bộ các môn trong tổ hợp.
+              </div>
             </div>
-          </div>
-          <div className="text-right">
-            <span className="font-mono font-bold text-base text-slate-900">
-              {(completedResult.scoreOnTenScale ?? completedResult.score ?? 0).toFixed(1)}
-            </span>
-            <span className="text-slate-400">/10</span>
           </div>
         </div>
 
@@ -164,6 +163,13 @@ export const IntermissionBreakView: React.FC<IntermissionBreakViewProps> = ({
           <ArrowRight className="w-4 h-4" />
         </button>
       </div>
+
+      <RoomLockGuard
+        active={Boolean(isRoomLocked)}
+        title={`Nghỉ chuyển môn · ${completedExam.title}`}
+        subtitle="Giữ chế độ khóa toàn màn hình giữa các môn trong tổ hợp"
+        remainingLabel={formattedTime}
+      />
     </div>
   );
 };

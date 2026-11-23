@@ -1,13 +1,22 @@
-import React, { useState } from 'react';
-import { Exam, Question, UserRole } from '../types/exam';
-import { X, Eye, EyeOff, Printer, Clock, BookOpen, CheckCircle, ArrowRight, FileText } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Exam, Question, UserAccount, UserRole } from '../types/exam';
+import { X, Eye, EyeOff, Printer, Clock, BookOpen, CheckCircle, ArrowRight, FileText, FileDown } from 'lucide-react';
 import { RichContentRenderer } from './RichContentRenderer';
-import { formatTrueFalseScoringRule } from '../utils/scoring';
+import { MatchingQuestionView } from './MatchingQuestionView';
+import {
+  formatTrueFalseScoringRule,
+  buildQuestionClusters,
+  formatAcceptedShortAnswersList,
+} from '../utils/scoring';
+import { renderMath } from '../utils/renderMath';
+import { exportExamToWord } from '../utils/exportFiles';
+import { getCurrentUser, isCreatorModeRestricted, isCreatorOfItem, isMasterAdminUser } from '../utils/storage';
 
 interface ExamPreviewModalProps {
   isOpen: boolean;
   exam: Exam | null;
   userRole?: UserRole;
+  currentUser?: UserAccount | null;
   isTaking?: boolean; // Whether currently in an active exam session
   onJumpToQuestion?: (questionIndex: number) => void;
   onClose: () => void;
@@ -17,19 +26,38 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
   isOpen,
   exam,
   userRole = 'teacher',
+  currentUser,
   isTaking = false,
   onJumpToQuestion,
   onClose,
 }) => {
-  // Teachers can toggle solutions; students during an exam cannot see answers
-  const [showSolutions, setShowSolutions] = useState(false);
+  // In Preview mode (!isTaking), show detailed solutions, T/F answers & short answers by default
+  const [showSolutions, setShowSolutions] = useState(!isTaking);
   const [filterType, setFilterType] = useState<string>('all');
+  const [isExportingWord, setIsExportingWord] = useState(false);
+  const sheetRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setShowSolutions(!isTaking);
+    }
+  }, [isOpen, isTaking, exam?.id]);
+
+  useEffect(() => {
+    if (isOpen) {
+      renderMath(sheetRef.current);
+    }
+  }, [isOpen, showSolutions, filterType, exam?.id]);
 
   if (!isOpen || !exam) return null;
 
-  // Chế độ người ra đề: Không cho ai khác xem thử (kể cả học sinh), trừ người ra đề
-  const isCreatorOnly = exam.visibility === 'private' || exam.status === 'draft';
-  if (userRole === 'student' && isCreatorOnly) {
+  // Chế độ người ra đề / Riêng tư / Bản nháp: chỉ người ra đề đó và Quản trị viên tối cao (ở chế độ Giáo viên) được phép xem thử
+  const effectiveUser = currentUser ?? getCurrentUser();
+  const isCreatorRestricted = isCreatorModeRestricted(exam) || exam.status === 'draft';
+  const canAccessRestricted =
+    userRole === 'teacher' &&
+    (isCreatorOfItem(exam, effectiveUser) || isMasterAdminUser(effectiveUser));
+  if (isCreatorRestricted && !canAccessRestricted) {
     return (
       <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 font-sans">
         <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 text-center space-y-4">
@@ -40,7 +68,7 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
             Không có quyền xem thử đề thi
           </h3>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Đề thi này đang ở <strong>chế độ Người ra đề (Bản nháp riêng tư)</strong>. Hệ thống không cho phép bất kỳ ai khác kể cả học sinh xem trước, chỉ khi nào người ra đề mở đề thi mới có thể xem và làm bài.
+            Đề thi này đang ở <strong>chế độ Người ra đề (Riêng tư / Bản nháp)</strong>. Chỉ người ra đề tạo ra đề thi này và Quản trị viên tối cao mới có quyền xem trước.
           </p>
           <button
             type="button"
@@ -54,15 +82,33 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
     );
   }
 
-  const canViewSolutions = userRole === 'teacher';
+  const canViewSolutions = !isTaking || userRole === 'teacher';
 
-  const filteredQuestions = exam.questions.filter((q) => {
+  const isGroupedByType = Boolean(exam.settings?.groupByQuestionType);
+  const clusters = isGroupedByType
+    ? buildQuestionClusters(exam.questions, exam.settings?.questionTypeOrder)
+    : [];
+  const orderedQuestions = isGroupedByType
+    ? clusters.flatMap((c) => c.items.map((it) => it.question))
+    : exam.questions;
+
+  const filteredQuestions = orderedQuestions.filter((q) => {
     if (filterType === 'all') return true;
     return q.type === filterType;
   });
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleExportWord = async (withAnswers: boolean) => {
+    if (isExportingWord) return;
+    setIsExportingWord(true);
+    try {
+      await exportExamToWord(exam, { includeAnswers: withAnswers });
+    } finally {
+      setIsExportingWord(false);
+    }
   };
 
   return (
@@ -84,7 +130,33 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
             </h2>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+            {!isTaking && (canViewSolutions || exam.allowCopy !== false) && (
+              <>
+                <button
+                  type="button"
+                  disabled={isExportingWord}
+                  onClick={() => handleExportWord(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                  title="Xuất đề thi ra file Microsoft Word (.docx)"
+                >
+                  <FileDown className="w-3.5 h-3.5" />
+                  <span>{isExportingWord ? 'Đang tạo...' : 'Xuất Word'}</span>
+                </button>
+                {canViewSolutions && (
+                  <button
+                    type="button"
+                    disabled={isExportingWord}
+                    onClick={() => handleExportWord(true)}
+                    className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                    title="Xuất file Word kèm bảng đáp án & lời giải (Giáo viên)"
+                  >
+                    <FileDown className="w-3.5 h-3.5" />
+                    <span>Word (+Đáp án)</span>
+                  </button>
+                )}
+              </>
+            )}
             <button
               onClick={handlePrint}
               className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors cursor-pointer border border-slate-700"
@@ -133,7 +205,11 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                 }`}
               >
                 {showSolutions ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                <span>{showSolutions ? 'Ẩn đáp án & lời giải' : 'Hiện đáp án & lời giải (GV)'}</span>
+                <span>
+                  {showSolutions
+                    ? 'Ẩn đáp án & lời giải'
+                    : 'Hiện đáp án, Đ/S, TL ngắn & lời giải'}
+                </span>
               </button>
             ) : (
               <span className="text-[11px] text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded">
@@ -155,12 +231,31 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
         )}
 
         {/* Questions Sheet */}
-        <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1 bg-white">
+        <div ref={sheetRef} className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1 bg-white">
           {filteredQuestions.map((q, index) => {
-            const originalIndex = exam.questions.findIndex((orig) => orig.id === q.id);
+            const originalIndex = orderedQuestions.findIndex((orig) => orig.id === q.id);
+            const prevQ = index > 0 ? filteredQuestions[index - 1] : null;
+            const clusterInfo = isGroupedByType
+              ? clusters.find((c) => c.type === (q.type || 'single_choice'))
+              : undefined;
+            const isClusterStart = Boolean(
+              isGroupedByType &&
+                clusterInfo &&
+                (!prevQ || (prevQ.type || 'single_choice') !== (q.type || 'single_choice'))
+            );
             return (
+              <React.Fragment key={q.id}>
+                {isClusterStart && clusterInfo && (
+                  <div className="px-4 py-2.5 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-between gap-2">
+                    <div className="text-xs sm:text-sm font-bold text-indigo-950">
+                      PHẦN {clusterInfo.roman}. {clusterInfo.partTitle}
+                    </div>
+                    <span className="text-[11px] font-mono font-semibold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                      {clusterInfo.items.length} câu
+                    </span>
+                  </div>
+                )}
               <div
-                key={q.id}
                 className="p-5 rounded-xl border border-slate-200 hover:border-slate-300 bg-slate-50/30 transition-colors space-y-3.5"
               >
                 {/* Question title header */}
@@ -171,9 +266,12 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                     </span>
                     <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
                       {q.type === 'single_choice' && 'Trắc nghiệm đơn'}
+                      {q.type === 'multiple_choice' && 'Chọn nhiều đáp án'}
                       {q.type === 'true_false' && 'Đúng / Sai'}
                       {q.type === 'text_input' && 'Trả lời ngắn'}
+                      {q.type === 'matching' && 'Ghép đôi hai cột'}
                       {q.type === 'grouped' && 'Câu hỏi chùm'}
+                      {q.type === 'essay' && 'Tự luận / Soạn thảo'}
                     </span>
                     <span className="text-[11px] font-mono font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
                       {q.points || 1.0} điểm
@@ -204,49 +302,59 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                   <RichContentRenderer content={q.question} imageUrl={q.imageUrl} />
                 </div>
 
-                {/* Format 1: Single choice */}
-                {q.type === 'single_choice' && q.options && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    {q.options.map((opt, optIdx) => {
-                      const letter = String.fromCharCode(65 + optIdx);
-                      const isCorrect = q.correctAnswer === optIdx;
-                      return (
-                        <div
-                          key={optIdx}
-                          className={`p-2.5 rounded-lg border text-xs flex items-start gap-2.5 ${
-                            showSolutions && isCorrect
-                              ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-medium'
-                              : 'bg-white border-slate-200 text-slate-800'
-                          }`}
-                        >
-                          <span
-                            className={`w-5 h-5 rounded font-bold text-xs flex items-center justify-center shrink-0 border ${
+                {/* Format 1: Single choice & Multiple choice */}
+                {(q.type === 'single_choice' || q.type === 'multiple_choice') && q.options && (
+                  <div className="space-y-1.5 pt-1">
+                    {q.type === 'multiple_choice' && (
+                      <div className="text-[11px] font-medium text-indigo-700">
+                        (Chọn nhiều đáp án đúng)
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {q.options.map((opt, optIdx) => {
+                        const letter = String.fromCharCode(65 + optIdx);
+                        const isCorrect =
+                          q.type === 'multiple_choice'
+                            ? (q.correctAnswers || []).includes(optIdx)
+                            : q.correctAnswer === optIdx;
+                        return (
+                          <div
+                            key={optIdx}
+                            className={`p-2.5 rounded-lg border text-xs flex items-start gap-2.5 ${
                               showSolutions && isCorrect
-                                ? 'bg-emerald-600 text-white border-emerald-600'
-                                : 'bg-slate-100 text-slate-700 border-slate-200'
+                                ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-medium'
+                                : 'bg-white border-slate-200 text-slate-800'
                             }`}
                           >
-                            {letter}
-                          </span>
-                          <div className="flex-1">
-                            <RichContentRenderer content={opt} />
-                            {q.optionImages?.[optIdx] && (
-                              <div className="mt-1.5">
-                                <img
-                                  src={q.optionImages[optIdx]}
-                                  alt={`Phương án ${letter}`}
-                                  className="max-h-32 rounded border border-slate-200 object-contain bg-white shadow-2xs"
-                                  referrerPolicy="no-referrer"
-                                />
-                              </div>
+                            <span
+                              className={`w-5 h-5 rounded font-bold text-xs flex items-center justify-center shrink-0 border ${
+                                showSolutions && isCorrect
+                                  ? 'bg-emerald-600 text-white border-emerald-600'
+                                  : 'bg-slate-100 text-slate-700 border-slate-200'
+                              }`}
+                            >
+                              {letter}
+                            </span>
+                            <div className="flex-1">
+                              <RichContentRenderer content={opt} />
+                              {q.optionImages?.[optIdx] && (
+                                <div className="mt-1.5">
+                                  <img
+                                    src={q.optionImages[optIdx]}
+                                    alt={`Phương án ${letter}`}
+                                    className="max-h-32 rounded border border-slate-200 object-contain bg-white shadow-2xs"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                            {showSolutions && isCorrect && (
+                              <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                             )}
                           </div>
-                          {showSolutions && isCorrect && (
-                            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                          )}
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 
@@ -296,8 +404,37 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                       <div className="text-emerald-800 font-medium pt-1">
                         Đáp án được chấp nhận:{' '}
                         <span className="font-mono bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                          {q.acceptedAnswers.join(' / ')}
+                          {formatAcceptedShortAnswersList(q.acceptedAnswers)}
                         </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Format 3b: Matching */}
+                {q.type === 'matching' && (
+                  <MatchingQuestionView
+                    question={q}
+                    mode="preview"
+                    showSolutions={showSolutions}
+                    hidePrompt={true}
+                  />
+                )}
+
+                {/* Format 3c: Essay / Online Text Editor */}
+                {q.type === 'essay' && (
+                  <div className="p-3.5 bg-white border border-dashed border-slate-300 rounded-lg text-xs space-y-2.5">
+                    <div className="text-slate-500 italic">
+                      [Thí sinh soạn thảo bài làm tự luận trực tuyến kèm thanh công thức toán học]
+                    </div>
+                    {showSolutions && q.sampleAnswer && q.sampleAnswer.trim() && (
+                      <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-lg space-y-1">
+                        <div className="font-bold text-emerald-900 uppercase text-[10px] tracking-wider">
+                          Đáp án tham khảo / Gợi ý chấm điểm:
+                        </div>
+                        <div className="text-emerald-950 leading-relaxed">
+                          <RichContentRenderer content={q.sampleAnswer} />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -308,8 +445,11 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                   <div className="pl-3 border-l-2 border-purple-200 space-y-3 pt-1">
                     {q.subQuestions.map((sub, sIdx) => (
                       <div key={sub.id} className="text-xs space-y-1.5 p-2 rounded-lg bg-white/70 border border-purple-100">
-                        <div className="font-bold text-purple-900">
-                          {index + 1}.{sIdx + 1}) {sub.question}
+                        <div className="font-bold text-purple-900 flex items-start gap-1.5">
+                          <span className="shrink-0">{index + 1}.{sIdx + 1})</span>
+                          <div className="flex-1 min-w-0">
+                            <RichContentRenderer content={sub.question} />
+                          </div>
                         </div>
                         {sub.imageUrl && (
                           <div className="py-1">
@@ -321,30 +461,72 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                             />
                           </div>
                         )}
-                        {(sub.type || 'single_choice') === 'single_choice' && sub.options && (
+                        {((sub.type || 'single_choice') === 'single_choice' || sub.type === 'multiple_choice') && sub.options && (
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-2">
-                            {sub.options.map((opt, oIdx) => (
-                              <div
-                                key={oIdx}
-                                className={`p-2 rounded border text-[11px] ${
-                                  showSolutions && sub.correctAnswer === oIdx
-                                    ? 'bg-emerald-50 border-emerald-300 font-bold text-emerald-900'
-                                    : 'bg-white border-slate-200 text-slate-800'
-                                }`}
-                              >
-                                <div>
-                                  <span className="font-bold mr-1">{String.fromCharCode(65 + oIdx)}.</span>
-                                  {opt}
-                                </div>
-                                {sub.optionImages?.[oIdx] && (
-                                  <div className="mt-1">
-                                    <img
-                                      src={sub.optionImages[oIdx]}
-                                      alt={`Ý ${String.fromCharCode(65 + oIdx)}`}
-                                      className="max-h-24 rounded border border-purple-100 object-contain bg-white shadow-2xs"
-                                      referrerPolicy="no-referrer"
-                                    />
+                            {sub.options.map((opt, oIdx) => {
+                              const isSubCorrect =
+                                sub.type === 'multiple_choice'
+                                  ? (sub.correctAnswers || []).includes(oIdx)
+                                  : sub.correctAnswer === oIdx;
+                              return (
+                                <div
+                                  key={oIdx}
+                                  className={`p-2 rounded border text-[11px] flex items-start justify-between gap-2 ${
+                                    showSolutions && isSubCorrect
+                                      ? 'bg-emerald-50 border-emerald-300 font-bold text-emerald-900'
+                                      : 'bg-white border-slate-200 text-slate-800'
+                                  }`}
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-start gap-1">
+                                      <span className="font-bold shrink-0">{String.fromCharCode(65 + oIdx)}.</span>
+                                      <div className="flex-1 min-w-0">
+                                        <RichContentRenderer content={opt} />
+                                      </div>
+                                    </div>
+                                    {sub.optionImages?.[oIdx] && (
+                                      <div className="mt-1">
+                                        <img
+                                          src={sub.optionImages[oIdx]}
+                                          alt={`Ý ${String.fromCharCode(65 + oIdx)}`}
+                                          className="max-h-24 rounded border border-purple-100 object-contain bg-white shadow-2xs"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                      </div>
+                                    )}
                                   </div>
+                                  {showSolutions && isSubCorrect && (
+                                    <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {sub.type === 'true_false' && sub.tfItems && (
+                          <div className="space-y-1 pl-2">
+                            {sub.tfItems.map((item, itemIdx) => (
+                              <div
+                                key={item.id}
+                                className="p-2 rounded border border-slate-200 bg-white text-[11px] flex items-center justify-between gap-2"
+                              >
+                                <div className="flex items-start gap-1.5 flex-1">
+                                  <span className="font-bold text-slate-700 shrink-0">
+                                    {String.fromCharCode(97 + itemIdx)})
+                                  </span>
+                                  <RichContentRenderer content={item.statement} />
+                                </div>
+                                {showSolutions && (
+                                  <span
+                                    className={`px-2 py-0.5 rounded font-bold text-[10px] shrink-0 ${
+                                      item.isCorrect
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : 'bg-rose-100 text-rose-800'
+                                    }`}
+                                  >
+                                    {item.isCorrect ? 'ĐÚNG' : 'SAI'}
+                                  </span>
                                 )}
                               </div>
                             ))}
@@ -360,10 +542,46 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                               <div className="text-emerald-800 font-medium text-[11px] pt-1">
                                 Đáp án chấp nhận:{' '}
                                 <span className="font-mono bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                                  {sub.acceptedAnswers.join(' / ')}
+                                  {formatAcceptedShortAnswersList(sub.acceptedAnswers)}
                                 </span>
                               </div>
                             )}
+                          </div>
+                        )}
+
+                        {sub.type === 'matching' && (
+                          <MatchingQuestionView
+                            question={sub}
+                            mode="preview"
+                            showSolutions={showSolutions}
+                            hidePrompt={true}
+                          />
+                        )}
+
+                        {sub.type === 'essay' && (
+                          <div className="p-2.5 bg-slate-50 border border-dashed border-purple-300 rounded-lg text-xs space-y-1.5">
+                            <div className="text-slate-500 italic text-[11px]">
+                              [Thí sinh soạn thảo tự luận & công thức trực tuyến]
+                            </div>
+                            {showSolutions && sub.sampleAnswer && sub.sampleAnswer.trim() && (
+                              <div className="p-2 bg-emerald-50 border border-emerald-200 rounded text-[11px] text-emerald-950 space-y-0.5">
+                                <div className="font-bold text-emerald-900 text-[10px] uppercase">
+                                  Đáp án tham khảo ({index + 1}.{sIdx + 1}):
+                                </div>
+                                <RichContentRenderer content={sub.sampleAnswer} />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {showSolutions && sub.explanation && (
+                          <div className="p-2.5 bg-blue-50/80 border border-blue-200 rounded-lg text-[11px] text-blue-950 space-y-0.5">
+                            <div className="font-bold text-blue-900 uppercase text-[10px] tracking-wider">
+                              Lời giải chi tiết ({index + 1}.{sIdx + 1}):
+                            </div>
+                            <div className="leading-relaxed">
+                              <RichContentRenderer content={sub.explanation} />
+                            </div>
                           </div>
                         )}
                       </div>
@@ -383,6 +601,7 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                   </div>
                 )}
               </div>
+              </React.Fragment>
             );
           })}
         </div>

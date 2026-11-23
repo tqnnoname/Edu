@@ -27,13 +27,17 @@ import {
   CopySlash,
   KeyRound,
   Shuffle,
-  Check
+  Check,
+  FileDown,
+  FileSpreadsheet,
+  MonitorPlay
 } from 'lucide-react';
 
 interface ExamCardProps {
   exam: Exam;
   userRole?: UserRole;
   attemptCount?: number;
+  resultCount?: number;
   activeClassId?: string;
   isEnrolledInClass?: boolean;
   onStartExam: (exam: Exam, mode: 'exam' | 'practice') => void;
@@ -41,6 +45,9 @@ interface ExamCardProps {
   onEditExam?: (exam: Exam) => void;
   onDuplicateExam?: (exam: Exam) => void;
   onDeleteCustom?: (examId: string) => void;
+  onExportWord?: (exam: Exam) => void;
+  onExportResultsExcel?: (exam: Exam) => void;
+  onPresentExam?: (exam: Exam) => void;
 }
 
 const subjectIcons: Record<string, React.ElementType> = {
@@ -80,6 +87,7 @@ export const ExamCard: React.FC<ExamCardProps> = ({
   exam,
   userRole = 'student',
   attemptCount = 0,
+  resultCount = 0,
   activeClassId,
   isEnrolledInClass = false,
   onStartExam,
@@ -87,6 +95,9 @@ export const ExamCard: React.FC<ExamCardProps> = ({
   onEditExam,
   onDuplicateExam,
   onDeleteCustom,
+  onExportWord,
+  onExportResultsExcel,
+  onPresentExam,
 }) => {
   const [copiedCode, setCopiedCode] = useState(false);
 
@@ -225,6 +236,36 @@ export const ExamCard: React.FC<ExamCardProps> = ({
           {/* Manage Actions - Only visible for teacher */}
           {isTeacher && (
             <div className="flex items-center gap-1">
+              {onExportWord && (
+                <button
+                  type="button"
+                  onClick={() => onExportWord(exam)}
+                  className="p-1.5 text-slate-400 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-colors cursor-pointer"
+                  title="Xuất file Word đề thi (.docx)"
+                >
+                  <FileDown className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {onPresentExam && (
+                <button
+                  type="button"
+                  onClick={() => onPresentExam(exam)}
+                  className="p-1.5 text-amber-600 hover:text-amber-800 hover:bg-amber-50 rounded-md transition-colors cursor-pointer"
+                  title={`Trình chiếu công bố điểm phòng thi (${resultCount} bài nộp)`}
+                >
+                  <MonitorPlay className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {onExportResultsExcel && resultCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onExportResultsExcel(exam)}
+                  className="p-1.5 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded-md transition-colors cursor-pointer"
+                  title={`Xuất Excel kết quả (${resultCount} bài nộp)`}
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                </button>
+              )}
               {onEditExam && (
                 <button
                   onClick={() => onEditExam(exam)}

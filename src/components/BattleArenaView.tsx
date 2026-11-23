@@ -18,13 +18,17 @@ import {
   Timer,
   Sparkles
 } from 'lucide-react';
-import { Exam, ExamBundle, Question } from '../types/exam';
+import { Classroom, Exam, ExamBundle, Question, UserAccount, UserRole } from '../types/exam';
 import { RichContentRenderer } from './RichContentRenderer';
+import { canShowInPublicLibrary } from '../utils/storage';
 
 interface BattleArenaViewProps {
   onBackToHome: () => void;
   allExams?: Exam[];
   allBundles?: ExamBundle[];
+  currentUser?: UserAccount | null;
+  userRole?: UserRole;
+  classrooms?: Classroom[];
 }
 
 interface BattleQuestion {
@@ -94,8 +98,19 @@ const AVAILABLE_ARENA_GROUPS = [
 export const BattleArenaView: React.FC<BattleArenaViewProps> = ({ 
   onBackToHome,
   allExams = [],
-  allBundles = []
+  allBundles = [],
+  currentUser = null,
+  userRole = 'student',
+  classrooms = []
 }) => {
+  const visibleExams = useMemo(
+    () => allExams.filter((e) => canShowInPublicLibrary(e, currentUser, userRole, classrooms)),
+    [allExams, currentUser, userRole, classrooms]
+  );
+  const visibleBundles = useMemo(
+    () => allBundles.filter((b) => canShowInPublicLibrary(b, currentUser, userRole, classrooms)),
+    [allBundles, currentUser, userRole, classrooms]
+  );
   // Source configuration
   const [sourceType, setSourceType] = useState<'all' | 'exam' | 'bundle'>('all');
   const [selectedExamId, setSelectedExamId] = useState<string>('');
@@ -208,10 +223,10 @@ export const BattleArenaView: React.FC<BattleArenaViewProps> = ({
     };
 
     if (sourceType === 'exam' && selectedExamId) {
-      const ex = allExams.find((e) => e.id === selectedExamId);
+      const ex = visibleExams.find((e) => e.id === selectedExamId);
       if (ex) extractFromQuestions(ex.questions, ex.title);
     } else if (sourceType === 'bundle' && selectedBundleId) {
-      const b = allBundles.find((item) => item.id === selectedBundleId);
+      const b = visibleBundles.find((item) => item.id === selectedBundleId);
       if (b && b.sections) {
         for (const s of b.sections) {
           extractFromQuestions(s.questions, `${b.title} - ${s.subjectName}`);
@@ -219,10 +234,10 @@ export const BattleArenaView: React.FC<BattleArenaViewProps> = ({
       }
     } else {
       // All exams & bundles
-      for (const ex of allExams) {
+      for (const ex of visibleExams) {
         extractFromQuestions(ex.questions, ex.title);
       }
-      for (const b of allBundles) {
+      for (const b of visibleBundles) {
         if (b.sections) {
           for (const s of b.sections) {
             extractFromQuestions(s.questions, `${b.title} - ${s.subjectName}`);
@@ -439,7 +454,7 @@ export const BattleArenaView: React.FC<BattleArenaViewProps> = ({
                 type="button"
                 onClick={() => {
                   setSourceType('exam');
-                  if (!selectedExamId && allExams.length > 0) setSelectedExamId(allExams[0].id);
+                  if (!selectedExamId && visibleExams.length > 0) setSelectedExamId(visibleExams[0].id);
                 }}
                 className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-3 ${
                   sourceType === 'exam'
@@ -450,7 +465,7 @@ export const BattleArenaView: React.FC<BattleArenaViewProps> = ({
                 <FileText className="w-5 h-5 text-indigo-600 shrink-0" />
                 <div>
                   <div className="font-bold text-xs text-slate-900">Từ một Đề thi cụ thể</div>
-                  <div className="text-[11px] text-slate-500">{allExams.length} đề thi sẵn sàng</div>
+                  <div className="text-[11px] text-slate-500">{visibleExams.length} đề thi sẵn sàng</div>
                 </div>
               </button>
 
@@ -458,7 +473,7 @@ export const BattleArenaView: React.FC<BattleArenaViewProps> = ({
                 type="button"
                 onClick={() => {
                   setSourceType('bundle');
-                  if (!selectedBundleId && allBundles.length > 0) setSelectedBundleId(allBundles[0].id);
+                  if (!selectedBundleId && visibleBundles.length > 0) setSelectedBundleId(visibleBundles[0].id);
                 }}
                 className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-3 ${
                   sourceType === 'bundle'
@@ -469,7 +484,7 @@ export const BattleArenaView: React.FC<BattleArenaViewProps> = ({
                 <Layers className="w-5 h-5 text-purple-600 shrink-0" />
                 <div>
                   <div className="font-bold text-xs text-slate-900">Từ Bài thi Tổ hợp môn</div>
-                  <div className="text-[11px] text-slate-500">{allBundles.length} tổ hợp thi</div>
+                  <div className="text-[11px] text-slate-500">{visibleBundles.length} tổ hợp thi</div>
                 </div>
               </button>
             </div>
@@ -485,7 +500,7 @@ export const BattleArenaView: React.FC<BattleArenaViewProps> = ({
                   onChange={(e) => setSelectedExamId(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
-                  {allExams.map((ex) => (
+                  {visibleExams.map((ex) => (
                     <option key={ex.id} value={ex.id}>
                       {ex.title} ({ex.subject} - {ex.questions.length} câu)
                     </option>

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Exam, ExamBundle, BundleSelectionMode, ElectiveGroup, ExamStatus, BundleTimingMode } from '../types/exam';
+import React, { useEffect, useRef, useState } from 'react';
+import { Exam, ExamBundle, BundleSelectionMode, ElectiveGroup, ExamStatus, BundleTimingMode, ExamVisibility } from '../types/exam';
+import type { UnsavedNavigationGuard } from './UnsavedChangesModal';
 import { 
   ArrowLeft, 
   Save, 
@@ -21,15 +22,27 @@ import {
   Calendar,
   KeyRound,
   CheckCircle2,
-  Sparkles
+  Sparkles,
+  Globe,
+  Users
 } from 'lucide-react';
-import { generate8DigitBundleCode, saveCustomBundle } from '../utils/storage';
+import {
+  generate8DigitBundleCode,
+  saveCustomBundle,
+  getCurrentUser,
+  getAllClassrooms,
+  getVisibleClassrooms,
+  isCreatorModeRestricted,
+  isCreatorOfItem,
+  isMasterAdminUser,
+} from '../utils/storage';
 
 interface BundleCreatorProps {
   availableExams: Exam[];
   initialBundle?: ExamBundle | null;
   onSave: (bundle: ExamBundle) => void;
   onCancel: () => void;
+  onRegisterUnsavedGuard?: (guard: UnsavedNavigationGuard | null) => void;
 }
 
 export const BundleCreator: React.FC<BundleCreatorProps> = ({
@@ -37,14 +50,24 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
   initialBundle,
   onSave,
   onCancel,
+  onRegisterUnsavedGuard,
 }) => {
   const isEditing = Boolean(initialBundle);
+  const currentUser = getCurrentUser();
+  const availableClassrooms = getVisibleClassrooms(getAllClassrooms(), currentUser);
+
   const [title, setTitle] = useState(initialBundle?.title || '');
   const [bundleCode, setBundleCode] = useState<string>(
     initialBundle?.bundleCode || generate8DigitBundleCode()
   );
   const [description, setDescription] = useState(initialBundle?.description || '');
   const [breakMinutes, setBreakMinutes] = useState(initialBundle?.breakMinutes ?? 5);
+
+  // Visibility & Class restriction
+  const [visibility, setVisibility] = useState<ExamVisibility>(initialBundle?.visibility || 'public');
+  const [assignedClassId, setAssignedClassId] = useState<string>(
+    initialBundle?.assignedClassId || availableClassrooms[0]?.id || ''
+  );
 
   // Scheduling & Access Restrictions
   const [status, setStatus] = useState<ExamStatus>(initialBundle?.status || 'open');
@@ -53,6 +76,9 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
   const [maxAttempts, setMaxAttempts] = useState<number>(initialBundle?.maxAttempts ?? 0);
   const [lockExitUntilTimeout, setLockExitUntilTimeout] = useState<boolean>(
     initialBundle?.lockExitUntilTimeout ?? false
+  );
+  const [showScoreAfterExam, setShowScoreAfterExam] = useState<boolean>(
+    initialBundle?.showScoreAfterExam ?? true
   );
   const [showOnlyStudentAnswersAfterExam, setShowOnlyStudentAnswersAfterExam] = useState<boolean>(
     initialBundle?.showOnlyStudentAnswersAfterExam ?? false
@@ -219,16 +245,22 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
     );
   };
 
-  const handleSaveBundle = (stayInEditor: boolean = false) => {
+  const handleSaveBundle = (stayInEditor: boolean = false): boolean => {
     if (!title.trim()) {
       setErrorMsg('Vui lòng nhập tên cho tổ hợp thi!');
-      return;
+      return false;
+    }
+
+    const chosenClass = availableClassrooms.find((c) => c.id === assignedClassId);
+    if (visibility === 'class' && !chosenClass) {
+      setErrorMsg('Bạn chưa có lớp học nào để gán tổ hợp thi! Hãy tạo lớp học trước hoặc chọn phạm vi khác.');
+      return false;
     }
 
     if (selectionMode === 'all_compulsory') {
       if (selectedExamIds.length < 2) {
         setErrorMsg('Vui lòng chọn ít nhất 2 đề thi cho tổ hợp bắt buộc!');
-        return;
+        return false;
       }
 
       const newBundle: ExamBundle = {
@@ -243,19 +275,29 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
         timingMode: 'all_sequential_independent',
         examIds: selectedExamIds,
         randomQuestionCountPerExam: Object.keys(randomQuestionCountPerExam).length > 0 ? randomQuestionCountPerExam : undefined,
+        visibility,
+        assignedClassId: visibility === 'class' ? assignedClassId : undefined,
+        assignedClassName: visibility === 'class' ? (chosenClass?.name || 'Lớp riêng') : undefined,
+        creatorId: initialBundle?.creatorId || currentUser?.id,
+        creatorEmail: initialBundle?.creatorEmail || currentUser?.email,
+        creatorName: initialBundle?.creatorName || currentUser?.fullName,
         openTime: openTime || undefined,
         closeTime: closeTime || undefined,
         status,
         maxAttempts: maxAttempts > 0 ? Number(maxAttempts) : undefined,
         lockExitUntilTimeout,
+        showScoreAfterExam,
         showOnlyStudentAnswersAfterExam,
         minSubmitMinutes: Number(minSubmitMinutes) > 0 ? Number(minSubmitMinutes) : undefined,
         requireAccessCode,
-        accessSecurityCode: requireAccessCode ? (accessSecurityCode.trim() || '123456') : undefined,
+        accessSecurityCode: requireAccessCode
+          ? accessSecurityCode.trim() || Math.floor(100000 + Math.random() * 900000).toString()
+          : undefined,
         createdAt: initialBundle?.createdAt || new Date().toISOString().split('T')[0],
         isCustom: true,
       };
 
+      savedSnapshotRef.current = currentSnapshot;
       if (stayInEditor) {
         saveCustomBundle(newBundle);
         const tStr = new Date().toLocaleTimeString('vi-VN');
@@ -264,28 +306,29 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
       } else {
         onSave(newBundle);
       }
+      return true;
     } else {
       // Validate elective groups
       if (electiveGroups.length === 0) {
         setErrorMsg('Vui lòng tạo ít nhất 1 nhóm môn tự chọn!');
-        return;
+        return false;
       }
 
       for (let i = 0; i < electiveGroups.length; i++) {
         const grp = electiveGroups[i];
         if (!grp.name.trim()) {
           setErrorMsg(`Nhóm tự chọn số ${i + 1} chưa có tên gọi!`);
-          return;
+          return false;
         }
         if (grp.examIds.length === 0) {
           setErrorMsg(`Nhóm "${grp.name}" chưa có môn thi nào. Vui lòng chọn môn cho nhóm!`);
-          return;
+          return false;
         }
         if (grp.minSelectCount < 1 || grp.minSelectCount > grp.examIds.length) {
           setErrorMsg(
             `Nhóm "${grp.name}": Số môn tối thiểu yêu cầu (${grp.minSelectCount}) không hợp lệ (nhóm hiện có ${grp.examIds.length} môn)!`
           );
-          return;
+          return false;
         }
       }
 
@@ -296,12 +339,12 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
 
       if (Number(minGroupsToSelect) > totalGroups) {
         setErrorMsg(`Số nhóm tự chọn tối thiểu (${minGroupsToSelect}) không được vượt quá tổng số nhóm (${totalGroups})!`);
-        return;
+        return false;
       }
 
       if (Number(maxGroupsToSelect) < Number(minGroupsToSelect)) {
         setErrorMsg(`Số nhóm tự chọn tối đa (${maxGroupsToSelect}) không được nhỏ hơn số nhóm tối thiểu (${minGroupsToSelect})!`);
-        return;
+        return false;
       }
 
       // Collect all unique exam IDs involved in this bundle
@@ -326,19 +369,29 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
         maxGroupsToSelect: validMaxGroups,
         selectionTimeLimitSeconds: Math.max(0, Number(selectionTimeLimitSeconds) || 0),
         randomQuestionCountPerExam: Object.keys(randomQuestionCountPerExam).length > 0 ? randomQuestionCountPerExam : undefined,
+        visibility,
+        assignedClassId: visibility === 'class' ? assignedClassId : undefined,
+        assignedClassName: visibility === 'class' ? (chosenClass?.name || 'Lớp riêng') : undefined,
+        creatorId: initialBundle?.creatorId || currentUser?.id,
+        creatorEmail: initialBundle?.creatorEmail || currentUser?.email,
+        creatorName: initialBundle?.creatorName || currentUser?.fullName,
         openTime: openTime || undefined,
         closeTime: closeTime || undefined,
         status,
         maxAttempts: maxAttempts > 0 ? Number(maxAttempts) : undefined,
         lockExitUntilTimeout,
+        showScoreAfterExam,
         showOnlyStudentAnswersAfterExam,
         minSubmitMinutes: Number(minSubmitMinutes) > 0 ? Number(minSubmitMinutes) : undefined,
         requireAccessCode,
-        accessSecurityCode: requireAccessCode ? (accessSecurityCode.trim() || '123456') : undefined,
+        accessSecurityCode: requireAccessCode
+          ? accessSecurityCode.trim() || Math.floor(100000 + Math.random() * 900000).toString()
+          : undefined,
         createdAt: initialBundle?.createdAt || new Date().toISOString().split('T')[0],
         isCustom: true,
       };
 
+      savedSnapshotRef.current = currentSnapshot;
       if (stayInEditor) {
         saveCustomBundle(newBundle);
         const tStr = new Date().toLocaleTimeString('vi-VN');
@@ -347,8 +400,61 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
       } else {
         onSave(newBundle);
       }
+      return true;
     }
   };
+
+  const currentSnapshot = JSON.stringify({
+    title,
+    description,
+    breakMinutes,
+    visibility,
+    assignedClassId,
+    status,
+    openTime,
+    closeTime,
+    maxAttempts,
+    lockExitUntilTimeout,
+    showScoreAfterExam,
+    showOnlyStudentAnswersAfterExam,
+    minSubmitMinutes,
+    requireAccessCode,
+    accessSecurityCode,
+    selectionMode,
+    timingMode,
+    selectedExamIds,
+    compulsoryExamIds,
+    electiveGroups,
+    minGroupsToSelect,
+    maxGroupsToSelect,
+    selectionTimeLimitSeconds,
+    randomQuestionCountPerExam,
+  });
+
+  const savedSnapshotRef = useRef<string>(currentSnapshot);
+  const latestSnapshotRef = useRef<string>(currentSnapshot);
+  latestSnapshotRef.current = currentSnapshot;
+
+  const saveBundleRef = useRef<() => boolean>(() => false);
+  saveBundleRef.current = () => handleSaveBundle(true);
+
+  useEffect(() => {
+    savedSnapshotRef.current = latestSnapshotRef.current;
+  }, [initialBundle?.id]);
+
+  useEffect(() => {
+    if (!onRegisterUnsavedGuard) return;
+    onRegisterUnsavedGuard({
+      title: isEditing ? 'Chưa lưu thay đổi tổ hợp môn' : 'Tổ hợp môn đang tạo chưa được lưu',
+      message:
+        'Bạn đang thiết lập hoặc chỉnh sửa tổ hợp môn. Bạn có muốn lưu lại dữ liệu trước khi chuyển sang mục khác không?',
+      isDirty: () => latestSnapshotRef.current !== savedSnapshotRef.current,
+      saveAndExit: () => saveBundleRef.current(),
+    });
+    return () => {
+      onRegisterUnsavedGuard(null);
+    };
+  }, [onRegisterUnsavedGuard, isEditing]);
 
   return (
     <div className="max-w-4xl mx-auto py-8 px-4 sm:px-6 font-sans">
@@ -409,7 +515,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="VD: Tổ hợp Xét tuyển Đại học hoặc Tổ hợp Tự nhiên / Xã hội"
+              placeholder="Nhập tên tổ hợp đề thi..."
               className="w-full px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </div>
@@ -454,7 +560,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
               maxLength={8}
               value={bundleCode}
               onChange={(e) => setBundleCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
-              placeholder="VD: 58291043"
+              placeholder="Nhập mã tổ hợp gồm 8 chữ số..."
               className="w-full px-3.5 py-2 text-sm font-mono font-bold tracking-widest bg-purple-50/60 border border-purple-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 text-purple-950"
             />
           </div>
@@ -470,6 +576,84 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
               placeholder="Ghi chú về quy chế thi, cách chọn môn, số lượng chỉ tiêu..."
               className="w-full px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
+          </div>
+
+          {/* Visibility & Classroom Assignment */}
+          <div className="md:col-span-2 pt-3 border-t border-slate-100">
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5 flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5 text-purple-600" />
+              <span>Phạm vi hiển thị tổ hợp thi:</span>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setVisibility('public')}
+                className={`p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                  visibility === 'public'
+                    ? 'bg-blue-50 border-blue-500 text-blue-950 font-bold ring-1 ring-blue-500'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                  <span>Công khai trên web</span>
+                </div>
+                <p className="text-[10px] text-slate-500 font-normal mt-1">Hiển thị ra trang chủ cho mọi người.</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVisibility('class')}
+                className={`p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                  visibility === 'class'
+                    ? 'bg-indigo-50 border-indigo-500 text-indigo-950 font-bold ring-1 ring-indigo-500'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span>Giới hạn theo Lớp học</span>
+                </div>
+                <p className="text-[10px] text-slate-500 font-normal mt-1">Chỉ hiển thị cho thành viên lớp được chọn.</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVisibility('private')}
+                className={`p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                  visibility === 'private'
+                    ? 'bg-rose-50 border-rose-500 text-rose-950 font-bold ring-1 ring-rose-500'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                  <span>Người ra đề (Riêng tư)</span>
+                </div>
+                <p className="text-[10px] text-slate-500 font-normal mt-1">Chỉ người ra đề và Quản trị viên tối cao nhìn thấy.</p>
+              </button>
+            </div>
+
+            {visibility === 'class' && (
+              <div className="mt-2.5 p-3 bg-indigo-50/60 rounded-lg border border-indigo-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <span className="font-semibold text-indigo-950">Chọn lớp học được làm tổ hợp này:</span>
+                {availableClassrooms.length === 0 ? (
+                  <span className="text-rose-600 font-semibold">Bạn chưa có lớp học nào. Hãy tạo lớp trước.</span>
+                ) : (
+                  <select
+                    value={assignedClassId}
+                    onChange={(e) => setAssignedClassId(e.target.value)}
+                    className="px-3 py-1.5 text-xs bg-white border border-indigo-300 rounded-lg font-semibold text-slate-900 focus:outline-none"
+                  >
+                    {availableClassrooms.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.grade} - {c.students?.length || 0} HS)
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Schedule & Timing Controls */}
@@ -531,10 +715,30 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
               <div>
                 <label htmlFor="chk_bundle_lockExit" className="font-bold text-purple-950 flex items-center gap-1.5 cursor-pointer">
                   <Lock className="w-3.5 h-3.5 text-purple-600" />
-                  <span>Không cho thoát khỏi giao diện thi đến hết giờ</span>
+                  <span>Khóa phòng Toàn màn hình đến hết giờ</span>
                 </label>
                 <p className="text-[11px] text-purple-900/80 mt-0.5 leading-tight">
-                  Khóa nút thoát phòng thi cho toàn bộ các môn trong tổ hợp.
+                  Bắt buộc Toàn màn hình ẩn thanh tab Chrome/Cốc Cốc & thanh Taskbar, khóa phím Esc/phím tắt và chặn thoát phòng thi cho toàn bộ các môn trong tổ hợp.
+                </p>
+              </div>
+            </div>
+
+            {/* Show score after full bundle */}
+            <div className="p-3 rounded-lg border border-emerald-200 bg-emerald-50/50 flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="chk_bundle_showScore"
+                checked={showScoreAfterExam}
+                onChange={(e) => setShowScoreAfterExam(e.target.checked)}
+                className="w-4 h-4 text-emerald-600 rounded border-slate-300 mt-0.5 focus:ring-emerald-600"
+              />
+              <div>
+                <label htmlFor="chk_bundle_showScore" className="font-bold text-emerald-950 flex items-center gap-1.5 cursor-pointer">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Công bố điểm tổng hợp sau khi thi xong toàn bộ tổ hợp</span>
+                </label>
+                <p className="text-[11px] text-emerald-900/80 mt-0.5 leading-tight">
+                  Nếu tắt, điểm tổ hợp và điểm từng môn sẽ được ẩn với học sinh (không lưu vào lịch sử/đánh giá của HS).
                 </p>
               </div>
             </div>
@@ -613,7 +817,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
                     type="text"
                     value={accessSecurityCode}
                     onChange={(e) => setAccessSecurityCode(e.target.value)}
-                    placeholder="VD: 582910 hoặc PIN"
+                    placeholder="Nhập mã bảo mật hoặc PIN..."
                     className="px-2.5 py-1 text-xs bg-white border border-amber-300 rounded font-mono font-bold text-amber-950 w-36 uppercase tracking-wider"
                   />
                 </div>
@@ -707,7 +911,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {availableExams.map((exam) => {
+              {availableExams.filter((ex) => !isCreatorModeRestricted(ex) || isCreatorOfItem(ex, currentUser) || isMasterAdminUser(currentUser)).map((exam) => {
                 const isSelected = selectedExamIds.includes(exam.id);
                 return (
                   <button
@@ -802,7 +1006,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
                     1. Các môn Bắt buộc chung (Mọi thí sinh bắt buộc phải thi)
                   </h3>
                   <p className="text-[11px] text-blue-800/80 mt-0.5">
-                    Có thể chọn 0, 1 hoặc nhiều môn (Ví dụ: Toán, Ngữ Văn...). Nếu không có thì để trống.
+                    Có thể chọn 0, 1 hoặc nhiều môn. Nếu không có thì để trống.
                   </p>
                 </div>
                 <span className="text-xs font-mono font-bold text-blue-700 bg-white px-2 py-0.5 rounded border border-blue-200">
@@ -811,7 +1015,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {availableExams.map((exam) => {
+                {availableExams.filter((ex) => !isCreatorModeRestricted(ex) || isCreatorOfItem(ex, currentUser) || isMasterAdminUser(currentUser)).map((exam) => {
                   const isChecked = compulsoryExamIds.includes(exam.id);
                   return (
                     <button
@@ -846,7 +1050,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
                     2. Thiết lập các Nhóm môn Tự chọn (Người ra đề quy định số môn tối thiểu)
                   </h3>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Ví dụ: Nhóm 1 yêu cầu chọn ít nhất 2 môn; Nhóm 2 yêu cầu chọn ít nhất 1 môn.
+                    Thiết lập số lượng môn học tối thiểu cần chọn cho từng nhóm.
                   </p>
                 </div>
                 <button
@@ -875,7 +1079,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
                           type="text"
                           value={group.name}
                           onChange={(e) => handleUpdateGroup(group.id, 'name', e.target.value)}
-                          placeholder={`Tên nhóm ${gIdx + 1} (VD: Nhóm Khoa học Tự nhiên)`}
+                          placeholder={`Nhập tên nhóm ${gIdx + 1}...`}
                           className="font-bold text-sm text-slate-900 bg-white border border-purple-200 px-3 py-1.5 rounded-lg w-full max-w-sm focus:outline-none focus:ring-1 focus:ring-purple-600"
                         />
                       </div>
@@ -923,7 +1127,7 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
                         Chọn các đề thi thuộc {group.name}:
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {availableExams.map((exam) => {
+                        {availableExams.filter((ex) => !isCreatorModeRestricted(ex) || isCreatorOfItem(ex, currentUser) || isMasterAdminUser(currentUser)).map((exam) => {
                           const isInGroup = group.examIds.includes(exam.id);
                           return (
                             <button

@@ -1,0 +1,966 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Auth & Validation Primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasEmail() {
+      return isSignedIn() && request.auth.token.email is string;
+    }
+
+    function userEmail() {
+      return hasEmail() ? request.auth.token.email : '';
+    }
+
+    function isAdmin() {
+      return hasEmail() && userEmail() == 'tranquangnhat418@gmail.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidLookupId(id) {
+      return id is string && id.matches('^(email|uname|pass)_[a-f0-9]{64}$');
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidStringList(val, maxItems) {
+      return val is list && val.size() <= maxItems && (val.size() == 0 || val[0] is string);
+    }
+
+    function isValidMapList(val, maxItems) {
+      return val is list && val.size() <= maxItems && (val.size() == 0 || val[0] is map);
+    }
+
+    function isValidUpdateTimestamp(data) {
+      return data.updatedAt == request.time
+        && (!('createdAt' in existing()) || data.createdAt == existing().createdAt || data.createdAt == request.time);
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['id', 'uid', 'email', 'username', 'fullName', 'role', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'uid', 'email', 'username', 'fullName', 'displayName', 'role',
+          'isMasterAdmin', 'school', 'studentCode', 'avatar', 'isGoogleAuth',
+          'legacyUserIds', 'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.uid, 1, 128)
+        && isValidString(data.email, 3, 180)
+        && isValidString(data.username, 1, 100)
+        && isValidString(data.fullName, 1, 150)
+        && (!('displayName' in data) || isValidString(data.displayName, 0, 150))
+        && data.role in ['student', 'teacher']
+        && (!('isMasterAdmin' in data) || data.isMasterAdmin is bool)
+        && (!('school' in data) || isValidString(data.school, 0, 200))
+        && (!('studentCode' in data) || isValidString(data.studentCode, 0, 60))
+        && (!('avatar' in data) || isValidString(data.avatar, 0, 200000))
+        && (!('isGoogleAuth' in data) || data.isGoogleAuth is bool)
+        && (!('legacyUserIds' in data) || isValidStringList(data.legacyUserIds, 50))
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAccountLookup(data) {
+      return data.keys().hasAll(['id', 'type', 'userId', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'type', 'userId', 'email', 'createdAt', 'updatedAt'])
+        && isValidLookupId(data.id)
+        && data.type in ['email', 'username']
+        && isValidId(data.userId)
+        && (!('email' in data) || isValidString(data.email, 0, 180))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidExam(data) {
+      return data.keys().hasAll(['id', 'title', 'subject', 'questions', 'visibility', 'status', 'creatorUid', 'creatorEmail', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'title', 'subject', 'grade', 'durationMinutes', 'description', 'instructions',
+          'settings', 'parts', 'attachedFile', 'questions', 'totalQuestions', 'totalPoints', 'isCustom',
+          'visibility', 'assignedClassId', 'assignedClassName', 'allowedEmails',
+          'status', 'openTime', 'closeTime', 'modeType', 'maxAttempts', 'maxTabSwitches',
+          'allowCopy', 'showAnswersAfterExam', 'showOnlyStudentAnswersAfterExam',
+          'showLiveScoreDuringExam', 'showScoreAfterExam', 'examCode', 'randomQuestionCount',
+          'lockExitUntilTimeout', 'minSubmitMinutes', 'requireAccessCode', 'accessSecurityCode',
+          'accessMode', 'teacherMode', 'isCreatorOnlyMode', 'isOfficialClassExam',
+          'preExamLockMinutes', 'allowExitAfterSubmit',
+          'creatorId', 'creatorUid', 'creatorEmail', 'creatorName',
+          'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.title, 1, 300)
+        && isValidString(data.subject, 1, 64)
+        && (!('grade' in data) || isValidString(data.grade, 0, 64))
+        && (!('durationMinutes' in data) || data.durationMinutes is number)
+        && (!('description' in data) || isValidString(data.description, 0, 4000))
+        && (!('instructions' in data) || isValidString(data.instructions, 0, 4000))
+        && (!('settings' in data) || data.settings is map)
+        && (!('parts' in data) || isValidMapList(data.parts, 50))
+        && (!('attachedFile' in data) || data.attachedFile is map)
+        && isValidMapList(data.questions, 300)
+        && (!('totalQuestions' in data) || data.totalQuestions is number)
+        && (!('totalPoints' in data) || data.totalPoints is number)
+        && (!('isCustom' in data) || data.isCustom is bool)
+        && data.visibility in ['public', 'exam_only', 'private', 'class', 'bundle_only']
+        && (!('assignedClassId' in data) || isValidString(data.assignedClassId, 0, 128))
+        && (!('assignedClassName' in data) || isValidString(data.assignedClassName, 0, 200))
+        && (!('allowedEmails' in data) || isValidStringList(data.allowedEmails, 500))
+        && data.status in ['draft', 'scheduled', 'open', 'closed', 'published']
+        && (!('openTime' in data) || isValidString(data.openTime, 0, 64))
+        && (!('closeTime' in data) || isValidString(data.closeTime, 0, 64))
+        && (!('modeType' in data) || data.modeType in ['both', 'exam_only', 'practice_only'])
+        && (!('maxAttempts' in data) || data.maxAttempts is number)
+        && (!('maxTabSwitches' in data) || data.maxTabSwitches is number)
+        && (!('allowCopy' in data) || data.allowCopy is bool)
+        && (!('showAnswersAfterExam' in data) || data.showAnswersAfterExam is bool)
+        && (!('showOnlyStudentAnswersAfterExam' in data) || data.showOnlyStudentAnswersAfterExam is bool)
+        && (!('showLiveScoreDuringExam' in data) || data.showLiveScoreDuringExam is bool)
+        && (!('showScoreAfterExam' in data) || data.showScoreAfterExam is bool)
+        && (!('examCode' in data) || isValidString(data.examCode, 0, 32))
+        && (!('randomQuestionCount' in data) || data.randomQuestionCount is number)
+        && (!('lockExitUntilTimeout' in data) || data.lockExitUntilTimeout is bool)
+        && (!('minSubmitMinutes' in data) || data.minSubmitMinutes is number)
+        && (!('requireAccessCode' in data) || data.requireAccessCode is bool)
+        && (!('accessSecurityCode' in data) || isValidString(data.accessSecurityCode, 0, 64))
+        && (!('accessMode' in data) || data.accessMode in ['direct_and_code', 'code_only'])
+        && (!('teacherMode' in data) || data.teacherMode in ['normal', 'creator', 'grading', 'presenting'])
+        && (!('isCreatorOnlyMode' in data) || data.isCreatorOnlyMode is bool)
+        && (!('isOfficialClassExam' in data) || data.isOfficialClassExam is bool)
+        && (!('preExamLockMinutes' in data) || data.preExamLockMinutes is number)
+        && (!('allowExitAfterSubmit' in data) || data.allowExitAfterSubmit is bool)
+        && (!('creatorId' in data) || isValidString(data.creatorId, 0, 128))
+        && isValidString(data.creatorUid, 1, 128)
+        && isValidString(data.creatorEmail, 3, 180)
+        && (!('creatorName' in data) || isValidString(data.creatorName, 0, 150))
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBundle(data) {
+      return data.keys().hasAll(['id', 'title', 'examIds', 'visibility', 'status', 'creatorUid', 'creatorEmail', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'title', 'description', 'bundleCode', 'breakMinutes', 'intermissionMinutes',
+          'examIds', 'selectionMode', 'timingMode', 'compulsoryExamIds', 'electiveGroups',
+          'minGroupsToSelect', 'maxGroupsToSelect', 'selectionTimeLimitSeconds',
+          'randomQuestionCountPerExam', 'openTime', 'closeTime', 'status', 'maxAttempts',
+          'visibility', 'assignedClassId', 'assignedClassName', 'allowedEmails', 'accessMode',
+          'lockExitUntilTimeout', 'showScoreAfterExam', 'showAnswersAfterExam', 'showOnlyStudentAnswersAfterExam',
+          'minSubmitMinutes', 'requireAccessCode', 'accessSecurityCode', 'allowCopy',
+          'maxTabSwitches', 'sections', 'isCustom', 'creatorId', 'creatorUid', 'creatorEmail',
+          'creatorName', 'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.title, 1, 300)
+        && (!('description' in data) || isValidString(data.description, 0, 4000))
+        && (!('bundleCode' in data) || isValidString(data.bundleCode, 0, 32))
+        && (!('breakMinutes' in data) || data.breakMinutes is number)
+        && (!('intermissionMinutes' in data) || data.intermissionMinutes is number)
+        && isValidStringList(data.examIds, 100)
+        && (!('selectionMode' in data) || data.selectionMode in ['all_compulsory', 'has_electives'])
+        && (!('timingMode' in data) || data.timingMode in ['compulsory_seq_elective_cluster_max', 'all_sequential_independent'])
+        && (!('compulsoryExamIds' in data) || isValidStringList(data.compulsoryExamIds, 100))
+        && (!('electiveGroups' in data) || isValidMapList(data.electiveGroups, 50))
+        && (!('minGroupsToSelect' in data) || data.minGroupsToSelect is number)
+        && (!('maxGroupsToSelect' in data) || data.maxGroupsToSelect is number)
+        && (!('selectionTimeLimitSeconds' in data) || data.selectionTimeLimitSeconds is number)
+        && (!('randomQuestionCountPerExam' in data) || data.randomQuestionCountPerExam is map)
+        && (!('openTime' in data) || isValidString(data.openTime, 0, 64))
+        && (!('closeTime' in data) || isValidString(data.closeTime, 0, 64))
+        && data.status in ['draft', 'scheduled', 'open', 'closed', 'published']
+        && (!('maxAttempts' in data) || data.maxAttempts is number)
+        && data.visibility in ['public', 'exam_only', 'private', 'class', 'bundle_only']
+        && (!('assignedClassId' in data) || isValidString(data.assignedClassId, 0, 128))
+        && (!('assignedClassName' in data) || isValidString(data.assignedClassName, 0, 200))
+        && (!('allowedEmails' in data) || isValidStringList(data.allowedEmails, 500))
+        && (!('accessMode' in data) || data.accessMode in ['direct_and_code', 'code_only'])
+        && (!('lockExitUntilTimeout' in data) || data.lockExitUntilTimeout is bool)
+        && (!('showScoreAfterExam' in data) || data.showScoreAfterExam is bool)
+        && (!('showAnswersAfterExam' in data) || data.showAnswersAfterExam is bool)
+        && (!('showOnlyStudentAnswersAfterExam' in data) || data.showOnlyStudentAnswersAfterExam is bool)
+        && (!('minSubmitMinutes' in data) || data.minSubmitMinutes is number)
+        && (!('requireAccessCode' in data) || data.requireAccessCode is bool)
+        && (!('accessSecurityCode' in data) || isValidString(data.accessSecurityCode, 0, 64))
+        && (!('allowCopy' in data) || data.allowCopy is bool)
+        && (!('maxTabSwitches' in data) || data.maxTabSwitches is number)
+        && (!('sections' in data) || isValidMapList(data.sections, 50))
+        && (!('isCustom' in data) || data.isCustom is bool)
+        && (!('creatorId' in data) || isValidString(data.creatorId, 0, 128))
+        && isValidString(data.creatorUid, 1, 128)
+        && isValidString(data.creatorEmail, 3, 180)
+        && (!('creatorName' in data) || isValidString(data.creatorName, 0, 150))
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourse(data) {
+      return data.keys().hasAll(['id', 'title', 'subject', 'visibility', 'status', 'creatorUid', 'creatorEmail', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'title', 'subject', 'grade', 'description', 'instructor', 'chapters', 'lessons',
+          'finalExamId', 'finalExamTitle', 'status', 'openTime', 'closeTime',
+          'visibility', 'assignedClassId', 'assignedClassName', 'allowedEmails',
+          'creatorId', 'creatorUid', 'creatorEmail', 'creatorName',
+          'isScormEnabled', 'scormVersion', 'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.title, 1, 300)
+        && isValidString(data.subject, 1, 64)
+        && (!('grade' in data) || isValidString(data.grade, 0, 64))
+        && (!('description' in data) || isValidString(data.description, 0, 4000))
+        && (!('instructor' in data) || isValidString(data.instructor, 0, 150))
+        && (!('chapters' in data) || isValidMapList(data.chapters, 100))
+        && (!('lessons' in data) || isValidMapList(data.lessons, 200))
+        && (!('finalExamId' in data) || isValidString(data.finalExamId, 0, 128))
+        && (!('finalExamTitle' in data) || isValidString(data.finalExamTitle, 0, 300))
+        && data.status in ['draft', 'scheduled', 'open', 'closed', 'published']
+        && (!('openTime' in data) || isValidString(data.openTime, 0, 64))
+        && (!('closeTime' in data) || isValidString(data.closeTime, 0, 64))
+        && data.visibility in ['public', 'exam_only', 'private', 'class', 'bundle_only']
+        && (!('assignedClassId' in data) || isValidString(data.assignedClassId, 0, 128))
+        && (!('assignedClassName' in data) || isValidString(data.assignedClassName, 0, 200))
+        && (!('allowedEmails' in data) || isValidStringList(data.allowedEmails, 500))
+        && (!('creatorId' in data) || isValidString(data.creatorId, 0, 128))
+        && isValidString(data.creatorUid, 1, 128)
+        && isValidString(data.creatorEmail, 3, 180)
+        && (!('creatorName' in data) || isValidString(data.creatorName, 0, 150))
+        && (!('isScormEnabled' in data) || data.isScormEnabled is bool)
+        && (!('scormVersion' in data) || data.scormVersion in ['1.2', '2004'])
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidClassroom(data) {
+      return data.keys().hasAll(['id', 'name', 'code', 'teacherUid', 'teacherEmail', 'students', 'assignedExamIds', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'name', 'grade', 'code', 'teacherId', 'teacherUid', 'teacherName', 'teacherEmail',
+          'description', 'students', 'memberEmails', 'pendingRequests', 'assignedExamIds',
+          'assignedCourseIds', 'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.name, 1, 200)
+        && (!('grade' in data) || isValidString(data.grade, 0, 64))
+        && isValidString(data.code, 1, 64)
+        && (!('teacherId' in data) || isValidString(data.teacherId, 0, 128))
+        && isValidString(data.teacherUid, 1, 128)
+        && (!('teacherName' in data) || isValidString(data.teacherName, 0, 150))
+        && isValidString(data.teacherEmail, 3, 180)
+        && (!('description' in data) || isValidString(data.description, 0, 2000))
+        && isValidMapList(data.students, 500)
+        && (!('memberEmails' in data) || isValidStringList(data.memberEmails, 500))
+        && (!('pendingRequests' in data) || isValidMapList(data.pendingRequests, 200))
+        && isValidStringList(data.assignedExamIds, 200)
+        && (!('assignedCourseIds' in data) || isValidStringList(data.assignedCourseIds, 200))
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidClassroomCodeIndex(data) {
+      return data.keys().hasAll(['code', 'classroomId', 'className', 'teacherUid', 'teacherEmail', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'code', 'classroomId', 'className', 'teacherUid', 'teacherEmail', 'teacherName', 'createdAt', 'updatedAt'])
+        && (!('id' in data) || isValidId(data.id))
+        && isValidId(data.code)
+        && isValidId(data.classroomId)
+        && isValidString(data.className, 1, 200)
+        && isValidString(data.teacherUid, 1, 128)
+        && isValidString(data.teacherEmail, 3, 180)
+        && (!('teacherName' in data) || isValidString(data.teacherName, 0, 150))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidClassJoinRequest(data) {
+      return data.keys().hasAll(['id', 'classId', 'studentUid', 'studentId', 'studentName', 'studentEmail', 'status', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'classId', 'className', 'classCode', 'teacherEmail', 'studentUid',
+          'studentId', 'studentName', 'studentEmail', 'studentCode', 'note', 'status',
+          'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.classId)
+        && (!('className' in data) || isValidString(data.className, 0, 200))
+        && (!('classCode' in data) || isValidString(data.classCode, 0, 64))
+        && (!('teacherEmail' in data) || isValidString(data.teacherEmail, 0, 180))
+        && isValidString(data.studentUid, 1, 128)
+        && isValidString(data.studentId, 1, 128)
+        && isValidString(data.studentName, 1, 150)
+        && isValidString(data.studentEmail, 3, 180)
+        && (!('studentCode' in data) || isValidString(data.studentCode, 0, 60))
+        && (!('note' in data) || isValidString(data.note, 0, 1000))
+        && data.status in ['pending', 'approved', 'rejected']
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidExamResult(data) {
+      return data.keys().hasAll(['id', 'examId', 'examTitle', 'studentUid', 'userEmail', 'score', 'completedAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'examId', 'examTitle', 'subject', 'grade', 'studentUid', 'userId', 'userEmail',
+          'teacherEmail', 'studentName', 'studentCode', 'classId', 'className',
+          'earnedPoints', 'totalPoints', 'scoreOnTenScale', 'score', 'percentage',
+          'correctCount', 'partialCount', 'wrongCount', 'skippedCount', 'totalQuestions',
+          'timeSpentSeconds', 'totalDurationSeconds', 'completedAt', 'examCode',
+          'submissionReason', 'tabSwitchCount', 'answers', 'questions', 'scoreDetails',
+          'topicBreakdown', 'partBreakdowns', 'showScoreAfterExam', 'showAnswersAfterExam',
+          'showOnlyStudentAnswersAfterExam', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.examId, 1, 128)
+        && isValidString(data.examTitle, 1, 300)
+        && (!('subject' in data) || isValidString(data.subject, 0, 64))
+        && (!('grade' in data) || isValidString(data.grade, 0, 64))
+        && isValidString(data.studentUid, 1, 128)
+        && (!('userId' in data) || isValidString(data.userId, 0, 128))
+        && isValidString(data.userEmail, 3, 180)
+        && (!('teacherEmail' in data) || isValidString(data.teacherEmail, 0, 180))
+        && (!('studentName' in data) || isValidString(data.studentName, 0, 150))
+        && (!('studentCode' in data) || isValidString(data.studentCode, 0, 60))
+        && (!('classId' in data) || isValidString(data.classId, 0, 128))
+        && (!('className' in data) || isValidString(data.className, 0, 200))
+        && data.score is number
+        && isValidString(data.completedAt, 1, 64)
+        && (!('examCode' in data) || isValidString(data.examCode, 0, 32))
+        && (!('submissionReason' in data) || isValidString(data.submissionReason, 0, 500))
+        && (!('answers' in data) || data.answers is map)
+        && (!('questions' in data) || isValidMapList(data.questions, 300))
+        && (!('scoreDetails' in data) || data.scoreDetails is map)
+        && (!('topicBreakdown' in data) || data.topicBreakdown is map)
+        && (!('partBreakdowns' in data) || isValidMapList(data.partBreakdowns, 50))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourseProgress(data) {
+      return data.keys().hasAll(['id', 'courseId', 'studentId', 'studentUid', 'studentEmail', 'completedLessonIds', 'lastStudiedAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'courseId', 'studentId', 'studentUid', 'studentEmail', 'teacherEmail',
+          'completedLessonIds', 'completedBlockIds', 'currentChapterId', 'currentLessonId',
+          'currentBlockIdsByLesson', 'interactiveAnswers', 'completedExamIds', 'scormData',
+          'lastStudiedAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.courseId, 1, 128)
+        && isValidString(data.studentId, 1, 128)
+        && isValidString(data.studentUid, 1, 128)
+        && isValidString(data.studentEmail, 3, 180)
+        && (!('teacherEmail' in data) || isValidString(data.teacherEmail, 0, 180))
+        && isValidStringList(data.completedLessonIds, 500)
+        && (!('completedBlockIds' in data) || isValidStringList(data.completedBlockIds, 2000))
+        && (!('currentChapterId' in data) || isValidString(data.currentChapterId, 0, 128))
+        && (!('currentLessonId' in data) || isValidString(data.currentLessonId, 0, 128))
+        && (!('currentBlockIdsByLesson' in data) || data.currentBlockIdsByLesson is map)
+        && (!('interactiveAnswers' in data) || data.interactiveAnswers is map)
+        && (!('completedExamIds' in data) || isValidStringList(data.completedExamIds, 200))
+        && (!('scormData' in data) || data.scormData is map)
+        && isValidString(data.lastStudiedAt, 1, 64)
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidClassroomHomework(data) {
+      return data.keys().hasAll(['id', 'classId', 'title', 'teacherUid', 'teacherEmail', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'classId', 'title', 'instructions', 'attachments', 'openTime', 'closeTime',
+          'maxScore', 'createdBy', 'teacherUid', 'teacherEmail', 'allowedEmails',
+          'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.classId, 1, 128)
+        && isValidString(data.title, 1, 300)
+        && (!('instructions' in data) || isValidString(data.instructions, 0, 20000))
+        && (!('attachments' in data) || isValidMapList(data.attachments, 20))
+        && (!('openTime' in data) || isValidString(data.openTime, 0, 64))
+        && (!('closeTime' in data) || isValidString(data.closeTime, 0, 64))
+        && (!('maxScore' in data) || data.maxScore is number)
+        && (!('createdBy' in data) || isValidString(data.createdBy, 0, 150))
+        && isValidString(data.teacherUid, 1, 128)
+        && isValidString(data.teacherEmail, 3, 180)
+        && (!('allowedEmails' in data) || isValidStringList(data.allowedEmails, 500))
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidHomeworkSubmission(data) {
+      return data.keys().hasAll(['id', 'studentUid', 'studentId', 'studentName', 'studentEmail', 'imageUrls', 'submittedAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'classId', 'homeworkId', 'homeworkTitle', 'courseId', 'courseTitle',
+          'lessonId', 'lessonTitle', 'studentUid', 'studentId', 'studentName', 'studentEmail',
+          'studentCode', 'teacherEmail', 'imageUrls', 'attachments', 'textAnswer', 'note',
+          'submittedAt', 'score', 'maxScore', 'teacherFeedback', 'gradedAt', 'gradedBy',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && (!('classId' in data) || isValidString(data.classId, 0, 128))
+        && (!('homeworkId' in data) || isValidString(data.homeworkId, 0, 128))
+        && (!('homeworkTitle' in data) || isValidString(data.homeworkTitle, 0, 300))
+        && (!('courseId' in data) || isValidString(data.courseId, 0, 128))
+        && (!('courseTitle' in data) || isValidString(data.courseTitle, 0, 300))
+        && (!('lessonId' in data) || isValidString(data.lessonId, 0, 128))
+        && (!('lessonTitle' in data) || isValidString(data.lessonTitle, 0, 300))
+        && isValidString(data.studentUid, 1, 128)
+        && isValidString(data.studentId, 1, 128)
+        && isValidString(data.studentName, 1, 150)
+        && isValidString(data.studentEmail, 3, 180)
+        && (!('studentCode' in data) || isValidString(data.studentCode, 0, 60))
+        && (!('teacherEmail' in data) || isValidString(data.teacherEmail, 0, 180))
+        && isValidStringList(data.imageUrls, 20)
+        && (!('attachments' in data) || isValidMapList(data.attachments, 20))
+        && (!('textAnswer' in data) || isValidString(data.textAnswer, 0, 50000))
+        && (!('note' in data) || isValidString(data.note, 0, 2000))
+        && isValidString(data.submittedAt, 1, 64)
+        && (!('score' in data) || data.score is number)
+        && (!('maxScore' in data) || data.maxScore is number)
+        && (!('teacherFeedback' in data) || isValidString(data.teacherFeedback, 0, 4000))
+        && (!('gradedAt' in data) || isValidString(data.gradedAt, 0, 64))
+        && (!('gradedBy' in data) || isValidString(data.gradedBy, 0, 180))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTeacherRequest(data) {
+      return data.keys().hasAll(['id', 'userUid', 'userId', 'userEmail', 'userName', 'status', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'userUid', 'userId', 'userEmail', 'userName', 'schoolName', 'subject',
+          'reason', 'status', 'createdAtStr', 'reviewedAt', 'reviewedBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.userUid, 1, 128)
+        && isValidString(data.userId, 1, 128)
+        && isValidString(data.userEmail, 3, 180)
+        && isValidString(data.userName, 1, 150)
+        && (!('schoolName' in data) || isValidString(data.schoolName, 0, 200))
+        && (!('subject' in data) || isValidString(data.subject, 0, 100))
+        && (!('reason' in data) || isValidString(data.reason, 0, 2000))
+        && data.status in ['pending', 'approved', 'rejected']
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('reviewedAt' in data) || isValidString(data.reviewedAt, 0, 64))
+        && (!('reviewedBy' in data) || isValidString(data.reviewedBy, 0, 180))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFeedback(data) {
+      return data.keys().hasAll(['id', 'authorUid', 'rating', 'category', 'comments', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'authorUid', 'rating', 'category', 'comments', 'userName',
+          'userRole', 'email', 'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.authorUid, 1, 128)
+        && data.rating is number && data.rating >= 1 && data.rating <= 5
+        && data.category in ['ui', 'exams', 'feature', 'bug', 'general']
+        && isValidString(data.comments, 1, 4000)
+        && (!('userName' in data) || isValidString(data.userName, 0, 150))
+        && (!('userRole' in data) || data.userRole in ['student', 'teacher'])
+        && (!('email' in data) || isValidString(data.email, 0, 180))
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSiteConfig(data) {
+      return data.keys().hasAll(['id', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'items', 'overrides', 'updatedById',
+          'deletedExamIds', 'deletedBundleIds', 'deletedClassroomIds', 'deletedCourseIds',
+          'deletedUserIds', 'deletedResultIds', 'deletedHomeworkIds', 'deletedClassroomHomeworkIds',
+          'deletedSubjectIds', 'deletedScoreboardIds', 'createdAt', 'updatedAt'
+        ])
+        && data.id in ['subjects', 'navTabs', 'liveText', 'tombstones']
+        && (!('items' in data) || isValidMapList(data.items, 100))
+        && (!('overrides' in data) || data.overrides is map)
+        && (!('updatedById' in data) || isValidString(data.updatedById, 0, 128))
+        && (!('deletedExamIds' in data) || isValidStringList(data.deletedExamIds, 500))
+        && (!('deletedBundleIds' in data) || isValidStringList(data.deletedBundleIds, 500))
+        && (!('deletedClassroomIds' in data) || isValidStringList(data.deletedClassroomIds, 500))
+        && (!('deletedCourseIds' in data) || isValidStringList(data.deletedCourseIds, 500))
+        && (!('deletedUserIds' in data) || isValidStringList(data.deletedUserIds, 500))
+        && (!('deletedResultIds' in data) || isValidStringList(data.deletedResultIds, 500))
+        && (!('deletedHomeworkIds' in data) || isValidStringList(data.deletedHomeworkIds, 500))
+        && (!('deletedClassroomHomeworkIds' in data) || isValidStringList(data.deletedClassroomHomeworkIds, 500))
+        && (!('deletedSubjectIds' in data) || isValidStringList(data.deletedSubjectIds, 500))
+        && (!('deletedScoreboardIds' in data) || isValidStringList(data.deletedScoreboardIds, 500))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidScoreboard(data) {
+      return data.keys().hasAll(['id', 'title', 'mode', 'specialMode', 'rounds', 'participants', 'creatorUid', 'creatorEmail', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'title', 'description', 'mode', 'topN', 'specialMode',
+          'classId', 'className', 'rounds', 'participants',
+          'creatorId', 'creatorUid', 'creatorEmail', 'creatorName',
+          'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.title, 1, 300)
+        && (!('description' in data) || isValidString(data.description, 0, 2000))
+        && data.mode in ['1v1', 'group', 'top_n']
+        && (!('topN' in data) || data.topN is number)
+        && data.specialMode in ['normal', 'creator', 'grading', 'presenting']
+        && (!('classId' in data) || isValidString(data.classId, 0, 128))
+        && (!('className' in data) || isValidString(data.className, 0, 200))
+        && isValidMapList(data.rounds, 50)
+        && isValidMapList(data.participants, 500)
+        && (!('creatorId' in data) || isValidString(data.creatorId, 0, 128))
+        && isValidString(data.creatorUid, 1, 128)
+        && isValidString(data.creatorEmail, 3, 180)
+        && (!('creatorName' in data) || isValidString(data.creatorName, 0, 150))
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Match Rules
+
+    // Connection Probe
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+    }
+
+    // Account Lookup Index (Username -> Email mapping for Firebase Auth login)
+    match /accountLookups/{lookupId} {
+      allow get: if isValidLookupId(lookupId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidLookupId(lookupId)
+        && isValidAccountLookup(incoming())
+        && incoming().id == lookupId
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().userId == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidLookupId(lookupId)
+        && isValidAccountLookup(incoming())
+        && incoming().id == existing().id
+        && incoming().type == existing().type
+        && isValidUpdateTimestamp(incoming())
+        && (isAdmin() || existing().userId == request.auth.uid || incoming().userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // Users (Unified Firebase Auth Profiles <1KB, Google + Email/Password)
+    match /users/{userId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().id == userId
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            incoming().uid == request.auth.uid &&
+            incoming().email == userEmail() &&
+            (!('isMasterAdmin' in incoming()) || incoming().isMasterAdmin == false)
+          )
+        );
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          (
+            (userId == request.auth.uid || existing().uid == request.auth.uid || existing().email == userEmail()) &&
+            incoming().email == existing().email &&
+            (!('isMasterAdmin' in incoming()) || !('isMasterAdmin' in existing()) || incoming().isMasterAdmin == existing().isMasterAdmin) &&
+            (incoming().role == existing().role || existing().role == 'teacher')
+          )
+        );
+      allow delete: if isAdmin();
+
+      // Legacy private credentials subcollection permanently disabled
+      match /private/{credId} {
+        allow read, write: if false;
+      }
+    }
+
+    // Exams
+    match /exams/{examId} {
+      allow get, list: if isSignedIn() || existing().visibility in ['public', 'bundle_only', 'exam_only'];
+      allow create: if isSignedIn()
+        && isValidId(examId)
+        && isValidExam(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().creatorUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(examId)
+        && isValidExam(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().creatorUid == request.auth.uid ||
+          existing().creatorEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(examId) && (
+        isAdmin() ||
+        existing().creatorUid == request.auth.uid ||
+        existing().creatorEmail == userEmail()
+      );
+    }
+
+    // Standalone Questions Bank
+    match /questions/{questionId} {
+      allow get, list: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(questionId);
+      allow delete: if isSignedIn() && isValidId(questionId) && (
+        isAdmin() ||
+        existing().creatorUid == request.auth.uid
+      );
+    }
+
+    // Bundles
+    match /bundles/{bundleId} {
+      allow get, list: if isSignedIn() || existing().visibility in ['public', 'bundle_only', 'exam_only'];
+      allow create: if isSignedIn()
+        && isValidId(bundleId)
+        && isValidBundle(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().creatorUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(bundleId)
+        && isValidBundle(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().creatorUid == request.auth.uid ||
+          existing().creatorEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(bundleId) && (
+        isAdmin() ||
+        existing().creatorUid == request.auth.uid ||
+        existing().creatorEmail == userEmail()
+      );
+    }
+
+    // Courses
+    match /courses/{courseId} {
+      allow get, list: if isSignedIn() || existing().visibility == 'public';
+      allow create: if isSignedIn()
+        && isValidId(courseId)
+        && isValidCourse(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().creatorUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(courseId)
+        && isValidCourse(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().creatorUid == request.auth.uid ||
+          existing().creatorEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(courseId) && (
+        isAdmin() ||
+        existing().creatorUid == request.auth.uid ||
+        existing().creatorEmail == userEmail()
+      );
+    }
+
+    // Classrooms & Join Requests
+    match /classrooms/{classroomId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(classroomId)
+        && isValidClassroom(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().teacherUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(classroomId)
+        && isValidClassroom(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().teacherUid == request.auth.uid ||
+          existing().teacherEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(classroomId) && (
+        isAdmin() ||
+        existing().teacherUid == request.auth.uid ||
+        existing().teacherEmail == userEmail()
+      );
+
+      match /joinRequests/{requestId} {
+        allow get, list: if isSignedIn();
+        allow create: if isSignedIn()
+          && isValidId(classroomId)
+          && isValidId(requestId)
+          && isValidClassJoinRequest(incoming())
+          && incoming().classId == classroomId
+          && incoming().status == 'pending'
+          && incoming().updatedAt == request.time
+          && (isAdmin() || incoming().studentUid == request.auth.uid);
+        allow update: if isSignedIn()
+          && isValidId(classroomId)
+          && isValidId(requestId)
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin() ||
+            get(/databases/$(database)/documents/classrooms/$(classroomId)).data.teacherUid == request.auth.uid ||
+            get(/databases/$(database)/documents/classrooms/$(classroomId)).data.teacherEmail == userEmail() ||
+            (
+              existing().studentUid == request.auth.uid
+              && existing().status != 'pending'
+              && incoming().status == 'pending'
+              && isValidClassJoinRequest(incoming())
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(requestId) && (
+          isAdmin() ||
+          existing().studentUid == request.auth.uid ||
+          get(/databases/$(database)/documents/classrooms/$(classroomId)).data.teacherEmail == userEmail()
+        );
+      }
+    }
+
+    // CollectionGroup lookup for a student's own pending/rejected join requests
+    match /{path=**}/joinRequests/{requestId} {
+      allow get, list: if isSignedIn() && (
+        isAdmin() ||
+        existing().studentUid == request.auth.uid ||
+        ('teacherEmail' in existing() && existing().teacherEmail == userEmail())
+      );
+    }
+
+    // Top-level Join Requests (compatibility)
+    match /joinRequests/{requestId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(requestId)
+        && isValidClassJoinRequest(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().studentUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(requestId)
+        && incoming().updatedAt == request.time;
+      allow delete: if isSignedIn() && isValidId(requestId) && (
+        isAdmin() ||
+        existing().studentUid == request.auth.uid
+      );
+    }
+
+    // Classroom Code Lookup Index
+    match /classroomCodes/{code} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(code)
+        && isValidClassroomCodeIndex(incoming())
+        && incoming().code == code
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().teacherUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(code)
+        && isValidClassroomCodeIndex(incoming())
+        && incoming().code == existing().code
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().teacherUid == request.auth.uid ||
+          existing().teacherEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(code) && (
+        isAdmin() ||
+        existing().teacherUid == request.auth.uid ||
+        existing().teacherEmail == userEmail()
+      );
+    }
+
+    // Exam Results
+    match /results/{resultId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(resultId)
+        && isValidExamResult(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().studentUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(resultId)
+        && isValidExamResult(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().studentUid == request.auth.uid ||
+          existing().userEmail == userEmail() ||
+          ('teacherEmail' in existing() && existing().teacherEmail == userEmail())
+        );
+      allow delete: if isSignedIn() && isValidId(resultId) && (
+        isAdmin() ||
+        existing().studentUid == request.auth.uid ||
+        ('teacherEmail' in existing() && existing().teacherEmail == userEmail())
+      );
+    }
+
+    // Generic Submissions Collection
+    match /submissions/{submissionId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(submissionId);
+      allow update: if isSignedIn() && isValidId(submissionId);
+      allow delete: if isSignedIn() && isValidId(submissionId) && (
+        isAdmin() ||
+        existing().studentUid == request.auth.uid
+      );
+    }
+
+    // Course Progress
+    match /courseProgress/{progressId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(progressId)
+        && isValidCourseProgress(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().studentUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(progressId)
+        && isValidCourseProgress(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().studentUid == request.auth.uid ||
+          existing().studentEmail == userEmail() ||
+          incoming().studentUid == request.auth.uid
+        );
+      allow delete: if isSignedIn() && isValidId(progressId) && (
+        isAdmin() ||
+        existing().studentUid == request.auth.uid
+      );
+    }
+
+    // Classroom Homeworks
+    match /classroomHomeworks/{homeworkId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(homeworkId)
+        && isValidClassroomHomework(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().teacherUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(homeworkId)
+        && isValidClassroomHomework(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().teacherUid == request.auth.uid ||
+          existing().teacherEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(homeworkId) && (
+        isAdmin() ||
+        existing().teacherUid == request.auth.uid ||
+        existing().teacherEmail == userEmail()
+      );
+    }
+
+    // Homework Submissions
+    match /homeworkSubmissions/{submissionId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(submissionId)
+        && isValidHomeworkSubmission(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().studentUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(submissionId)
+        && isValidHomeworkSubmission(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          ('teacherEmail' in existing() && existing().teacherEmail == userEmail()) ||
+          existing().studentUid == request.auth.uid ||
+          existing().studentEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(submissionId) && (
+        isAdmin() ||
+        existing().studentUid == request.auth.uid ||
+        ('teacherEmail' in existing() && existing().teacherEmail == userEmail())
+      );
+    }
+
+    // Teacher Role Requests
+    match /teacherRequests/{requestId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(requestId)
+        && isValidTeacherRequest(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || (incoming().userUid == request.auth.uid && incoming().status == 'pending'));
+      allow update: if isSignedIn()
+        && isValidId(requestId)
+        && isValidTeacherRequest(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (isAdmin() || (existing().userUid == request.auth.uid && existing().status == 'pending'));
+      allow delete: if isAdmin();
+    }
+
+    // Feedbacks
+    match /feedbacks/{feedbackId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(feedbackId)
+        && isValidFeedback(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().authorUid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // Shared Non-PII Site Config (Subjects, NavTabs, LiveText, Deletion Tombstones)
+    match /siteConfig/{configId} {
+      allow get, list: if isSignedIn() || configId in ['subjects', 'navTabs', 'liveText', 'tombstones'];
+      allow create, update: if isSignedIn()
+        && isValidId(configId)
+        && isValidSiteConfig(incoming())
+        && incoming().id == configId
+        && incoming().updatedAt == request.time
+        && (isAdmin() || configId in ['subjects', 'tombstones']);
+      allow delete: if isAdmin();
+    }
+
+    // Scoreboards (Teacher Tools dynamic competition scoreboards)
+    match /scoreboards/{scoreboardId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(scoreboardId)
+        && isValidScoreboard(incoming())
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().creatorUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(scoreboardId)
+        && isValidScoreboard(incoming())
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().creatorUid == request.auth.uid ||
+          existing().creatorEmail == userEmail()
+        );
+      allow delete: if isSignedIn() && isValidId(scoreboardId) && (
+        isAdmin() ||
+        existing().creatorUid == request.auth.uid ||
+        existing().creatorEmail == userEmail()
+      );
+    }
+  }
+}

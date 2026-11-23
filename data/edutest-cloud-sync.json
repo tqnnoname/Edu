@@ -1,22 +1,1245 @@
 {
-  "users": [
+  "teacherRequests": [],
+  "customExams": [
     {
-      "id": "usr_master_teacher",
-      "email": "tranquangnhat418@gmail.com",
-      "username": "tranquangnhat418",
-      "fullName": "Thầy Trần Quang Nhật (Admin Tối Cao)",
-      "role": "teacher",
-      "isMasterAdmin": true,
-      "password": "123456",
-      "avatar": "",
-      "school": "Trường THPT Chuyên",
-      "createdAt": "2026-01-01"
+      "creatorName": "Thầy Trần Quang Nhật (Admin Tối Cao)",
+      "showScoreAfterExam": true,
+      "instructions": "Thí sinh đọc kỹ đề bài trước khi làm. Được sử dụng máy tính bỏ túi và bảng nháp. Đối với câu trắc nghiệm Đúng/Sai, mỗi ý đúng được tính điểm riêng.",
+      "updatedAt": "2026-11-21T08:11:13.989Z",
+      "allowCopy": false,
+      "grade": "Lớp 11",
+      "settings": {
+        "showAnswersAfterExam": true,
+        "shuffleOptions": true,
+        "shuffleQuestions": true,
+        "groupByQuestionType": false,
+        "allowCopy": false,
+        "showLiveScoreDuringExam": false,
+        "showScoreAfterExam": true
+      },
+      "durationMinutes": 36,
+      "visibility": "public",
+      "modeType": "exam_only",
+      "title": "ĐỀ THI THỬ HSA SỐ 2 - VĂN",
+      "accessMode": "direct_and_code",
+      "description": "Đề thi trắc nghiệm gồm 30 câu hỏi.",
+      "showOnlyStudentAnswersAfterExam": false,
+      "status": "open",
+      "totalQuestions": 22,
+      "createdAt": "2026-10-30",
+      "requireAccessCode": false,
+      "examCode": "60123653",
+      "showAnswersAfterExam": true,
+      "totalPoints": 30,
+      "creatorId": "usr_master_teacher",
+      "id": "custom-1793352827163",
+      "lockExitUntilTimeout": false,
+      "isCustom": true,
+      "creatorEmail": "tranquangnhat418@gmail.com",
+      "showLiveScoreDuringExam": false,
+      "subject": "general",
+      "maxTabSwitches": 3,
+      "questions": [
+        {
+          "topic": "",
+          "question": "Đọc câu truyện sau và trả lời các câu hỏi:\n\n$\\quad$ Ngày xưa có một vị vua, ông lấy một hòn đá to và ông để nó cản lối đi trên một con đường. (1) Sau đó ông núp vào một chỗ kín để quan sát xem có người nào dời hòn đá to ấy đi chỗ khác hay không.\n$\\quad$ (2) Nhiều người đi đường và họ chỉ đi vòng để tránh hòn đá, còn lớn tiếng chê trách ông vua này sao không dẹp hòn đá để cho con đường trống trải dễ đi hơn, nhưng không một ai bỏ công sức ra để dẹp hòn đá này.\n$\\quad$ Sau đó, có một người nông dân đến với một gánh nặng rau quả trên vai. Ông đến bên hòn đá, đặt gánh rau xuống và cố gắng di chuyển hòn đá vào lề đường. Sau khi tốn nhiều công sức, ông đã đẩy được hòn đá vào lề đường. (3) Khi ông đặt gánh rau quả lên vai để tiếp tục đi, ông thấy có một túi tiền vàng nằm ở dưới đất nơi vị trí hòn đá nằm ban đầu. Trong túi tiền vàng có một lá thư của ông vua nói rằng: (4) Số vàng này dành cho người đã di chuyển hòn đá. Người nông dân đã học được những gì mà nhiều người khác không biết.",
+          "subQuestions": [
+            {
+              "id": "sub_1793359230658",
+              "question": "Truyện trên thuộc thể loại gì?",
+              "options": [
+                "Truyện cười",
+                "Truyện ngụ ngôn",
+                "Truyền thuyết",
+                "Truyện cổ tích"
+              ],
+              "correctAnswer": 1,
+              "explanation": "",
+              "type": "single_choice",
+              "points": 1
+            },
+            {
+              "id": "sub_1793359238565",
+              "question": "Truyện đúc kết thông điệp chính qua câu văn nào?",
+              "type": "single_choice",
+              "options": [
+                "(1)",
+                "(2)",
+                "(3)",
+                "(4)"
+              ],
+              "points": 1,
+              "explanation": "",
+              "correctAnswer": 0
+            },
+            {
+              "correctAnswer": 3,
+              "explanation": "",
+              "points": 1,
+              "options": [
+                "Muốn may mắn tìm đến phải biết chờ đợi, không nóng vội.",
+                "Một điều tốt sẽ đến khi biết trao điều ấy cho người khác,",
+                "Một người có sức khỏe mới hành động được để nhận được thành quả xứng đáng.",
+                "Muốn có thành quả thực sự, ta cần hành động chứ không né tránh."
+              ],
+              "id": "sub_1793359417587",
+              "question": "Bài học gì có thể rút ra từ truyện trên?",
+              "type": "single_choice"
+            }
+          ],
+          "difficulty": "easy",
+          "id": "q1",
+          "type": "grouped",
+          "explanation": "",
+          "points": 3
+        },
+        {
+          "topic": "Tổng quát",
+          "question": "Câu văn sau: \"Ánh sáng trong vắt, hơi gợn một chút óng ánh trên những đầu hoa tràm rung rung, vì ta nhìn cái gì cũng có cảm giác như là nó bao qua một lớp thủy tinh\" có từ nào dưới đây sai về ngữ pháp/ hoặc ngữ nghĩa/ logic/ phong cách?",
+          "explanation": "",
+          "options": [
+            "trong vắt",
+            "óng ánh",
+            "vì",
+            "thủy tinh"
+          ],
+          "type": "single_choice",
+          "points": 1,
+          "correctAnswer": 2,
+          "difficulty": "medium",
+          "id": "q_179335988707112s"
+        },
+        {
+          "difficulty": "medium",
+          "correctAnswer": 0,
+          "options": [
+            "loằn ngoằn",
+            "khù khoằm",
+            "sáng láng",
+            "luýnh quýnh"
+          ],
+          "explanation": "",
+          "points": 1,
+          "type": "single_choice",
+          "question": "Từ nào dưới đây viết sai chính tả?",
+          "id": "q_1793360340317rbv",
+          "topic": "Tổng quát"
+        },
+        {
+          "options": [
+            "lục bát",
+            "song thất lục bát",
+            "ngũ ngôn",
+            "thất ngôn"
+          ],
+          "id": "q_17933607256062dt",
+          "topic": "Tổng quát",
+          "explanation": "",
+          "points": 1,
+          "question": "Đọc bài thơ sau:\n\nNắng soi áo trắng hoe đào\nTheo cô đội nón kia vào trong sương.\nHơi lam xoá giải chân làng\nTa đi, không biết con đường về đâu?\n\nBài thơ trên viết theo thể thơ gì?",
+          "correctAnswer": 0,
+          "type": "single_choice",
+          "difficulty": "medium"
+        },
+        {
+          "topic": "Tổng quát",
+          "explanation": "",
+          "points": 3,
+          "subQuestions": [
+            {
+              "id": "sub_1793360978356",
+              "explanation": "",
+              "question": "Đề tài của bài thơ trên là gì?",
+              "correctAnswer": 0,
+              "points": 1,
+              "options": [
+                "Người lính",
+                "Người mẹ",
+                "Lòng yêu nước",
+                "Tình yêu thương"
+              ],
+              "type": "single_choice"
+            },
+            {
+              "type": "single_choice",
+              "correctAnswer": 0,
+              "options": [
+                "liệt kê, đảo ngữ",
+                "nhân hóa, điệp ngữ",
+                "đảo ngữ, nghịch ngữ",
+                "chêm xen, điệp ngữ"
+              ],
+              "question": "Biện pháp tu từ sử dụng trong đoạn thơ sau: \"Rừng xa vọng tiếng chim gù, / Ngân nga tiếng suối, vi vu gió ngàn.\" là:",
+              "id": "sub_1793361277262",
+              "explanation": "",
+              "points": 1
+            },
+            {
+              "options": [
+                "Khổ thơ 1",
+                "Khổ thơ 2",
+                "Khổ thơ 3",
+                ""
+              ],
+              "correctAnswer": 0,
+              "explanation": "",
+              "question": "Khổ thơ nào thể hiện rõ ý chí chiến đấu vì nước quên mình của người lính?",
+              "points": 1,
+              "id": "sub_1793361548785",
+              "type": "single_choice"
+            }
+          ],
+          "difficulty": "medium",
+          "type": "grouped",
+          "question": "Đọc bài thơ sau:\n\nRừng xa vọng tiếng chim gù,\nNgân nga tiếng suối, vi vu gió ngàn.\nMùa xuân đẫm lá ngụy trang,\nĐường ra tiền tuyến nở vàng hoa mai.\n\nBa lô nặng, súng cầm tay,\nĐường xa biết mấy dặm dài nhớ thương.\nGiờ này mẹ ở quê hương,\nCũng chừng đang dõi theo đường ta đi.\n\nĐêm mưa, ngày nắng sá gì,\nQuân thù còn đó, ta đi chưa về.\nChim rừng thánh thót bên khe,\nNhìn lên xanh biếc bốn bề rừng xuân.",
+          "id": "q_179336082335572w"
+        },
+        {
+          "options": [
+            "nóng rực",
+            "nóng ran",
+            "nóng nảy",
+            "oi bức"
+          ],
+          "explanation": "",
+          "topic": "Tổng quát",
+          "type": "single_choice",
+          "id": "q_1793361546251j42",
+          "correctAnswer": 2,
+          "difficulty": "medium",
+          "question": "Từ nào sau đây khác nhóm về nghĩa với các từ còn lại?",
+          "points": 1
+        },
+        {
+          "difficulty": "medium",
+          "topic": "Tổng quát",
+          "options": [
+            "giải thích, so sánh, bình luận",
+            "giải thích, chứng minh, phân tích",
+            "phân tích, chứng minh, bình luận",
+            "so sánh, bác bỏ, bình luận"
+          ],
+          "points": 1,
+          "explanation": "",
+          "id": "q_1793373345110dtm",
+          "type": "single_choice",
+          "question": "Đọc đoạn văn sau:\n\nTrí tuệ nhân tạo tạo sinh (Generative AI) là một lĩnh vực của trí tuệ nhân tạo tập trung vào việc tạo ra dữ liệu mới, dựa trên dữ liệu đã được học trước đó. Dữ liệu này có thể bao gồm văn bản, hình ảnh, âm thanh, video, hoặc các loại nội dung khác. Các mô hình Generative AI không chỉ nhận biết và phân loại thông tin, mà còn có khả năng sáng tạo, mô phỏng và tái hiện thông tin. Một số ví dụ phổ biến nhất của trí tuệ nhân tạo tạo sinh là ChatGPT tạo văn bản, DeepFake mô phỏng khuôn mặt người trong video.\n\nBa thao tác lập luận chủ yếu sử dụng trong đoạn trên là: ",
+          "correctAnswer": 1
+        },
+        {
+          "question": "Từ nào khác nhóm nghĩa với các từ còn lại?",
+          "type": "single_choice",
+          "points": 1,
+          "explanation": "",
+          "topic": "Tổng quát",
+          "correctAnswer": 0,
+          "id": "q_1793373480536x27",
+          "options": [
+            "tả hữu",
+            "tư hữu",
+            "sở hữu",
+            "bất hữu"
+          ],
+          "difficulty": "medium"
+        },
+        {
+          "difficulty": "medium",
+          "type": "single_choice",
+          "options": [
+            "vô phương",
+            "tiết cơ",
+            "mạt lộ",
+            "thúc thủ"
+          ],
+          "question": "Từ nào khác về nhóm nghĩa với các từ còn lại?",
+          "id": "q_1793373640433nkb",
+          "explanation": "",
+          "points": 1,
+          "topic": "Tổng quát",
+          "correctAnswer": 1
+        },
+        {
+          "options": [
+            "vẫn là / lại là",
+            "chỉ là / vốn là",
+            "vốn dĩ là / chẳng là",
+            "chẳng phải là / còn là"
+          ],
+          "topic": "Tổng quát",
+          "type": "single_choice",
+          "id": "q_1793374566149cxu",
+          "explanation": "",
+          "difficulty": "medium",
+          "correctAnswer": 3,
+          "question": "Điền từ thích hợp vào chỗ chấm: Hãy nhìn những con người bôn ba tìm đường cứu nước. Họ ... những con người bình thường, họ ... người làm ra điều phi thường.",
+          "points": 1
+        },
+        {
+          "difficulty": "medium",
+          "points": 1,
+          "topic": "Tổng quát",
+          "id": "q_1793375070884y7e",
+          "explanation": "",
+          "correctAnswer": 1,
+          "options": [
+            "Tô Hoài",
+            "Nam Cao",
+            "Nguyễn Đình Chiểu",
+            "Lưu Quang Vũ"
+          ],
+          "question": "Ai là nhà văn chủ yếu theo trường phái văn học hiện thực?",
+          "type": "single_choice"
+        },
+        {
+          "explanation": "",
+          "topic": "Tổng quát",
+          "question": "Điền từ thích hợp vào chỗ chấm: Khi cảm thấy nguy hiểm, trong những phút đầu tiên, bạn tuyệt đối không chạy theo phần lớn đám đông, ... có khả năng sẽ bị mắc kẹt trong một đám đông lớn hơn rất nhiều.",
+          "options": [
+            "để",
+            "vì",
+            "nhưng",
+            "hơn nữa"
+          ],
+          "type": "single_choice",
+          "difficulty": "medium",
+          "correctAnswer": 1,
+          "points": 1,
+          "id": "q_1793375335837w4k"
+        },
+        {
+          "id": "q_1793375629719idf",
+          "type": "single_choice",
+          "options": [
+            "tâm tư / cảm nhận",
+            "cảm giác / suy tư",
+            "khuôn mẫu / phong cách",
+            "triết lý / ý niệm"
+          ],
+          "difficulty": "medium",
+          "correctAnswer": 2,
+          "question": "Điền từ thích hợp vào chỗ chấm: \"Một người yêu quý văn chương đâu chỉ từ những ... chung của bao người cầm bút khác, họ yêu đôi lúc chính bởi những ... riêng của tác giả giúp họ cảm nhận được điều hấp dẫn.\"",
+          "explanation": "",
+          "points": 1,
+          "topic": "Tổng quát"
+        },
+        {
+          "options": [
+            "soi mói",
+            "móc máy",
+            "xỉa xói",
+            "mỉa móc"
+          ],
+          "explanation": "",
+          "topic": "Tổng quát",
+          "correctAnswer": 0,
+          "type": "single_choice",
+          "id": "q_1793376365468po3",
+          "difficulty": "medium",
+          "question": "Xác định từ ngữ khác nhóm nghĩa với các từ còn lại:",
+          "points": 1
+        },
+        {
+          "difficulty": "medium",
+          "topic": "Tổng quát",
+          "type": "single_choice",
+          "correctAnswer": 1,
+          "question": "Từ nào bị dùng sai về ngữ nghĩa (logic / ngữ pháp / phong cách)?\n\"Tôi cảm thấy biết ơn cho những con người ngày đêm miệt mài dưới trời lạnh.\"",
+          "options": [
+            "cảm thấy",
+            "cho",
+            "con người",
+            "dưới trời lạnh"
+          ],
+          "id": "q_1793376871442lzv",
+          "points": 1,
+          "explanation": ""
+        },
+        {
+          "type": "grouped",
+          "question": "Đọc đoạn văn bản dưới và trả lời câu hỏi:\n\n“Có thể đừng quấy rầy em được không!”\n“Phoon…”\n  Tôi nhìn thấy khuôn mặt đầy lo lắng, sợ hãi và buồn bã. Fun đang khóc, đứng nhìn tôi từ cánh cổng trước nhà. Tôi đã mất kiên nhẫn với mọi thứ và lỡ la hét vào mặt cô ấy.\n  Tôi đã quát vào mặt Fun… lần đầu tiên. […]\n  Đúng vậy…\n  Sự kiên nhẫn đã cạn kiệt.\n  Nó biến thành cảm giác phản kháng.\n  Suốt thời thơ ấu, tôi đã gánh vác tất cả mọi thứ. Đến một lúc nào đó, tôi không thể chịu đựng thêm nữa. Trong thời kỳ học cấp ba, tôi bắt đầu cảm thấy rằng mọi thứ thật không công bằng. Tại sao lại là tôi? Tại sao tôi phải trải qua những điều như vậy? Tại sao? Tôi đã cố gắng hết sức rồi. Tại sao không ai nhìn nhận tôi? Nếu không yêu tôi, sao lại sinh tôi ra?\n  Mọi thứ đều xoay quanh Fun. Thì thôi… không cần có tôi cũng được.\n  Nhìn lại, tôi thấy… Typhoon đã trở thành một đứa trẻ có vấn đề như vậy thì có thể trách ai đây? Bởi vì tôi cần được chấp nhận, cần lời khen, cần sự chú ý, nhưng nhà không có điều đó. Còn bạn bè thì có. Chả có đâu hạnh phúc hơn nơi đó.\n  Typhoon là một đứa trẻ lạc lối… đã lạc lối quá xa rồi.\n  […]\n  Fun có lẽ cũng hiểu rằng tất cả những điều này xảy ra là do đâu. Đến nỗi tôi đã cư xử tệ đến mức này mà bố mẹ vẫn không quan tâm. Khi giáo viên gọi phụ huynh, không ai đến cả. Chỉ có Fun xin gặp giáo viên thay tôi. Fun là học sinh giỏi, hành vi tốt, là học trò được yêu quý bởi tất cả giáo viên trong trường. Vì vậy, giáo viên cũng cố gắng bỏ qua những lỗi lầm của tôi như lời Fun đã xin.\n  Fun là người duy nhất gọi tôi về nhà. Nhưng giờ thì điều đó không còn cần thiết nữa… Ngôi nhà đó không phải là nơi dành cho tôi.",
+          "id": "q_1793378163739idy",
+          "difficulty": "medium",
+          "explanation": "",
+          "topic": "Tổng quát",
+          "points": 4,
+          "subQuestions": [
+            {
+              "points": 1,
+              "question": "Dụng ý của tác giả khi viết liên tiếp các câu hỏi: \"Tại sao lại là tôi? Tại sao tôi phải trải qua những điều như vậy? Tại sao? [...] Tại sao không ai nhìn nhận tôi? Nếu không yêu tôi, sao lại sinh tôi ra?\" là gì?",
+              "options": [
+                "Thể hiện sự phản kháng đầy mạnh mẽ của Typhoon trước những đau đớn mà mình phải chịu đựng.",
+                "Thể hiện sự nhẫn nhịn đến cùng cực của Typhoon trước những bất công, nỗi cô đơn trong gia đình.",
+                "Thể hiện sự chất vấn đầy đau đớn trước những đau đớn mà Typhoon phải trải qua.",
+                "Thể hiện sự dằn vặt đầy day dứt của Typhoon trước sự mất kiên nhẫn của mình với Fun."
+              ],
+              "id": "sub_1793378440252",
+              "type": "single_choice",
+              "explanation": "",
+              "correctAnswer": 2
+            },
+            {
+              "question": "Trong văn bản, Fun hiện lên không với đức tính nào?",
+              "points": 1,
+              "type": "single_choice",
+              "options": [
+                "lòng vị tha, bao bọc",
+                "đức hi sinh, kiên cường",
+                "sự trách nhiệm, kiên nhẫn",
+                "tính bao dung, can đảm"
+              ],
+              "explanation": "",
+              "correctAnswer": 1,
+              "id": "sub_1793379165791"
+            },
+            {
+              "correctAnswer": 0,
+              "question": "Bài học gì không thể rút ra từ văn bản trên?",
+              "type": "single_choice",
+              "id": "sub_1793380990635",
+              "explanation": "",
+              "options": [
+                "Sự quan tâm và thấu hiểu trong gia đình là chiếc phao cứu sinh của mỗi đứa trẻ.",
+                "Đừng để sự dồn nén và bất công bóp nghẹt lòng bao dung.",
+                "Trân trọng những người luôn đồng hành và thấu hiểu.",
+                "Luôn cố gắng tìm đến nơi tích cực, không để những đau đớn, dày vò tâm lý làm hại mình."
+              ],
+              "points": 1
+            },
+            {
+              "type": "single_choice",
+              "explanation": "",
+              "id": "sub_1793381638064",
+              "options": [
+                "Typhoon chưa thực sự tìm được một nơi hạnh phúc cho bản thân mình.",
+                "Typhoon không gương mẫu, chưa quá trưởng thành về cảm xúc lẫn nhận thức.",
+                "Typhoon chẳng còn sự thiết tha, gắn bó với những thành viên trong gia đình.",
+                "Typhoon có tâm hồn nhạy cảm, biết yêu thương người khác và quan tâm đến chính mình."
+              ],
+              "question": "Theo văn bản, điều gì không thể hiện đúng nội dung?",
+              "points": 1,
+              "correctAnswer": 2
+            }
+          ]
+        },
+        {
+          "options": [
+            "nguy hiểm",
+            "đồng hành",
+            "cuộc sống",
+            "thanh thản"
+          ],
+          "question": "Từ nào bị dùng sai về ngữ nghĩa / logic / phong cách / ngữ pháp trong câu sau: Công việc của họ hết sức nguy hiểm. Mỗi phút phá bom, họ tựa như đồng hành với thần chết... Nhưng cuộc sống của họ vẫn có những niềm vui hồn nhiên của tuổi trẻ, những giây phút thanh thản, mơ mộng.",
+          "explanation": "",
+          "difficulty": "medium",
+          "topic": "Tổng quát",
+          "type": "single_choice",
+          "id": "q_1793381719273dde",
+          "points": 1,
+          "correctAnswer": 3
+        },
+        {
+          "question": "Đọc đoạn văn sau:\n\nGiữa cái cảnh tối sầm lại vì đói khát ấy, một buổi chiều người trong xóm bỗng thấy Tràng về với một người đàn bà nữa. Mặt hắn có một vẻ gì phớn phở khác thường. Hắn tủm tỉm cười nụ một mình và hai mắt thì sáng lên lấp lánh. Người đàn bà đi sau hắn chừng ba bốn bước. Thị cắp cái thúng con, đầu hơi cúi xuống, cái nón rách tàng nghiêng nghiêng che khuất đi nửa mặt. Thị có vẻ rón rén, e thẹn. Mấy đứa trẻ con thấy lạ vội chạy ra đón xem. Sợ chúng nó đùa như ngày trước, Tràng vội vàng nghiêm nét mặt, lắc đầu ra hiệu không bằng lòng.\n\nTâm trạng của nhân vật Tràng trong đoạn văn trên là gì?",
+          "correctAnswer": 1,
+          "explanation": "",
+          "type": "single_choice",
+          "topic": "Tổng quát",
+          "points": 1,
+          "id": "q_1793381807494n1w",
+          "options": [
+            "Cảm thấy tức giận",
+            "Cảm thấy vui sướng",
+            "Cảm thấy xấu hổ",
+            "Cảm thấy ngại ngùng"
+          ],
+          "difficulty": "medium"
+        },
+        {
+          "id": "q_1793381944994s26",
+          "topic": "Tổng quát",
+          "question": "Đọc đoạn thơ dưới:\n\nÔi quê hương xanh biếc bóng dừa\nCó ngờ đâu hôm nay ta trở lại\nQuê hương ta tất cả vẫn còn đây\nDù người thân đã ngã xuống đất này\nTa lại gặp những mặt người ta yêu biết mấy\nTa nhìn ta, ta ngắm, ta say\nTa run run nắm những bàn tay\nThương nhớ dồn trong tay ta nóng bỏng.\n\nĐây rồi đoạn đường xưa\nNơi ta vẫn thường đi trong mộng\nKẽo kẹt nhà ai tiếng võng trưa\nẦu ơ... thương nhớ lắm\nƠi nhũng bông trang trắng, những bông trang hồng.\nNhư tấm lòng em trong trắng thủy chung\nNhư trái tim em đẹp màu đỏ thắm\nCon sông nhỏ tuổi thơ ta đã tắm\nVẫn còn đây nước chẳng đổi dòng\nHoa lục bình tím cả bờ sông.\n\nNhững hình ảnh nào cho thấy được sức sống tiềm tàng, mãnh liệt của quê hương?",
+          "explanation": "",
+          "type": "single_choice",
+          "points": 1,
+          "difficulty": "medium",
+          "correctAnswer": 2,
+          "options": [
+            "Bóng dừa, những mặt người ta yêu biết mấy, đoạn đường xưa, tiếng võng đưa, những bông trang trắng những bông trang hồng, con sông nước chẳng đổi dòng.",
+            "Những mặt người ta yêu biết mấy, đoạn đường xưa, tiếng võng đưa, những bông trang trắng những bông trang hồng, con sông nước chẳng đổi dòng, hoa lục bình tím cả bờ sông.",
+            "Bóng dừa, những mặt người ta yêu biết mấy, đoạn đường xưa, tiếng võng đưa, những bông trang trắng những bông trang hồng, con sông nước chẳng đổi dòng, hoa lục bình tím cả bờ sông.",
+            "Bóng dừa, những mặt người ta yêu biết mấy, tiếng võng đưa, những bông trang trắng những bông trang hồng, con sông nước chẳng đổi dòng, hoa lục bình tím cả bờ sông."
+          ]
+        },
+        {
+          "correctAnswer": 2,
+          "type": "single_choice",
+          "question": "Cho đoạn văn sau:\n\n“Bất cứ ai từng theo dõi Neil Armstrong đặt chân lên Mặt Trăng năm 1969 cũng có thể nói với bạn rằng tại khoảnh khắc đó, Trái Đất như ngừng quay. Sự kì diệu và đáng kính phục của thành tựu đó khó tin đến mức một số người vẫn nghĩ rằng nó đã được dàn dựng trên phim trường Hollywood. Khi các phi hành gia đặt chân lên Mặt Trăng, người ta bắt đầu nói: “Nếu chúng ta có thể đến được Mặt Trăng, chúng ta có thể làm bất cứ điều gì”.\n\nÝ nghĩa về việc con người đặt chân lên Mặt Trăng như “được dàn dựng trên phim trường của Hollywood” được nhắc đến trong đoạn trích đã khẳng định điều gì?",
+          "id": "q_179338228568926f",
+          "explanation": "",
+          "points": 1,
+          "topic": "Tổng quát",
+          "options": [
+            "Thể hiện thái độ không tin tưởng của tác giả về việc ấy.",
+            "Thể hiện quy mô của việc con người đặt chân lên Mặt Trăng.",
+            "Khẳng định ý nghĩ về việc con người đặt chân lên Mặt Trăng là rất khó tin, nhấn mạnh đây là một thành tựu kì diệu và đáng kính.",
+            "Thể hiện thái độ biết ơn của tác giả."
+          ],
+          "difficulty": "medium"
+        },
+        {
+          "explanation": "",
+          "question": "“Bạn bước vào rạp chiếu bóng cùng với vài người bạn [...]. Có điều gì đó rất thần bí đang diễn ra. Bạn có ấn tượng tưởng như mình đang thấy một hình ảnh chuyển động, song nó chỉ là một ảo ảnh. Hình ảnh chuyển động liên tục mà bạn trông thấy đó bao gồm hàng ngàn những ảnh tĩnh có tên gọi là khuôn hình, giữa chúng khác nhau rất ít, được chiếu lên màn ảnh trong một chuỗi tiếp nối rất nhanh. Mắt chúng ta bỏ qua những khoảng cách mà chỉ nhìn thấy những ánh sáng liên tục từ một chuỗi những hình ảnh tĩnh [...]. Vậy cái gì đã khiến một bộ phim chuyển động? Chẳng ai đưa ra được câu trả lời đầy đủ. Nhiều người suy đoán rằng sở dĩ có hiệu quả đó là do “sự đeo bám dai dẳng của thị giác” theo chiều hướng một hình ảnh lưu lại ngắn ngủi trên con ngươi mắt. Tuy nhiên, nếu đó đúng là nguyên nhân chính, thì chúng ta sẽ thấy nhòe nhoẹt rối mắt những tấm ảnh bất động, lộ sáng nhiều lần chứ không phải là hành động trôi chảy. Hiện thời các nhà nghiên cứu tin rằng đã có hai quá trình tâm lí tham dự vào chuyển động của phim ảnh: Sự hội tụ ánh sáng cực hạn và sự chuyển động rõ rệt”.\n\nPhong cách ngôn ngữ của đoạn văn trên là gì?",
+          "type": "single_choice",
+          "difficulty": "medium",
+          "topic": "Tổng quát",
+          "options": [
+            "Phong cách ngôn ngữ chính luận",
+            "Phong cách ngôn ngữ báo chí",
+            "Phong cách ngôn ngữ khoa học",
+            "Phong cách ngôn ngữ nghệ thuật"
+          ],
+          "points": 1,
+          "correctAnswer": 2,
+          "id": "q_17933824898805zt"
+        },
+        {
+          "question": "Đọc đoạn thơ sau:\n\nMây buồn, giấu nắng ở đâu\nĐể mưa nặng hạt em lâu chưa về\nƯớc gì là gió mùa hè\nXua mây mưa để nắng về em tôi\nƯớc là gió thổi mây trôi\nĐể cho tôi ngắm mặt trời em tôi.",
+          "id": "q_1793382828506ia0",
+          "explanation": "",
+          "type": "grouped",
+          "points": 2,
+          "difficulty": "medium",
+          "topic": "Tổng quát",
+          "subQuestions": [
+            {
+              "type": "single_choice",
+              "id": "sub_1793383201448",
+              "question": "Đối tượng trữ tình trong đoạn thơ trên là:",
+              "explanation": "",
+              "options": [
+                "tôi",
+                "em",
+                "mây",
+                "gió"
+              ],
+              "points": 1,
+              "correctAnswer": 1
+            },
+            {
+              "options": [
+                "Tả cảnh ngụ tình",
+                "Tương phản, đối lập",
+                "Lấy tĩnh tả động",
+                "Lạ hóa, siêu thực"
+              ],
+              "type": "single_choice",
+              "id": "sub_1793383255055",
+              "question": "Nghệ thuật (thủ pháp) nào không được sử dụng trong bài thơ?",
+              "correctAnswer": 3,
+              "points": 1,
+              "explanation": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "modeType": "exam_only",
+      "creatorId": "usr_master_teacher",
+      "durationMinutes": 36,
+      "visibility": "public",
+      "grade": "Lớp 11",
+      "settings": {
+        "allowCopy": false,
+        "groupByQuestionType": false,
+        "showScoreAfterExam": true,
+        "showAnswersAfterExam": false,
+        "shuffleQuestions": true,
+        "shuffleOptions": true,
+        "showLiveScoreDuringExam": false
+      },
+      "totalQuestions": 22,
+      "description": "Đề thi trắc nghiệm gồm 30 câu hỏi.",
+      "title": "ĐỀ THI THỬ HSA SỐ 1 - ANH",
+      "showLiveScoreDuringExam": false,
+      "requireAccessCode": false,
+      "examCode": "92592450",
+      "id": "custom-1793355472747",
+      "lockExitUntilTimeout": true,
+      "status": "open",
+      "accessMode": "direct_and_code",
+      "showOnlyStudentAnswersAfterExam": true,
+      "creatorEmail": "tranquangnhat418@gmail.com",
+      "questions": [
+        {
+          "points": 1,
+          "correctAnswer": 1,
+          "difficulty": "easy",
+          "type": "single_choice",
+          "topic": "Hàm số & Cực trị",
+          "question": "Choose A, B, C or D to complete each sentence\nI have never heard of the singer ____________ became famous overnight.",
+          "explanation": "",
+          "id": "q1",
+          "options": [
+            "which",
+            "who",
+            "whom",
+            "what"
+          ]
+        },
+        {
+          "question": "Choose A, B, C or D to complete each sentence\nShe ___________ visit her grandparents every weekend when she was a child.",
+          "explanation": "",
+          "difficulty": "medium",
+          "topic": "Tổng quát",
+          "type": "single_choice",
+          "id": "q_179343496381628d",
+          "points": 1,
+          "options": [
+            "should",
+            "would",
+            "might",
+            "must"
+          ],
+          "correctAnswer": 0
+        },
+        {
+          "options": [
+            "had been dreamt",
+            "dreamt",
+            "had been dreaming",
+            "would have dreamt"
+          ],
+          "points": 1,
+          "id": "q_1793435043405uic",
+          "topic": "Tổng quát",
+          "explanation": "",
+          "type": "single_choice",
+          "difficulty": "medium",
+          "question": "Choose A, B, C or D to complete each sentence\nI __________about a holiday in Greece! I couldn’t believe it when my husband booked one as a surprise!",
+          "correctAnswer": 2
+        },
+        {
+          "points": 1,
+          "type": "single_choice",
+          "question": "Choose A, B, C or D to complete each sentence\nMany children are under such a high _______ of learning that they do not feel happy at school.",
+          "explanation": "",
+          "topic": "Tổng quát",
+          "correctAnswer": 0,
+          "difficulty": "medium",
+          "options": [
+            "pressure",
+            "interview",
+            "recommendation",
+            "concentration"
+          ],
+          "id": "q_1793435104438cd6"
+        },
+        {
+          "correctAnswer": 0,
+          "difficulty": "medium",
+          "points": 1,
+          "question": "Choose A, B, C or D to complete each sentence\nThey always try ________ ____________ the bridge as they promised before.",
+          "id": "q_1793435164718a3v",
+          "type": "single_choice",
+          "explanation": "",
+          "topic": "Tổng quát",
+          "options": [
+            "to postpone/ to build",
+            "postpone/ build",
+            "to postpone/ building",
+            "postponing/ built"
+          ]
+        },
+        {
+          "correctAnswer": 0,
+          "question": "Choose A, B, C or D that has the CLOSEST meaning to the underlined word/ phrase in each question.\nHis $\\underline{idleness}$ and lack of concentration were the main causes for his dismissal.",
+          "topic": "Tổng quát",
+          "type": "single_choice",
+          "id": "q_1793455283714anx",
+          "points": 1,
+          "difficulty": "medium",
+          "options": [
+            "indolence",
+            "diligence",
+            "negligence",
+            "conscience"
+          ],
+          "explanation": ""
+        },
+        {
+          "options": [
+            "supports",
+            "believes",
+            "opposes",
+            "agrees"
+          ],
+          "difficulty": "medium",
+          "question": "Choose A, B, C or D that has the OPPOSITE meaning to the underlined word/ phrase in each question.\nMrs. Pike is a feminist who $\\underline{advocates}$ that women should be offered the same job opportunities as men.",
+          "topic": "Tổng quát",
+          "id": "q_1793455354909epv",
+          "type": "single_choice",
+          "correctAnswer": 2,
+          "points": 1,
+          "explanation": ""
+        },
+        {
+          "points": 1,
+          "difficulty": "medium",
+          "explanation": "",
+          "type": "single_choice",
+          "correctAnswer": 1,
+          "options": [
+            "extension",
+            "expansion",
+            "enlargement",
+            "surplus"
+          ],
+          "id": "q_179345555601644i",
+          "topic": "Tổng quát",
+          "question": "Choose A, B, C or D that has the CLOSEST meaning to the underlined word/ phrase in each question.\nBetter healthcare and agriculture have led to rapid population $\\underline{growth}$."
+        },
+        {
+          "points": 1,
+          "correctAnswer": 1,
+          "type": "single_choice",
+          "explanation": "",
+          "options": [
+            "pressure",
+            "comfort",
+            "happiness",
+            "tackle"
+          ],
+          "topic": "Tổng quát",
+          "difficulty": "medium",
+          "question": "Choose A, B, C or D that has the OPPOSITE meaning to the underlined word/ phrase in each question.\nDomestic chores will no longer be a $\\underline{burden}$ thanks to the inventions of labor-saving devices.",
+          "id": "q_1793458197598ah7"
+        },
+        {
+          "options": [
+            "come under fire",
+            "have hair a mind",
+            "give permission for",
+            "make room for"
+          ],
+          "type": "single_choice",
+          "topic": "Tổng quát",
+          "correctAnswer": 2,
+          "question": "Choose A, B, C or D to complete each sentence\nA council has been asked to _______________ the development in return for money for recreational facilities.",
+          "explanation": "",
+          "difficulty": "medium",
+          "id": "q_179345834436850d",
+          "points": 1
+        },
+        {
+          "question": "Choose A, B, C or D to complete each dialogue.\nAmy: \"Would you mind sending those flowers to Mrs. Brown?\"\"\nMark: “______”",
+          "options": [
+            "He wouldn't mind.",
+            "I would if I were you.",
+            "No, I can handle it myself.",
+            "Sure, I'll do it now."
+          ],
+          "correctAnswer": 3,
+          "points": 1,
+          "topic": "Tổng quát",
+          "difficulty": "medium",
+          "type": "single_choice",
+          "id": "q_1793458801783llr",
+          "explanation": ""
+        },
+        {
+          "question": "Choose A, B, C or D to complete each dialogue.\nKevin: \"Are you ready to start the presentation?\"\nAlex: \"Yeah, I’m all set, ___________\"",
+          "explanation": "",
+          "correctAnswer": 1,
+          "difficulty": "medium",
+          "id": "q_1793515915451erb",
+          "topic": "Tổng quát",
+          "options": [
+            "I’ll give it a spin.",
+            "I’ll give it a thought.",
+            "I’ll give it a miss.",
+            "I’ll give it a break."
+          ],
+          "type": "single_choice",
+          "points": 1
+        },
+        {
+          "question": "Choose A, B, C or D to complete each dialogue.\nJack: \"Do you want help with the project, or do you think you’ve got it covered?\"\nMia: “_____________”",
+          "topic": "Tổng quát",
+          "correctAnswer": 0,
+          "options": [
+            "I’d be grateful for some help, if you’re available.",
+            "I’m confident I can manage it on my own, thanks.",
+            "I’m still working out how to tackle it effectively.",
+            "It’s challenging, but I’d prefer to not complete it."
+          ],
+          "id": "q_1793515958182dod",
+          "difficulty": "medium",
+          "type": "single_choice",
+          "points": 1,
+          "explanation": ""
+        },
+        {
+          "id": "q_1793516044393zvi",
+          "correctAnswer": 2,
+          "topic": "Tổng quát",
+          "options": [
+            "f-a-d-e-b-c",
+            "f-c-b-a-e-d",
+            "f-a-b-d-e-c",
+            "f-c-a-b-e-d"
+          ],
+          "difficulty": "medium",
+          "question": "Choose A, B, C or D to make a complete dialogue for each question.\na. I make a point of avoiding plastic bags whenever I go shopping.\nb. Have you considered using reusable bags instead?\nc. I agree with you. Plastic pollution is a serious environmental issue.\nd. That’s a great suggestion! I haven’t started using reusable bags yet, but I’ve been thinking about it.\ne. I’ve been using reusable bags for some time now, and it feels rewarding to help the environment.\nf. Are you concerned about the amount of plastic we use in our daily lives?",
+          "type": "single_choice",
+          "explanation": "",
+          "points": 1
+        },
+        {
+          "type": "single_choice",
+          "id": "q_1793516116237kbp",
+          "topic": "Tổng quát",
+          "correctAnswer": 2,
+          "question": "Choose A, B, C or D to make a complete dialogue for each question.\na. I'm sorry, I don't have any cash on me.\nb. Would you like to pay by card or cash?\nc. I'd like to buy a book, please.\nd. I'm afraid we only accept cash for purchases under $10.",
+          "difficulty": "medium",
+          "options": [
+            "c-d-b-a",
+            "d-c-b-a",
+            "c-b-a-d",
+            "d-b-a-c"
+          ],
+          "explanation": "",
+          "points": 1
+        },
+        {
+          "explanation": "",
+          "question": "Choose A, B, C or D that has the CLOSEST meaning to the given pair of sentence in each question.\nShe was unable to attend the conference. This affected her ability to network with industry professionals.",
+          "topic": "Tổng quát",
+          "points": 1,
+          "options": [
+            "If she had attended the conference, she would have been able to network with industry professionals.",
+            "Attending the conference would have had no impact on her ability to network with industry professionals.",
+            "Her ability to network with industry professionals was not affected by her absence from the conference.",
+            "The lack of attendance at the conference limited her opportunities to connect with industry professionals."
+          ],
+          "difficulty": "medium",
+          "id": "q_1793516172799qky",
+          "correctAnswer": 3,
+          "type": "single_choice"
+        },
+        {
+          "correctAnswer": 0,
+          "difficulty": "medium",
+          "points": 1,
+          "type": "single_choice",
+          "id": "q_179351651081379x",
+          "explanation": "",
+          "topic": "Tổng quát",
+          "options": [
+            "The travelers rushed to the shelter as darkness began to descend, hastened by the setting sun.",
+            "Hardly had the sun disappeared when the travelers began to search for shelter, anticipating the coming night.",
+            "As soon as the last rays of sunlight vanished, the travelers took their time to head toward the shelter for the night.",
+            "After the sun vanished completely, the travelers gradually moved to their shelter, hoping to reach it by nightfall."
+          ],
+          "question": "Choose A, B, C or D that has the CLOSEST meaning to the given sentence in each question.\nAs the sun dipped below the horizon, the travelers hurriedly made their way to the shelter before nightfall."
+        },
+        {
+          "points": 1,
+          "id": "q_1793516625323b9i",
+          "explanation": "",
+          "difficulty": "medium",
+          "options": [
+            "The book was too captivating to permit any interruptions until I had finished it.",
+            "I found the captivating book so absorbing that I read it without any breaks.",
+            "It was such a captivating book that I completed it in a single continuous reading session.",
+            "The captivating nature of the book caused me to take multiple breaks before finishing."
+          ],
+          "question": "Choose A, B, C or D that has the CLOSEST meaning to the given sentence in each question.\nThe book was so captivating that I completed it in a single continuous reading session.",
+          "correctAnswer": 2,
+          "type": "single_choice",
+          "topic": "Tổng quát"
+        },
+        {
+          "id": "q_1793516818786k5a",
+          "type": "single_choice",
+          "options": [
+            "I’ve been admiring your work; would you mind if I added a small section to the mural?",
+            "Wow, the colors you’re using are fantastic! Could I try adding some too?",
+            "Maybe I could help by contributing something to the painting.",
+            "This painting looks like it’s coming along great! Shouldn’t more people help to finish it faster?"
+          ],
+          "explanation": "",
+          "difficulty": "medium",
+          "topic": "Tổng quát",
+          "correctAnswer": 0,
+          "points": 1,
+          "question": "Choose A, B, C or D to answer each question.\nYou're at a local art class where a group of people is working on a collaborative painting. You’ve been observing for a while but would love to contribute. What could you say to politely ask to join the painting?"
+        },
+        {
+          "correctAnswer": 2,
+          "type": "single_choice",
+          "question": "Choose A, B, C or D to answer each question.\nYou light a candle and place a glass jar over it. After a short time, the flame goes out. What is the most likely explanation for this reaction?",
+          "difficulty": "medium",
+          "id": "q_17935168758230dy",
+          "topic": "Tổng quát",
+          "points": 1,
+          "explanation": "",
+          "options": [
+            "The wax of the candle evaporates and fills the jar, extinguishing the flame.",
+            "The heat from the candle causes the air in the jar to expand, putting out the flame.",
+            "The flame uses up the oxygen in the jar; without oxygen, it can't continue to burn.",
+            "The glass jar traps heat, causing the flame to overheat and extinguish itself."
+          ]
+        },
+        {
+          "type": "grouped",
+          "question": "Read the passage below and choose A, B, C or D to fill in each blank from (1) to (5).\n$\\quad$ The last two decades have seen enormous changes in the way people's lives are affected by IT. Twenty years ago, few people had (1) ________ to a computer while today most people use them at work, home or school and use of e-mail and the Internet is an everyday event.\n$\\quad$ These developments have brought many benefits to our lives. E-mail makes communication much easier and more immediate. This has numerous benefits for business, commerce, and education. The World Wide Web means that information on every conceivable subject is now available to us. Clearly, for many people this has (2) ______ and more convenient.\n$\\quad$ However, not all the effects of the new technology have been (3)__________. Many people feel that the widespread use of e-mail is destroying traditional forms of communication such as letter writing, telephone and face-to-face conversation. With ever increasing use of information technology, these negative elements are likely to increase in the future.\n$\\quad$ In addition, the huge size of the Web means it is almost impossible to control and regulate. This has led to (4) _________. Yet perhaps the biggest threat to IT in years to come will be the computer virus -more sophisticated or more destructive strains are almost inevitable.\n$\\quad$ In conclusion, developments in IT have brought many benefits, yet I believe (5) ______ in the future are likely to produce many negative effects that will need to be addressed very carefully.",
+          "id": "q_1793517010062y1o",
+          "explanation": "",
+          "topic": "Tổng quát",
+          "subQuestions": [
+            {
+              "id": "sub_1793517885278",
+              "options": [
+                "permission",
+                "access",
+                "assistance",
+                "chance"
+              ],
+              "points": 1,
+              "question": "The word can fill the blank (1) is:",
+              "type": "single_choice",
+              "correctAnswer": 1,
+              "explanation": ""
+            },
+            {
+              "id": "sub_1793518031934",
+              "points": 1,
+              "question": "The word can fill the blank (2) is:",
+              "correctAnswer": 1,
+              "options": [
+                "make much easier life",
+                "made life much easier",
+                "to make life much easier",
+                "to make much easier life"
+              ],
+              "type": "single_choice",
+              "explanation": ""
+            },
+            {
+              "explanation": "",
+              "type": "single_choice",
+              "options": [
+                "helpless",
+                "valuable",
+                "important ",
+                "beneficial"
+              ],
+              "correctAnswer": 3,
+              "question": "The word can fill the blank (3) is:",
+              "id": "sub_1793518085154",
+              "points": 1
+            },
+            {
+              "options": [
+                "many concerns that children accessing unsuitable websites",
+                "regarding many concerns children accessing unsuitable websites",
+                "many concerns regarding children accessing unsuitable websites",
+                "accessing unsuitable websites of many concerns regarding children"
+              ],
+              "type": "single_choice",
+              "id": "sub_1793518124149",
+              "correctAnswer": 2,
+              "points": 1,
+              "question": "The word can fill the blank (4) is:",
+              "explanation": ""
+            },
+            {
+              "question": "The word can fill the blank (4) is:",
+              "id": "sub_1793518205508",
+              "type": "single_choice",
+              "correctAnswer": 3,
+              "points": 1,
+              "options": [
+                "the new technology development",
+                "relating to new technological developments",
+                "to new technological developments",
+                "developments relating to new technology"
+              ],
+              "explanation": ""
+            }
+          ],
+          "points": 5,
+          "difficulty": "medium"
+        },
+        {
+          "points": 5,
+          "question": "Read the passage below and choose A, B, C or D to answer each question.\n$\\quad$ Being aware of one's own emotions - recognizing and acknowledging feelings as they happen - is at the very heart of Emotional Intelligence. And this awareness encompasses not only moods but also thoughts about those moods. People who are able to monitor their feelings as they arise are less likely to be ruled by them and are thus better able to manage their emotions.\n$\\quad$ Managing emotions does not mean suppressing them; nor does it mean giving free rein to every feeling. Psychologist Daniel Goleman, one of several authors who have popularized the notion of Emotional Intelligence, insisted that the goal is balance and that every feeling has value and significance. As Goleman said, \"A life without passion would be a dull wasteland of neutrality, cut off and isolated from the richness of life itself.\" Thus, we manage our emotions by expressing them in an appropriate manner. Emotions can also be managed by engaging in activities that cheer us up, soothe our hurts, or reassure us when we feel anxious.\n$\\quad$ Clearly, awareness and management of emotions are not independent. For instance, you might think that individuals who seem to experience their feelings more intensely than others would be less able to manage them. However, a critical component of awareness of emotions is the ability to assign meaning to them - to know why we are experiencing a particular feeling or mood. Psychologists have found that, among individuals who experience intense emotions, individual differences in the ability to assign meaning to those feelings predict differences in the ability to manage $\\underline{\\boldsymbol{them}}$. In other words, if two individuals are intensely angry, the one who is better able to understand why he or she is angry will also be better able to manage the anger.\n$\\quad$ Self-motivation refers to strong emotional self-control, which enables a person to get moving and pursue worthy goals, persist at tasks even when frustrated, and resist the temptation to act on impulse. Resisting impulsive behavior is, according to Goleman, \"the root of all emotional self- control.\"\n$\\quad$ Of all the attributes of Emotional Intelligence, the ability to postpone immediate gratification and to persist in working toward some greater future gain is most closely related to success - whether one is trying to build a business, get a college degree, or even stay on a diet. One researcher examined whether this trait can predict a child's success in school. The study showed that 4-year-old children who can delay instant gratification in order to advance toward some future goal will be “far superior as students” when they graduate from high school than will 4-year-olds who are not able to resist the impulse to satisfy their immediate wishes.",
+          "difficulty": "medium",
+          "subQuestions": [
+            {
+              "id": "sub_1793519446629",
+              "points": 1,
+              "explanation": "",
+              "question": "Which of the following can we infer from paragraph 1?",
+              "type": "single_choice",
+              "correctAnswer": 0,
+              "options": [
+                "Some people can understand their feelings better than others.",
+                "People who can manage their emotions will be controlled by them.",
+                "If people pay attention to their feelings, they will not be able to manage them.",
+                "If people pay attention to their feelings, they can control their emotions better."
+              ]
+            },
+            {
+              "type": "single_choice",
+              "points": 1,
+              "id": "sub_1793519498786",
+              "question": "According to the second paragraph, which of the following is NOT true about emotions?",
+              "explanation": "",
+              "options": [
+                "We can manage our emotions.",
+                "We should ignore some feelings.",
+                "Every feeling is important.",
+                "Emotions are part of a satisfying life."
+              ],
+              "correctAnswer": 1
+            },
+            {
+              "points": 1,
+              "options": [
+                "intense emotions",
+                "psychologists",
+                "individuals",
+                "individual differences"
+              ],
+              "type": "single_choice",
+              "id": "sub_1793519542068",
+              "explanation": "",
+              "question": "What does the word “them” in paragraph 3 refer to?",
+              "correctAnswer": 0
+            },
+            {
+              "options": [
+                "Self-motivation is having the emotional discipline needed to initiate action and chase important objectives.",
+                "Self-motivation is when a person follows their instincts and pursues any goals that come their way.",
+                "Self-motivation means relying on external encouragement to achieve desired goals.",
+                "Self-motivation is about acting impulsively to achieve goals without worrying about emotional control."
+              ],
+              "explanation": "",
+              "correctAnswer": 0,
+              "question": "Which of the following best paraphrases this sentence: “Self-motivation refers to strong emotional self-control, which enables a person to get moving and pursue worthy goals.”?",
+              "id": "sub_1793519755127",
+              "points": 1,
+              "type": "single_choice"
+            },
+            {
+              "type": "single_choice",
+              "explanation": "",
+              "correctAnswer": 2,
+              "options": [
+                "They can have more friends at school.",
+                "They can easily understand new information.",
+                "They can focus on their work and not get distracted.",
+                "They can be more popular with their teachers."
+              ],
+              "id": "sub_1793519798462",
+              "points": 1,
+              "question": "According to paragraph 5, children might be more successful in school if they can resist impulses because _________________."
+            }
+          ],
+          "topic": "Tổng quát",
+          "explanation": "",
+          "type": "grouped",
+          "id": "q_17935183363831xq"
+        }
+      ],
+      "creatorName": "Thầy Trần Quang Nhật (Admin Tối Cao)",
+      "showAnswersAfterExam": false,
+      "updatedAt": "2026-11-21T08:11:13.989Z",
+      "allowCopy": false,
+      "isCustom": true,
+      "instructions": "Thí sinh đọc kỹ đề bài trước khi làm. Được sử dụng máy tính bỏ túi và bảng nháp. Đối với câu trắc nghiệm Đúng/Sai, mỗi ý đúng được tính điểm riêng.",
+      "subject": "english",
+      "createdAt": "2026-10-30",
+      "showScoreAfterExam": true,
+      "totalPoints": 30
     }
   ],
-  "teacherRequests": [],
-  "customExams": [],
   "customBundles": [],
+  "courses": [],
   "classrooms": [],
   "results": [],
-  "lastSyncedAt": "2026-11-05T15:28:43.648Z"
+  "courseProgress": {},
+  "classroomHomeworks": [],
+  "homeworkSubmissions": [],
+  "scoreboards": [],
+  "subjects": [
+    {
+      "code": "TOAN",
+      "name": "Toán học",
+      "iconName": "Calculator",
+      "color": "blue",
+      "id": "math",
+      "createdAt": "2026-01-01"
+    },
+    {
+      "iconName": "Languages",
+      "createdAt": "2026-01-01",
+      "color": "indigo",
+      "id": "english",
+      "name": "Tiếng Anh",
+      "code": "ANH"
+    },
+    {
+      "id": "physics",
+      "color": "teal",
+      "createdAt": "2026-01-01",
+      "iconName": "Atom",
+      "code": "LY",
+      "name": "Vật lý"
+    },
+    {
+      "color": "amber",
+      "createdAt": "2026-01-01",
+      "name": "Hóa học",
+      "code": "HOA",
+      "id": "chemistry",
+      "iconName": "FlaskConical"
+    },
+    {
+      "code": "SINH",
+      "id": "biology",
+      "iconName": "Dna",
+      "name": "Sinh học",
+      "color": "green",
+      "createdAt": "2026-01-01"
+    },
+    {
+      "color": "rose",
+      "iconName": "Landmark",
+      "id": "history",
+      "createdAt": "2026-01-01",
+      "name": "Lịch sử",
+      "code": "SU"
+    },
+    {
+      "name": "Tin học & CNTT",
+      "iconName": "Terminal",
+      "code": "TIN",
+      "color": "emerald",
+      "id": "it",
+      "createdAt": "2026-01-01"
+    },
+    {
+      "createdAt": "2026-01-01",
+      "name": "Khoa học Xã hội & Tổng hợp",
+      "code": "TH",
+      "iconName": "BookOpen",
+      "id": "general",
+      "color": "slate"
+    },
+    {
+      "iconName": "BookOpen",
+      "color": "blue",
+      "id": "subj_1794399622266",
+      "createdAt": "2026-11-11",
+      "code": "DIA",
+      "name": "Địa lý"
+    },
+    {
+      "code": "NV",
+      "name": "Ngữ Văn",
+      "iconName": "BookOpen",
+      "id": "subj_1794399607423",
+      "color": "blue",
+      "createdAt": "2026-11-11"
+    }
+  ],
+  "navTabs": [
+    {
+      "isDefault": true,
+      "targetView": "single",
+      "label": "Đề thi theo môn",
+      "id": "tab_single",
+      "iconName": "book"
+    },
+    {
+      "id": "tab_bundle",
+      "label": "Tổ hợp liên môn",
+      "iconName": "layers",
+      "isDefault": true,
+      "targetView": "bundle"
+    },
+    {
+      "iconName": "users",
+      "isDefault": true,
+      "targetView": "classrooms",
+      "label": "Lớp học & Xếp hạng",
+      "id": "tab_classes"
+    },
+    {
+      "iconName": "graduation",
+      "label": "Khóa học nhỏ",
+      "isDefault": true,
+      "id": "tab_courses",
+      "targetView": "courses"
+    },
+    {
+      "isDefault": true,
+      "iconName": "swords",
+      "label": "Đấu trường 1v1",
+      "id": "tab_battle",
+      "badgeText": "HOT",
+      "targetView": "battle"
+    },
+    {
+      "iconName": "chart",
+      "targetView": "analytics",
+      "isDefault": true,
+      "id": "tab_analytics",
+      "label": "Năng lực cá nhân"
+    },
+    {
+      "label": "Lịch sử thi",
+      "iconName": "clock",
+      "targetView": "history",
+      "id": "tab_history",
+      "isDefault": true
+    }
+  ],
+  "navTabsUpdatedAt": "2026-11-21T08:11:13.989Z",
+  "feedbacks": [],
+  "liveTextOverrides": {
+    "cta_desc": "\n",
+    "hero_title": "Luyện thi toàn diện chuẩn thi cử cùng EduTest",
+    "hero_badge": "LÀM ĐỀ ONLINE · HỖ TRỢ TOÁN HỌC, BẢNG BIỂU & TỔ HỢP MÔN",
+    "cta_title": "Bạn có sẵn đề thi muốn đưa lên web để luyện tập?"
+  },
+  "liveTextUpdatedAt": "2026-11-21T08:11:13.989Z",
+  "deletedExamIds": [
+    "custom-1794721603782"
+  ],
+  "deletedBundleIds": [],
+  "deletedClassroomIds": [
+    "class_1794830310964"
+  ],
+  "deletedCourseIds": [
+    "course_1794672896578",
+    "course_1794670581683"
+  ],
+  "deletedResultIds": [
+    "res-1794761972055",
+    "res-1794790318071",
+    "res-1795000537833",
+    "res-1794925165953",
+    "res-1794918863613",
+    "res-1794918901179"
+  ],
+  "deletedHomeworkIds": [
+    "hwsub_hw_1794824723545_ld4_9MkQZgyoHLZAwWzS67HlemIjrM83_1795168821641"
+  ],
+  "deletedClassroomHomeworkIds": [],
+  "deletedSubjectIds": [],
+  "deletedScoreboardIds": [],
+  "lastSyncedAt": "2026-11-22T09:11:53.365Z"
 }

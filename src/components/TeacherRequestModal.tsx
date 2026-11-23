@@ -28,7 +28,7 @@ export const TeacherRequestModal: React.FC<TeacherRequestModalProps> = ({
   onSubmitted,
 }) => {
   const [schoolName, setSchoolName] = useState(currentUser.school || '');
-  const [subject, setSubject] = useState('Toán học');
+  const [subject, setSubject] = useState('');
   const [reason, setReason] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -179,7 +179,7 @@ export const TeacherRequestModal: React.FC<TeacherRequestModalProps> = ({
                     type="text"
                     value={schoolName}
                     onChange={(e) => setSchoolName(e.target.value)}
-                    placeholder="VD: THPT Chuyên Lê Hồng Phong"
+                    placeholder="Nhập tên trường THPT / Cơ sở đào tạo..."
                     className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-600"
                     required
                   />
@@ -196,7 +196,7 @@ export const TeacherRequestModal: React.FC<TeacherRequestModalProps> = ({
                     type="text"
                     value={subject}
                     onChange={(e) => setSubject(e.target.value)}
-                    placeholder="VD: Toán học, Vật lý, Tiếng Anh..."
+                    placeholder="Nhập môn học giảng dạy chính..."
                     className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-600"
                   />
                 </div>
@@ -210,7 +210,7 @@ export const TeacherRequestModal: React.FC<TeacherRequestModalProps> = ({
                   rows={3}
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
-                  placeholder="VD: Tôi muốn tạo ngân hàng đề thi trắc nghiệm riêng và lập lớp học cho học sinh khối 12 của trường luyện thi THPT..."
+                  placeholder="Nhập lý do xin nâng quyền và mục đích sử dụng..."
                   className="w-full p-3 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-600"
                   required
                 />

@@ -275,7 +275,7 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
                       type="text"
                       value={newTabLabel}
                       onChange={(e) => setNewTabLabel(e.target.value)}
-                      placeholder="VD: Ôn thi Đại học, Môn GDCD..."
+                      placeholder="Nhập tên Tab điều hướng mới..."
                       className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none"
                     />
                   </div>
@@ -291,7 +291,7 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
                       <option value="classrooms">Lớp học & Xếp hạng</option>
                       <option value="courses">Khóa học nhỏ</option>
                       <option value="battle">Đấu trường 1v1</option>
-                      <option value="analytics">Thống kê học lực</option>
+                      <option value="analytics">Năng lực cá nhân</option>
                       <option value="history">Lịch sử thi</option>
                     </select>
                   </div>
@@ -400,7 +400,7 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
                       type="text"
                       value={newSubjectName}
                       onChange={(e) => setNewSubjectName(e.target.value)}
-                      placeholder="VD: Giáo dục Kinh tế & Pháp luật, Triết học..."
+                      placeholder="Nhập tên môn học mới..."
                       className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none"
                     />
                   </div>
@@ -410,7 +410,7 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
                       type="text"
                       value={newSubjectCode}
                       onChange={(e) => setNewSubjectCode(e.target.value.toUpperCase())}
-                      placeholder="VD: GDKTPL, TRT..."
+                      placeholder="Nhập mã viết tắt..."
                       className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none uppercase font-mono"
                     />
                   </div>

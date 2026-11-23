@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ExamResult } from '../types/exam';
 import { 
   CheckCircle2, 
@@ -12,10 +12,18 @@ import {
   BarChart3, 
   Check, 
   X,
-  Target
+  Target,
+  FileSpreadsheet
 } from 'lucide-react';
 import { RichContentRenderer } from './RichContentRenderer';
-import { formatTrueFalseScoringRule } from '../utils/scoring';
+import { MatchingQuestionView } from './MatchingQuestionView';
+import {
+  formatAcceptedShortAnswersList,
+  formatShortAnswerDecimalComma,
+  formatTrueFalseScoringRule,
+} from '../utils/scoring';
+import { renderMath } from '../utils/renderMath';
+import { exportResultsToExcel } from '../utils/exportFiles';
 
 interface ExamResultViewProps {
   result: ExamResult;
@@ -31,6 +39,11 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
   onGoHome,
 }) => {
   const [filter, setFilter] = useState<'all' | 'wrong' | 'correct' | 'skipped'>('all');
+  const reviewContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    renderMath(reviewContainerRef.current);
+  }, [result.id, filter]);
 
   const formatSeconds = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -59,10 +72,11 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
     rankColor = 'text-slate-700 bg-slate-50 border-slate-200';
   }
 
-  // Get wrong or partially correct question IDs for retake
+  // Get wrong or partially correct question IDs for retake (submitted essays wait for grading)
   const wrongIds = result.questions
     .filter((q) => {
       const detail = result.scoreDetails?.[q.id];
+      if (q.type === 'essay' && detail && !detail.isSkipped) return false;
       return detail && !detail.isFullyCorrect;
     })
     .map((q) => q.id);
@@ -72,7 +86,10 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
     const detail = result.scoreDetails?.[q.id];
     if (!detail) return true;
 
-    if (filter === 'wrong') return !detail.isFullyCorrect && !detail.isSkipped;
+    if (filter === 'wrong') {
+      if (q.type === 'essay' && !detail.isSkipped) return false;
+      return !detail.isFullyCorrect && !detail.isSkipped;
+    }
     if (filter === 'correct') return detail.isFullyCorrect;
     if (filter === 'skipped') return detail.isSkipped;
     return true;
@@ -216,6 +233,21 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
               <Printer className="w-3.5 h-3.5" />
               <span>In kết quả</span>
             </button>
+            {result.showScoreAfterExam !== false && (
+              <button
+                type="button"
+                onClick={() =>
+                  exportResultsToExcel([result], {
+                    examTitle: result.examTitle,
+                  })
+                }
+                className="py-2 px-3.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Xuất kết quả bài thi ra Excel (.xlsx)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Xuất Excel</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -282,8 +314,8 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
             </p>
           </div>
 
-          {/* Filter tabs */}
-          {!result.showOnlyStudentAnswersAfterExam && (
+          {/* Filter tabs (Hidden if points/answers are masked) */}
+          {!result.showOnlyStudentAnswersAfterExam && result.showScoreAfterExam !== false && (
             <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg text-xs">
               <button
                 onClick={() => setFilter('all')}
@@ -320,12 +352,13 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
         </div>
 
         {/* Questions list */}
-        <div className="space-y-6">
+        <div ref={reviewContainerRef} className="space-y-6">
           {filteredQuestions.map((q) => {
             const detail = result.scoreDetails?.[q.id];
             const originalIndex = result.questions.findIndex((item) => item.id === q.id);
             const userAns = result.answers[q.id];
-            const isOnlyStudentAnswers = Boolean(result.showOnlyStudentAnswersAfterExam);
+            const isScoreHidden = result.showScoreAfterExam === false;
+            const isOnlyStudentAnswers = Boolean(result.showOnlyStudentAnswersAfterExam) || isScoreHidden;
 
             return (
               <div
@@ -354,6 +387,11 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                   {isOnlyStudentAnswers ? (
                     <span className="text-xs font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                       Đã ghi nhận câu trả lời
+                    </span>
+                  ) : q.type === 'essay' && !detail?.isSkipped ? (
+                    <span className="flex items-center gap-1 text-xs font-semibold text-cyan-800 bg-cyan-50 px-2 py-0.5 rounded border border-cyan-200">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Đã nộp tự luận (Chờ GV chấm)
                     </span>
                   ) : detail?.isFullyCorrect ? (
                     <span className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
@@ -462,7 +500,7 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                 {/* Review Format 2: True / False */}
                 {q.type === 'true_false' && (
                   <div className="space-y-3 mb-4">
-                    {(() => {
+                    {!isOnlyStudentAnswers && (() => {
                       const ansMap = (userAns as { [id: string]: boolean }) || {};
                       const correctSubCount = (q.tfItems || []).filter((item) => ansMap[item.id] === item.isCorrect).length;
                       return (
@@ -539,15 +577,57 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                     <div className="flex items-center justify-between">
                       <span className="text-slate-600">Câu trả lời bạn đã nhập:</span>
                       <strong className={`font-mono text-sm ${isOnlyStudentAnswers ? 'text-blue-900' : detail?.isFullyCorrect ? 'text-emerald-700' : 'text-rose-700'}`}>
-                        {(userAns as string) || '(Để trống)'}
+                        {userAns ? formatShortAnswerDecimalComma(String(userAns)) : '(Để trống)'}
                       </strong>
                     </div>
                     {!isOnlyStudentAnswers && (
                       <div className="flex items-center justify-between pt-2 border-t border-slate-200">
                         <span className="text-slate-600">Đáp án được chấp nhận:</span>
                         <strong className="font-mono text-slate-900">
-                          {(q.acceptedAnswers || []).join(' hoặc ')}
+                          {formatAcceptedShortAnswersList(q.acceptedAnswers) || '—'}
                         </strong>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Review Format 3b: Matching */}
+                {q.type === 'matching' && (
+                  <div className="mb-4">
+                    <MatchingQuestionView
+                      question={q}
+                      mode="review"
+                      userAnswer={(userAns as { [leftId: string]: string }) || {}}
+                      isOnlyStudentAnswers={isOnlyStudentAnswers}
+                      hidePrompt={true}
+                    />
+                  </div>
+                )}
+
+                {/* Review Format 3c: Essay */}
+                {q.type === 'essay' && (
+                  <div className="space-y-3 mb-4 text-xs sm:text-sm">
+                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1.5">
+                      <div className="font-bold text-slate-700 text-xs uppercase tracking-wider">
+                        Bài làm tự luận của bạn:
+                      </div>
+                      {typeof userAns === 'string' && userAns.trim() ? (
+                        <div className="text-slate-900 leading-relaxed bg-white p-3 rounded-lg border border-slate-200">
+                          <RichContentRenderer content={userAns} />
+                        </div>
+                      ) : (
+                        <div className="text-slate-500 italic">(Chưa nhập bài làm)</div>
+                      )}
+                    </div>
+
+                    {!isOnlyStudentAnswers && q.sampleAnswer && q.sampleAnswer.trim() && (
+                      <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/70 space-y-1.5">
+                        <div className="font-bold text-emerald-900 text-xs uppercase tracking-wider">
+                          Đáp án tham khảo / Gợi ý chấm điểm:
+                        </div>
+                        <div className="text-emerald-950 leading-relaxed">
+                          <RichContentRenderer content={q.sampleAnswer} />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -594,12 +674,14 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                                         : 'bg-white border-slate-200 text-slate-700'
                                     }`}
                                   >
-                                    <div className="flex items-center gap-1">
-                                      <span className="font-bold">{sLetter}.</span>
-                                      <span>{sOpt}</span>
-                                      {!isOnlyStudentAnswers && isSubCorrect && <span className="ml-auto text-[10px] text-emerald-700 font-bold">✓ Đúng</span>}
+                                    <div className="flex items-start gap-1">
+                                      <span className="font-bold shrink-0">{sLetter}.</span>
+                                      <div className="flex-1 min-w-0">
+                                        <RichContentRenderer content={sOpt} />
+                                      </div>
+                                      {!isOnlyStudentAnswers && isSubCorrect && <span className="ml-auto text-[10px] text-emerald-700 font-bold shrink-0">✓ Đúng</span>}
                                       {isUserSelected && (!isSubCorrect || isOnlyStudentAnswers) && (
-                                        <span className={`ml-auto text-[10px] font-bold ${isOnlyStudentAnswers ? 'text-blue-700' : 'text-rose-700'}`}>
+                                        <span className={`ml-auto text-[10px] font-bold shrink-0 ${isOnlyStudentAnswers ? 'text-blue-700' : 'text-rose-700'}`}>
                                           {isOnlyStudentAnswers ? '✓ Bạn chọn' : '✗ Bạn chọn'}
                                         </span>
                                       )}
@@ -631,14 +713,16 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                                     ? 'text-emerald-700'
                                     : 'text-rose-700'
                                 }`}>
-                                  {typeof subAns === 'string' && subAns.trim() ? subAns : '(Để trống)'}
+                                  {typeof subAns === 'string' && subAns.trim()
+                                    ? formatShortAnswerDecimalComma(subAns)
+                                    : '(Để trống)'}
                                 </strong>
                               </div>
                               {!isOnlyStudentAnswers && (
                                 <div className="flex items-center justify-between pt-1.5 border-t border-slate-100">
                                   <span className="text-slate-600">Đáp án được chấp nhận:</span>
                                   <strong className="font-mono text-purple-900">
-                                    {(subQ.acceptedAnswers || []).join(' hoặc ')}
+                                    {formatAcceptedShortAnswersList(subQ.acceptedAnswers) || '—'}
                                   </strong>
                                 </div>
                               )}
@@ -646,14 +730,21 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                           )}
 
                           {subQ.type !== 'text_input' && (
-                            <div className="mt-2 text-xs text-slate-700">
-                              Bạn đã trả lời:{' '}
-                              <strong>
-                                {subAns !== undefined
-                                  ? subQ.type === 'single_choice' && subQ.options && typeof subAns === 'number'
-                                    ? `${String.fromCharCode(65 + subAns)}. ${subQ.options[subAns] || ''}`
-                                    : String(subAns)
-                                  : '(Chưa làm)'}
+                            <div className="mt-2 text-xs text-slate-700 flex flex-wrap items-start gap-1">
+                              <span className="shrink-0">Bạn đã trả lời:</span>
+                              <strong className="inline-flex items-start gap-1">
+                                {subAns !== undefined ? (
+                                  subQ.type === 'single_choice' && subQ.options && typeof subAns === 'number' ? (
+                                    <>
+                                      <span>{String.fromCharCode(65 + subAns)}.</span>
+                                      <RichContentRenderer content={subQ.options[subAns] || ''} />
+                                    </>
+                                  ) : (
+                                    <span>{String(subAns)}</span>
+                                  )
+                                ) : (
+                                  '(Chưa làm)'
+                                )}
                               </strong>
                             </div>
                           )}

@@ -2,15 +2,21 @@ export type UserRole = 'teacher' | 'student';
 
 export interface UserAccount {
   id: string;
+  uid?: string; // Firebase Auth UID chính chủ
+  legacyUserIds?: string[]; // Các ID cũ trước khi chuyển sang Firebase Auth UID
   email: string;
   username: string;
   fullName: string;
+  name?: string; // Tên hiển thị (alias cho fullName)
   studentCode?: string;
   role: UserRole;
   isMasterAdmin?: boolean; // Tài khoản của người tạo hệ thống: tranquangnhat418@gmail.com
-  password?: string;
+  hasBackendPassword?: boolean;
   avatar?: string;
   school?: string;
+  schoolOrOrg?: string; // Trường / Tổ chức (alias cho school)
+  isGoogleAuth?: boolean;
+  updatedAt?: string;
   createdAt: string;
 }
 
@@ -24,6 +30,7 @@ export interface TeacherRoleRequest {
   reason: string;
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
+  updatedAt?: string;
   reviewedAt?: string;
   reviewedBy?: string;
 }
@@ -34,6 +41,7 @@ export interface ClassJoinRequest {
   className: string;
   classCode: string;
   teacherId?: string;
+  teacherEmail?: string;
   studentId: string;
   studentName: string;
   studentEmail?: string;
@@ -41,6 +49,7 @@ export interface ClassJoinRequest {
   note?: string;
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
+  updatedAt?: string;
 }
 
 export type StandardSubjectType = 
@@ -63,6 +72,7 @@ export interface CustomSubject {
   color?: string;
   iconName?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export type QuestionType = 
@@ -70,7 +80,18 @@ export type QuestionType =
   | 'multiple_choice' // Chọn nhiều phương án đúng
   | 'true_false'      // Nhiều ý, mỗi ý chọn Đúng hoặc Sai
   | 'text_input'      // Nhập đáp án vào ô văn bản/số (trả lời ngắn)
-  | 'grouped';        // Câu hỏi chùm: bối cảnh lớn bao trùm nhiều câu hỏi nhỏ
+  | 'matching'        // Ghép đôi hai cột (trái >=< phải, cho phép cột phải nhiều hơn để làm nhiễu)
+  | 'grouped'         // Câu hỏi chùm: bối cảnh lớn bao trùm nhiều câu hỏi nhỏ
+  | 'essay';          // Tự luận / Soạn thảo văn bản online kèm công thức toán
+
+export type MatchingLabelStyle = 'number' | 'upper_alpha' | 'lower_alpha' | 'roman' | 'custom';
+
+export interface MatchingItem {
+  id: string;
+  label?: string; // Nhãn tùy chỉnh khi chọn kiểu 'custom'
+  content: string; // Nội dung văn bản hoặc công thức LaTeX
+  imageUrl?: string; // Ảnh minh họa (tùy chọn)
+}
 
 export interface TrueFalseItem {
   id: string;
@@ -94,6 +115,8 @@ export interface Question {
   topic?: string;
   difficulty?: 'easy' | 'medium' | 'hard';
   imageUrl?: string;
+  partId?: string;    // ID phần thi của câu hỏi (VD: Phần I, Phần II...)
+  partTitle?: string; // Tên phần thi hiển thị (tuỳ chọn)
 
   // Dành cho 'single_choice' & 'multiple_choice':
   options?: string[]; // Mảng linh hoạt, thêm/bớt bao nhiêu ý tùy thích (2, 3, 4, 5...)
@@ -107,11 +130,21 @@ export interface Question {
   tfTierPoints?: number[]; // Mảng điểm theo số ý đúng: [điểm khi đúng 1 ý, điểm khi đúng 2 ý, điểm khi đúng 3 ý, ...]
 
   // Dành cho 'text_input':
-  acceptedAnswers?: string[]; // Các đáp án được chấp nhận (vd: ["3.5", "7/2"])
+  acceptedAnswers?: string[]; // Các đáp án được chấp nhận (vd: ["3,5", "7/2"])
   caseSensitive?: boolean;
+
+  // Dành cho 'matching' (Ghép đôi hai cột):
+  matchingLeftLabelStyle?: MatchingLabelStyle;  // Kiểu đánh ý cột trái (vd: 'number' -> 1, 2, 3 hoặc 'lower_alpha' -> a, b, c)
+  matchingRightLabelStyle?: MatchingLabelStyle; // Kiểu đánh ý cột phải (vd: 'upper_alpha' -> A, B, C hoặc 'number' -> 1, 2, 3)
+  matchingLeftItems?: MatchingItem[];           // Danh sách ý cột trái (đề bài)
+  matchingRightItems?: MatchingItem[];          // Danh sách ý cột phải (đáp án, số lượng >= cột trái, có thể thừa làm nhiễu)
+  matchingCorrectPairs?: { [leftItemId: string]: string }; // Map leftItem.id -> rightItem.id
 
   // Dành cho 'grouped' (câu hỏi chùm):
   subQuestions?: Question[]; // Các câu hỏi nhỏ bên trong (hỗ trợ single_choice, multiple_choice, true_false, text_input)
+
+  // Dành cho 'essay' (tự luận / soạn thảo văn bản):
+  sampleAnswer?: string; // Đáp án tham khảo / Gợi ý chấm điểm
 }
 
 export type ExamVisibility = 'public' | 'exam_only' | 'private' | 'class' | 'bundle_only';
@@ -120,10 +153,41 @@ export type ExamStatus = 'draft' | 'scheduled' | 'open' | 'closed';
 export interface ExamSettings {
   shuffleQuestions?: boolean; // Đảo thứ tự câu hỏi
   shuffleOptions?: boolean;   // Đảo thứ tự câu trả lời
+  groupByQuestionType?: boolean; // Gom mỗi dạng câu hỏi thành từng cụm cố định
+  questionTypeOrder?: QuestionType[]; // Thứ tự cố định các cụm dạng câu hỏi
   allowCopy?: boolean;        // Cho phép hay không cho sao chép (copy)
   showAnswersAfterExam?: boolean;    // Ẩn / hiện đáp án & lời giải chi tiết sau thi
   showLiveScoreDuringExam?: boolean; // Ẩn / hiện điểm khi thi giữa chừng
   showScoreAfterExam?: boolean;      // Ẩn / hiện điểm sau khi kết thúc bài thi
+}
+
+export interface ExamPart {
+  id: string;
+  title: string;        // VD: "Phần I: Trắc nghiệm khách quan", "Phần II: Đúng / Sai"
+  description?: string;
+  order: number;
+}
+
+export interface ExamPartScore {
+  partId: string;
+  partTitle: string;
+  order: number;
+  questionIds: string[];
+  questionCount: number;
+  earnedPoints: number;
+  maxPoints: number;
+  scoreOnTenScale: number;
+  correctCount: number;
+}
+
+export interface ExamAttachedFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes?: number;
+  dataUrl?: string; // Base64 Data URL cho file nhỏ (<= 500KB) để đồng bộ trực tiếp Firestore
+  url?: string;     // Đường dẫn /api/files/... hoặc URL tài liệu ngoài
+  uploadedAt?: string;
 }
 
 export interface Exam {
@@ -135,10 +199,13 @@ export interface Exam {
   description: string;
   instructions?: string; // Phần ghi hướng dẫn làm bài
   settings?: ExamSettings;
+  parts?: ExamPart[]; // Cấu trúc chia các phần của đề thi (Phần I, Phần II...)
+  attachedFile?: ExamAttachedFile; // File đề thi tích hợp (PDF, Word, Ảnh...) hiển thị chia đôi màn hình khi làm bài
   questions: Question[];
   totalQuestions: number;
   totalPoints: number; // Tổng điểm của toàn bộ đề
   createdAt: string;
+  updatedAt?: string;
   isCustom?: boolean;
 
   // Phạm vi hiển thị & Bảo mật
@@ -175,6 +242,18 @@ export interface Exam {
   requireAccessCode?: boolean;      // Chỉ thí sinh có mã bảo mật được cấp mới được phép làm
   accessSecurityCode?: string;      // Mã bảo mật đề thi (PIN / Passcode giáo viên cấp cho thí sinh)
   accessMode?: 'direct_and_code' | 'code_only'; // 'code_only' = chỉ được vào bằng mã đề, không thể bấm vào trực tiếp
+
+  // Trạng thái chế độ giáo viên & Khóa điều hướng thi chính thức trong lớp
+  teacherMode?: 'normal' | 'creator' | 'grading' | 'presenting';
+  isCreatorOnlyMode?: boolean;      // True = Đề đang ở chế độ "Người ra đề", tuyệt đối ẩn với học sinh
+  isOfficialClassExam?: boolean;    // True = Kỳ thi chính thức khóa điều hướng học sinh trong lớp
+  preExamLockMinutes?: number;      // Số phút khóa điều hướng trước giờ mở đề (openTime)
+  allowExitAfterSubmit?: boolean;   // Cho phép học sinh thoát khóa sau khi đã nộp bài
+
+  // Quyền sở hữu / Người tạo đề thi
+  creatorId?: string;
+  creatorEmail?: string;
+  creatorName?: string;
 }
 
 export type CandidateAnswerValue = 
@@ -182,6 +261,7 @@ export type CandidateAnswerValue =
   | number[]                       // danh sách index cho multiple_choice
   | boolean                        // boolean cho true_false item
   | { [itemId: string]: boolean }  // map itemId -> true/false cho true_false
+  | { [leftId: string]: string }   // map leftItemId -> rightItemId (hoặc __raw__:text) cho matching
   | string                         // chuỗi nhập cho text_input
   | { [subQId: string]: CandidateAnswerValue }; // map cho grouped
 
@@ -216,6 +296,8 @@ export interface ExamResult {
   examTitle: string;
   subject: SubjectType;
   grade: string;
+  userId?: string;      // ID tài khoản học sinh làm bài (bảo mật năng lực riêng tư)
+  userEmail?: string;   // Email tài khoản học sinh làm bài
   studentName?: string; // Tên thí sinh
   studentCode?: string; // Số báo danh
   classId?: string;     // Lớp nếu có
@@ -240,11 +322,13 @@ export interface ExamResult {
   questions: Question[];
   scoreDetails: { [questionId: string]: QuestionScoreDetail };
   topicBreakdown: { [topic: string]: { total: number; earned: number; maxPoints: number } };
+  partBreakdowns?: ExamPartScore[]; // Điểm chi tiết theo từng phần của đề thi & cộng tổng
   
   // Settings snapshot at time of test
   showScoreAfterExam?: boolean;
   showAnswersAfterExam?: boolean;
   showOnlyStudentAnswersAfterExam?: boolean;
+  updatedAt?: string;
 }
 
 // Multi-subject Exam Bundle (Tổ hợp đề thi liên môn)
@@ -288,8 +372,11 @@ export interface ExamBundle {
 
   // Quy chế phòng thi & Nộp bài
   visibility?: ExamVisibility;      // 'public' | 'private' | 'class' | 'bundle_only'
+  assignedClassId?: string;         // ID lớp học nếu giới hạn trong lớp
+  assignedClassName?: string;       // Tên lớp học nếu giới hạn trong lớp
   accessMode?: 'direct_and_code' | 'code_only'; // 'code_only' = chỉ vào bằng mã tổ hợp môn
   lockExitUntilTimeout?: boolean;   // Không cho thoát giao diện thi đến khi hết giờ
+  showScoreAfterExam?: boolean;     // Hiện điểm số sau khi hoàn thành toàn bộ tổ hợp
   showAnswersAfterExam?: boolean;   // Hiện đáp án chi tiết sau thi
   showOnlyStudentAnswersAfterExam?: boolean; // Sau khi thi xong chỉ cho xem câu trả lời đã làm
   minSubmitMinutes?: number;        // Giới hạn nộp bài sau bao nhiêu phút
@@ -300,6 +387,12 @@ export interface ExamBundle {
   sections?: any[];                 // Các phân đoạn đề thi nếu có
   createdAt: string;
   isCustom?: boolean;
+
+  // Quyền sở hữu / Người tạo tổ hợp
+  creatorId?: string;
+  creatorEmail?: string;
+  creatorName?: string;
+  updatedAt?: string;
 }
 
 // --- Classrooms & Students (Lớp học & Quản lý học sinh) ---
@@ -324,24 +417,97 @@ export interface Classroom {
   students: StudentMember[];
   pendingRequests?: ClassJoinRequest[]; // Danh sách học sinh đang gửi yêu cầu chờ duyệt vào lớp
   assignedExamIds: string[]; // Danh sách đề thi được giao cho lớp này
+  assignedCourseIds?: string[]; // Danh sách khóa học được giao cho lớp này
   createdAt: string;
+  updatedAt?: string;
 }
 
-// --- Micro-Courses (Hệ thống Khóa học: Chương, Bài học & Tương tác) ---
-export type LessonBlockType = 'theory' | 'question' | 'callout' | 'practice_link';
+// --- Micro-Courses (Hệ thống Khóa học: Chương, Bài học & Tương tác + SCORM) ---
+export type LessonBlockType = 'theory' | 'question' | 'callout' | 'image' | 'file' | 'practice_link';
+
+export interface CourseAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes?: number;
+  dataUrl?: string; // Cho tệp tải lên từ máy (Base64 Data URL)
+  url?: string;     // Cho đường dẫn tài liệu ngoài (Google Drive, OneDrive, PDF URL...)
+  uploadedAt?: string;
+  uploadedBy?: string;
+}
 
 export interface LessonBlock {
   id: string;
   type: LessonBlockType;
   title?: string;
-  contentMarkdown?: string; // Hỗ trợ Markdown, LaTeX KaTeX
+  contentMarkdown?: string; // Hỗ trợ Markdown, LaTeX KaTeX & ảnh chèn giữa nội dung
   imageUrl?: string;
+  caption?: string; // Chú thích ảnh minh họa
   calloutType?: 'info' | 'tip' | 'warning' | 'formula';
+  attachments?: CourseAttachment[]; // Tài liệu đính kèm (PDF, Word, PPT, Excel, Zip...)
   // Dành cho 'question' (câu hỏi tương tác trung gian giữa bài học):
   question?: Question;
   // Dành cho 'practice_link':
   practiceExamId?: string;
   practiceExamTitle?: string;
+}
+
+export interface HomeworkAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  dataUrl?: string;
+  url?: string;
+}
+
+export interface ClassroomHomework {
+  id: string;
+  classId: string;
+  title: string;
+  instructions?: string;
+  attachments?: HomeworkAttachment[];
+  openTime?: string;   // Thời gian mở nộp BTVN (YYYY-MM-DDTHH:mm)
+  closeTime?: string;  // Thời gian đóng nộp BTVN (YYYY-MM-DDTHH:mm)
+  maxScore?: number;   // Điểm tối đa (mặc định 10)
+  createdBy?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface LessonHomeworkConfig {
+  enabled: boolean;
+  title: string;
+  instructions?: string;
+  openTime?: string;
+  closeTime?: string;
+  maxScore?: number;
+}
+
+export interface HomeworkSubmission {
+  id: string;
+  classId?: string;
+  homeworkId?: string;
+  homeworkTitle?: string;
+  courseId?: string;
+  courseTitle?: string;
+  lessonId?: string;
+  lessonTitle?: string;
+  studentId: string;
+  studentName: string;
+  studentEmail?: string;
+  studentCode?: string;
+  imageUrls: string[];
+  attachments?: HomeworkAttachment[];
+  textAnswer?: string;
+  note?: string;
+  submittedAt: string;
+  updatedAt?: string;
+  score?: number;
+  maxScore?: number;
+  teacherFeedback?: string;
+  gradedAt?: string;
+  gradedBy?: string;
 }
 
 export interface CourseLesson {
@@ -350,9 +516,11 @@ export interface CourseLesson {
   durationMinutes?: number;
   summary?: string;
   contentMarkdown?: string;
-  blocks?: LessonBlock[]; // Danh sách các khối lý thuyết & câu hỏi trung gian
+  blocks?: LessonBlock[]; // Danh sách các khối lý thuyết, ảnh, tài liệu & câu hỏi trung gian
+  attachments?: CourseAttachment[]; // Tài liệu đính kèm của bài học (PDF, DOC, PPT, Excel...)
   practiceExamId?: string; // Đề luyện tập đính kèm
   practiceExamTitle?: string;
+  homework?: LessonHomeworkConfig;
 }
 
 export interface CourseChapter {
@@ -377,14 +545,43 @@ export interface MicroCourse {
   finalExamId?: string; // Đề thi tổng kết khóa học
   finalExamTitle?: string;
   createdAt: string;
+
+  // Trạng thái & Thời gian mở/đóng khóa học
+  status?: ExamStatus; // 'draft' | 'scheduled' | 'open' | 'closed'
+  openTime?: string;   // Thời gian bắt đầu mở khóa học (YYYY-MM-DDTHH:mm)
+  closeTime?: string;  // Thời gian khóa đóng khóa học (YYYY-MM-DDTHH:mm)
+
+  // Phạm vi hiển thị & Quyền sở hữu
+  visibility?: ExamVisibility; // 'public' | 'class' | 'private'
+  assignedClassId?: string;
+  assignedClassName?: string;
+  creatorId?: string;
+  creatorEmail?: string;
+  creatorName?: string;
+
+  // Chuẩn đóng gói & Theo dõi tiến độ SCORM
+  isScormEnabled?: boolean;
+  scormVersion?: '1.2' | '2004';
+  updatedAt?: string;
+}
+
+export interface ScormTrackingData {
+  lessonStatus: 'not attempted' | 'incomplete' | 'completed' | 'passed';
+  lessonLocation?: string;
+  scoreRaw?: number;
+  suspendData?: string;
+  totalBlocksCompleted?: number;
+  totalBlocksCount?: number;
 }
 
 export interface StudentCourseProgress {
   courseId: string;
   studentId: string;
   completedLessonIds: string[];
+  completedBlockIds?: string[]; // Theo dõi hoàn thành từng khối nội dung (SCORM granular progress)
   currentChapterId?: string;
   currentLessonId?: string;
+  currentBlockIdsByLesson?: { [lessonId: string]: string };
   interactiveAnswers: {
     [blockId: string]: {
       selectedAnswer: any;
@@ -393,6 +590,7 @@ export interface StudentCourseProgress {
     };
   };
   completedExamIds: string[];
+  scormData?: ScormTrackingData;
   lastStudiedAt: string;
 }
 
@@ -401,7 +599,7 @@ export interface NavTabItem {
   id: string;
   label: string;
   iconName: 'book' | 'layers' | 'users' | 'graduation' | 'swords' | 'chart' | 'clock' | 'folder' | 'atom' | 'code';
-  targetView: 'single' | 'bundle' | 'classrooms' | 'courses' | 'battle' | 'analytics' | 'history' | 'custom_subject' | 'oj';
+  targetView: 'single' | 'bundle' | 'classrooms' | 'courses' | 'battle' | 'analytics' | 'history' | 'custom_subject';
   subjectFilter?: string; // Nếu là tab môn học cụ thể
   badgeText?: string;
   isCustom?: boolean;
@@ -517,5 +715,50 @@ export interface FeedbackItem {
   userRole?: UserRole;
   email?: string;
   createdAt: string; // ISO string
+  updatedAt?: string;
+}
+
+// --- Công cụ Giáo viên: Quản lý Bảng điểm & Vinh danh động ---
+export type ScoreboardDisplayMode = '1v1' | 'group' | 'top_n';
+export type TeacherSpecialMode = 'normal' | 'creator' | 'grading' | 'presenting';
+
+export interface ScoreboardRound {
+  id: string;
+  name: string;
+  maxPoints?: number;
+  order: number;
+}
+
+export interface ScoreboardParticipant {
+  id: string;
+  name: string;
+  code?: string;
+  email?: string;
+  /** Điểm đã lưu theo từng phần/vòng thi */
+  scores: { [roundId: string]: number };
+  /** Điểm đã công bố (trình chiếu) theo từng phần/vòng thi để tạo hiệu ứng Odometer & FLIP */
+  revealedScores?: { [roundId: string]: number };
+  lastAnnouncedRoundId?: string;
+  lastAnnouncedDelta?: number;
+  lastAnnouncedAt?: string;
+}
+
+export interface Scoreboard {
+  id: string;
+  title: string;
+  description?: string;
+  mode: ScoreboardDisplayMode;
+  topN?: number;
+  specialMode: TeacherSpecialMode;
+  classId?: string;
+  className?: string;
+  rounds: ScoreboardRound[];
+  participants: ScoreboardParticipant[];
+  creatorId?: string;
+  creatorUid?: string;
+  creatorEmail?: string;
+  creatorName?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 

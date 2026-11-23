@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   ShieldCheck, 
@@ -15,7 +15,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { TeacherRoleRequest, UserAccount } from '../types/exam';
-import { getAllTeacherRequests, reviewTeacherRoleRequest } from '../utils/storage';
+import { fetchTeacherRequestsFromBackend, getAllTeacherRequests, reviewTeacherRoleRequest } from '../utils/storage';
 
 interface TeacherRequestsAdminModalProps {
   isOpen: boolean;
@@ -33,6 +33,12 @@ export const TeacherRequestsAdminModal: React.FC<TeacherRequestsAdminModalProps>
   const [requests, setRequests] = useState<TeacherRoleRequest[]>(() => getAllTeacherRequests());
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
   const [actionToast, setActionToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      void fetchTeacherRequestsFromBackend().then(setRequests);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

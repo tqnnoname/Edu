@@ -1,10 +1,145 @@
 import { 
   CandidateAnswerValue, 
   Exam, 
+  ExamPart,
+  ExamPartScore,
   ExamResult, 
+  MatchingItem,
+  MatchingLabelStyle,
   Question, 
-  QuestionScoreDetail 
+  QuestionScoreDetail,
+  QuestionType
 } from '../types/exam';
+import { formatMatchingLabel } from './matching';
+
+export const DEFAULT_QUESTION_TYPE_ORDER: QuestionType[] = [
+  'single_choice',
+  'multiple_choice',
+  'true_false',
+  'text_input',
+  'matching',
+  'grouped',
+  'essay',
+];
+
+export const QUESTION_TYPE_CLUSTER_META: Record<
+  QuestionType,
+  { shortLabel: string; partTitle: string }
+> = {
+  single_choice: {
+    shortLabel: 'Trắc nghiệm đơn',
+    partTitle: 'Trắc nghiệm nhiều phương án lựa chọn (1 đáp án)',
+  },
+  multiple_choice: {
+    shortLabel: 'Chọn nhiều đáp án',
+    partTitle: 'Trắc nghiệm chọn nhiều phương án đúng',
+  },
+  true_false: {
+    shortLabel: 'Đúng / Sai',
+    partTitle: 'Câu trắc nghiệm Đúng / Sai',
+  },
+  text_input: {
+    shortLabel: 'Trả lời ngắn',
+    partTitle: 'Câu trắc nghiệm trả lời ngắn',
+  },
+  matching: {
+    shortLabel: 'Ghép đôi',
+    partTitle: 'Câu hỏi ghép đôi hai cột',
+  },
+  grouped: {
+    shortLabel: 'Câu hỏi chùm',
+    partTitle: 'Câu hỏi chùm / Đọc hiểu bối cảnh',
+  },
+  essay: {
+    shortLabel: 'Tự luận / Soạn thảo',
+    partTitle: 'Câu hỏi tự luận (Soạn thảo văn bản & công thức)',
+  },
+};
+
+export function toRomanNumeral(num: number): string {
+  const romans: [number, string][] = [
+    [10, 'X'],
+    [9, 'IX'],
+    [5, 'V'],
+    [4, 'IV'],
+    [1, 'I'],
+  ];
+  let n = Math.max(1, Math.floor(num));
+  let res = '';
+  for (const [val, sym] of romans) {
+    while (n >= val) {
+      res += sym;
+      n -= val;
+    }
+  }
+  return res;
+}
+
+export function normalizeQuestionTypeOrder(customOrder?: QuestionType[]): QuestionType[] {
+  const seen = new Set<QuestionType>();
+  const result: QuestionType[] = [];
+  for (const t of customOrder || []) {
+    if (DEFAULT_QUESTION_TYPE_ORDER.includes(t) && !seen.has(t)) {
+      seen.add(t);
+      result.push(t);
+    }
+  }
+  for (const t of DEFAULT_QUESTION_TYPE_ORDER) {
+    if (!seen.has(t)) {
+      seen.add(t);
+      result.push(t);
+    }
+  }
+  return result;
+}
+
+export interface QuestionClusterGroup {
+  partIndex: number;
+  roman: string;
+  type: QuestionType;
+  shortLabel: string;
+  partTitle: string;
+  items: { question: Question; flatIndex: number }[];
+}
+
+export function buildQuestionClusters(
+  questions: Question[],
+  typeOrder?: QuestionType[]
+): QuestionClusterGroup[] {
+  const order = normalizeQuestionTypeOrder(typeOrder);
+  const buckets = new Map<QuestionType, { question: Question; flatIndex: number }[]>();
+
+  order.forEach((t) => buckets.set(t, []));
+
+  questions.forEach((question, flatIndex) => {
+    const qType = question.type || 'single_choice';
+    const existing = buckets.get(qType) || [];
+    existing.push({ question, flatIndex });
+    buckets.set(qType, existing);
+  });
+
+  const clusters: QuestionClusterGroup[] = [];
+  order.forEach((type) => {
+    const items = buckets.get(type) || [];
+    if (items.length > 0) {
+      const meta = QUESTION_TYPE_CLUSTER_META[type] || {
+        shortLabel: type,
+        partTitle: type,
+      };
+      const partIndex = clusters.length;
+      clusters.push({
+        partIndex,
+        roman: toRomanNumeral(partIndex + 1),
+        type,
+        shortLabel: meta.shortLabel,
+        partTitle: meta.partTitle,
+        items,
+      });
+    }
+  });
+
+  return clusters;
+}
 
 /**
  * Chuẩn hóa chuỗi văn bản hoặc số để so sánh câu trả lời ngắn
@@ -17,6 +152,39 @@ export function normalizeTextAnswer(str: string): string {
     .replace(/\s+/g, ' ')
     // Chuẩn hóa dấu phẩy thập phân sang dấu chấm (VD: 3,5 -> 3.5)
     .replace(/(\d+),(\d+)/g, '$1.$2');
+}
+
+/**
+ * Chuẩn hóa số thập phân về dạng dấu phẩy (VD: 3.5 -> 3,5),
+ * bỏ qua chuỗi nhiều dấu chấm như địa chỉ IP (192.168.1.1) hoặc số phiên bản (2.0.1).
+ */
+export function formatShortAnswerDecimalComma(str: string): string {
+  if (!str) return '';
+  return str.replace(/(^|[^0-9.])(-?\d+)\.(\d+)(?![0-9.]|\.\d)/g, '$1$2,$3');
+}
+
+/**
+ * Tách danh sách đáp án đúng cho câu trả lời ngắn (ngăn cách bởi dấu chấm phẩy ";"),
+ * đồng thời chuẩn hóa số thập phân sang dấu phẩy.
+ */
+export function parseAcceptedShortAnswers(raw: string): string[] {
+  const cleaned = raw
+    .split(';')
+    .map((s) => formatShortAnswerDecimalComma(s.trim()))
+    .filter(Boolean);
+  return Array.from(new Set(cleaned));
+}
+
+/**
+ * Định dạng danh sách đáp án đúng của câu trả lời ngắn để hiển thị
+ * (số thập phân dùng dấu phẩy, ngăn cách các đáp án đúng bằng dấu chấm phẩy ";").
+ */
+export function formatAcceptedShortAnswersList(answers?: string[], separator = ' ; '): string {
+  if (!answers || answers.length === 0) return '';
+  const formatted = answers
+    .map((a) => formatShortAnswerDecimalComma(a.trim()))
+    .filter(Boolean);
+  return Array.from(new Set(formatted)).join(separator);
 }
 
 /**
@@ -235,6 +403,83 @@ export function gradeQuestion(
     };
   }
 
+  // 3b. Dạng Matching (Ghép đôi hai cột)
+  if (question.type === 'matching') {
+    const leftItems = question.matchingLeftItems || [];
+    if (leftItems.length === 0) {
+      return {
+        questionId: question.id,
+        earnedPoints: 0,
+        maxPoints,
+        isFullyCorrect: false,
+        isPartiallyCorrect: false,
+        isSkipped: true,
+      };
+    }
+
+    const ansMap =
+      userAnswer && typeof userAnswer === 'object' && !Array.isArray(userAnswer)
+        ? (userAnswer as { [leftId: string]: string })
+        : {};
+
+    const hasAnyInput = leftItems.some((item) => {
+      const val = ansMap[item.id];
+      if (!val) return false;
+      if (val.startsWith('__raw__:')) {
+        return val.slice('__raw__:'.length).trim().length > 0;
+      }
+      return val.trim().length > 0;
+    });
+
+    if (!hasAnyInput) {
+      return {
+        questionId: question.id,
+        earnedPoints: 0,
+        maxPoints,
+        isFullyCorrect: false,
+        isPartiallyCorrect: false,
+        isSkipped: true,
+      };
+    }
+
+    const correctPairs = question.matchingCorrectPairs || {};
+    const perItemMax = maxPoints / leftItems.length;
+    const itemScores: { [itemId: string]: { earned: number; max: number; correct: boolean } } = {};
+    let correctCount = 0;
+
+    leftItems.forEach((leftItem) => {
+      const userRightId = ansMap[leftItem.id];
+      const expectedRightId = correctPairs[leftItem.id];
+      const isCorrect =
+        Boolean(expectedRightId) &&
+        Boolean(userRightId) &&
+        !userRightId.startsWith('__raw__:') &&
+        userRightId === expectedRightId;
+
+      if (isCorrect) correctCount += 1;
+
+      itemScores[leftItem.id] = {
+        earned: isCorrect ? Number(perItemMax.toFixed(3)) : 0,
+        max: Number(perItemMax.toFixed(3)),
+        correct: isCorrect,
+      };
+    });
+
+    const earnedPoints = Number(((correctCount / leftItems.length) * maxPoints).toFixed(3));
+    const isFullyCorrect = correctCount === leftItems.length;
+    const isPartiallyCorrect = correctCount > 0 && !isFullyCorrect;
+
+    return {
+      questionId: question.id,
+      earnedPoints,
+      maxPoints,
+      isFullyCorrect,
+      isPartiallyCorrect,
+      isSkipped: false,
+      itemScores,
+    };
+  }
+
   // 4. Dạng Grouped (Câu hỏi chùm)
   if (question.type === 'grouped') {
     const subQs = question.subQuestions || [];
@@ -271,6 +516,20 @@ export function gradeQuestion(
     };
   }
 
+  // 5. Dạng Tự luận / Soạn thảo văn bản (Essay)
+  if (question.type === 'essay') {
+    const rawText = typeof userAnswer === 'string' ? userAnswer : '';
+    const isSkipped = !rawText.trim();
+    return {
+      questionId: question.id,
+      earnedPoints: 0,
+      maxPoints,
+      isFullyCorrect: false,
+      isPartiallyCorrect: !isSkipped,
+      isSkipped,
+    };
+  }
+
   // Fallback
   return {
     questionId: question.id,
@@ -280,6 +539,144 @@ export function gradeQuestion(
     isPartiallyCorrect: false,
     isSkipped: true,
   };
+}
+
+/**
+ * Xác định danh sách các phần thi (parts) & câu hỏi thuộc từng phần:
+ * 1. Ưu tiên `exam.parts` do giáo viên thiết lập thủ công.
+ * 2. Hoặc `q.partId` / `q.partTitle` gắn trực tiếp trên câu hỏi.
+ * 3. Hoặc tự động suy diễn theo cụm dạng câu hỏi khi `groupByQuestionType` bật (hoặc có >= 2 dạng câu hỏi).
+ */
+export function resolveExamPartDefinitions(
+  exam: Pick<Exam, 'parts' | 'questions' | 'settings'>
+): { part: ExamPart; questions: Question[] }[] {
+  const questions = Array.isArray(exam.questions) ? exam.questions : [];
+  if (questions.length === 0) return [];
+
+  const explicitParts = Array.isArray(exam.parts) ? [...exam.parts].sort((a, b) => a.order - b.order) : [];
+  if (explicitParts.length > 0) {
+    const groups = new Map<string, { part: ExamPart; questions: Question[] }>();
+    explicitParts.forEach((p, idx) => {
+      groups.set(p.id, { part: { ...p, order: p.order ?? idx + 1 }, questions: [] });
+    });
+    const unassigned: Question[] = [];
+    questions.forEach((q) => {
+      if (q.partId && groups.has(q.partId)) {
+        groups.get(q.partId)!.questions.push(q);
+      } else if (q.partTitle) {
+        const matched = explicitParts.find(
+          (p) => p.title.trim().toLowerCase() === q.partTitle!.trim().toLowerCase()
+        );
+        if (matched) {
+          groups.get(matched.id)!.questions.push(q);
+        } else {
+          unassigned.push(q);
+        }
+      } else {
+        unassigned.push(q);
+      }
+    });
+
+    const result = Array.from(groups.values()).filter((g) => g.questions.length > 0);
+    if (unassigned.length > 0) {
+      if (result.length === 0) {
+        return [{ part: explicitParts[0], questions: unassigned }];
+      }
+      result.push({
+        part: {
+          id: 'part_other',
+          title: 'Phần khác',
+          order: explicitParts.length + 1,
+        },
+        questions: unassigned,
+      });
+    }
+    return result;
+  }
+
+  // Check if questions carry explicit partId/partTitle tags directly
+  const taggedMap = new Map<string, { part: ExamPart; questions: Question[] }>();
+  let hasAnyTagged = false;
+  questions.forEach((q) => {
+    if (q.partId || q.partTitle) hasAnyTagged = true;
+  });
+  if (hasAnyTagged) {
+    let orderIdx = 1;
+    questions.forEach((q) => {
+      const key = q.partId || q.partTitle || 'part_general';
+      const title = q.partTitle || `Phần ${toRomanNumeral(orderIdx)}`;
+      if (!taggedMap.has(key)) {
+        taggedMap.set(key, {
+          part: { id: key, title, order: orderIdx++ },
+          questions: [],
+        });
+      }
+      taggedMap.get(key)!.questions.push(q);
+    });
+    return Array.from(taggedMap.values());
+  }
+
+  // Auto-derive from question-type clusters when grouped by type OR multiple question types exist
+  const clusters = buildQuestionClusters(questions, exam.settings?.questionTypeOrder);
+  if (exam.settings?.groupByQuestionType || clusters.length > 1) {
+    return clusters.map((c) => ({
+      part: {
+        id: `type_${c.type}`,
+        title: `Phần ${c.roman}: ${c.shortLabel}`,
+        description: c.partTitle,
+        order: c.partIndex + 1,
+      },
+      questions: c.items.map((item) => item.question),
+    }));
+  }
+
+  return [];
+}
+
+/**
+ * Tính điểm chi tiết cho từng phần của đề thi
+ */
+export function computeExamPartBreakdowns(
+  exam: Pick<Exam, 'parts' | 'questions' | 'settings'>,
+  scoreDetails: { [qId: string]: QuestionScoreDetail }
+): ExamPartScore[] {
+  const partDefs = resolveExamPartDefinitions(exam);
+  if (partDefs.length === 0) return [];
+
+  return partDefs.map(({ part, questions }, idx) => {
+    let earned = 0;
+    let maxPts = 0;
+    let correctCount = 0;
+    const questionIds: string[] = [];
+
+    questions.forEach((q) => {
+      questionIds.push(q.id);
+      const detail = scoreDetails[q.id];
+      if (detail) {
+        earned += detail.earnedPoints;
+        maxPts += detail.maxPoints;
+        if (detail.isFullyCorrect) correctCount += 1;
+      } else {
+        maxPts += q.points || 1.0;
+      }
+    });
+
+    const finalEarned = Number(earned.toFixed(2));
+    const finalMax = Number(maxPts.toFixed(2));
+    const scoreOnTenScale = finalMax > 0 ? Number(((finalEarned / finalMax) * 10).toFixed(2)) : 0;
+
+    return {
+      partId: part.id,
+      partTitle: part.title,
+      order: part.order ?? idx + 1,
+      questionIds,
+      questionCount: questions.length,
+      earnedPoints: finalEarned,
+      maxPoints: finalMax,
+      scoreOnTenScale,
+      correctCount,
+    };
+  });
 }
 
 /**
@@ -334,6 +731,7 @@ export function gradeEntireExam(
   const finalMax = Number(totalMax.toFixed(2)) || (exam.totalPoints || 10.0);
   const scoreOnTenScale = finalMax > 0 ? Number(((finalEarned / finalMax) * 10).toFixed(2)) : 0;
   const percentage = finalMax > 0 ? Math.round((finalEarned / finalMax) * 100) : 0;
+  const partBreakdowns = computeExamPartBreakdowns(exam, scoreDetails);
 
   return {
     id: 'res-' + Date.now(),
@@ -360,6 +758,7 @@ export function gradeEntireExam(
     questions: exam.questions,
     scoreDetails,
     topicBreakdown: topicStats,
+    ...(partBreakdowns.length > 0 ? { partBreakdowns } : {}),
   };
 }
 
@@ -408,6 +807,36 @@ export function shuffleExamQuestionsAndOptions(
         }
       }
 
+      const shuffleMatchingColumn = (
+        items: MatchingItem[] | undefined,
+        style: MatchingLabelStyle
+      ): MatchingItem[] | undefined => {
+        if (!items || items.length <= 1) return items;
+        const slotLabels = items.map((item) => item.label);
+        const shuffled = [...items];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return shuffled.map((item, idx) => ({
+          ...item,
+          label: formatMatchingLabel(idx, style, slotLabels[idx]),
+        }));
+      };
+
+      // Đảo cả cột trái và cột phải cho câu hỏi ghép đôi (matchingCorrectPairs giữ nguyên vì map theo ID ổn định,
+      // đồng thời cập nhật lại nhãn chữ cái/số thứ tự tương ứng theo vị trí mới)
+      if (q.type === 'matching') {
+        q.matchingLeftItems = shuffleMatchingColumn(
+          q.matchingLeftItems,
+          q.matchingLeftLabelStyle || 'number'
+        );
+        q.matchingRightItems = shuffleMatchingColumn(
+          q.matchingRightItems,
+          q.matchingRightLabelStyle || 'upper_alpha'
+        );
+      }
+
       // Nếu là câu hỏi chùm (grouped), cũng đảo options cho các subQuestions
       if (q.type === 'grouped' && q.subQuestions) {
         q.subQuestions.forEach((subQ) => {
@@ -440,19 +869,59 @@ export function shuffleExamQuestionsAndOptions(
               }
             }
           }
+
+          if (subQ.type === 'matching') {
+            subQ.matchingLeftItems = shuffleMatchingColumn(
+              subQ.matchingLeftItems,
+              subQ.matchingLeftLabelStyle || 'number'
+            );
+            subQ.matchingRightItems = shuffleMatchingColumn(
+              subQ.matchingRightItems,
+              subQ.matchingRightLabelStyle || 'upper_alpha'
+            );
+          }
         });
       }
     });
   }
 
-  // 2. Đảo thứ tự câu hỏi (shuffle questions) nếu bật
-  let finalQuestions = clonedQuestions;
-  if (shuffleQuestions && clonedQuestions.length > 1) {
-    finalQuestions = [...clonedQuestions];
-    for (let i = finalQuestions.length - 1; i > 0; i--) {
+  // 2. Gom cụm theo dạng câu hỏi (nếu bật) & Đảo thứ tự câu hỏi
+  const groupByType = Boolean(exam.settings?.groupByQuestionType);
+  let finalQuestions: Question[] = clonedQuestions;
+
+  const shuffleArray = <T,>(arr: T[]): T[] => {
+    const copy = [...arr];
+    for (let i = copy.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [finalQuestions[i], finalQuestions[j]] = [finalQuestions[j], finalQuestions[i]];
+      [copy[i], copy[j]] = [copy[j], copy[i]];
     }
+    return copy;
+  };
+
+  if (groupByType) {
+    // Thứ tự cụm cố định; nếu bật shuffleQuestions thì CHỈ tráo đổi câu hỏi bên trong từng cụm
+    const typeOrder = normalizeQuestionTypeOrder(exam.settings?.questionTypeOrder);
+    const buckets = new Map<QuestionType, Question[]>();
+    typeOrder.forEach((t) => buckets.set(t, []));
+
+    clonedQuestions.forEach((q) => {
+      const t = q.type || 'single_choice';
+      const bucket = buckets.get(t) || [];
+      bucket.push(q);
+      buckets.set(t, bucket);
+    });
+
+    const assembled: Question[] = [];
+    typeOrder.forEach((t) => {
+      const bucket = buckets.get(t) || [];
+      if (bucket.length > 0) {
+        const orderedBucket = shuffleQuestions && bucket.length > 1 ? shuffleArray(bucket) : bucket;
+        assembled.push(...orderedBucket);
+      }
+    });
+    finalQuestions = assembled;
+  } else if (shuffleQuestions && clonedQuestions.length > 1) {
+    finalQuestions = shuffleArray(clonedQuestions);
   }
 
   return {

@@ -1,33 +1,133 @@
-import React from 'react';
-import { ExamResult } from '../types/exam';
-import { 
-  Trophy, 
-  Clock, 
-  Calendar, 
-  Trash2, 
-  ArrowLeft, 
+import React, { useMemo } from 'react';
+import { Classroom, Exam, ExamResult, MicroCourse, UserAccount } from '../types/exam';
+import {
+  Trophy,
+  Clock,
+  Calendar,
+  ArrowLeft,
   ExternalLink,
   BookOpen,
   Award,
-  BarChart2
+  BarChart2,
+  FileSpreadsheet,
+  Trash2,
 } from 'lucide-react';
+import {
+  doesResultBelongToStudent,
+  exportResultsToExcel,
+  exportStudentLearningResultsToExcel,
+} from '../utils/exportFiles';
+import {
+  calculateCourseProgressPercentage,
+  getStudentCourseProgress,
+  isResultHiddenFromStudent,
+  isStudentMemberOfClass,
+  syncCourseScormState,
+} from '../utils/storage';
 
 interface ExamHistoryViewProps {
   results: ExamResult[];
+  exams?: Exam[];
+  currentUser?: UserAccount | null;
+  isTeacher?: boolean;
+  courses?: MicroCourse[];
+  classrooms?: Classroom[];
   onSelectResult: (result: ExamResult) => void;
-  onClearHistory: () => void;
-  onDeleteResult?: (resultId: string) => void;
+  onDeleteResult?: (result: ExamResult) => void;
+  onClearResults?: () => void;
   onBack: () => void;
 }
 
 export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
   results,
+  exams = [],
+  currentUser,
+  isTeacher = false,
+  courses = [],
+  classrooms = [],
   onSelectResult,
-  onClearHistory,
   onDeleteResult,
+  onClearResults,
   onBack,
 }) => {
-  const [isConfirmingClear, setIsConfirmingClear] = React.useState(false);
+  const visibleResults = useMemo(() => {
+    const base = isTeacher
+      ? results
+      : results.filter((r) => !isResultHiddenFromStudent(r, exams));
+
+    if (currentUser && !isTeacher) {
+      return base
+        .filter((r) =>
+          doesResultBelongToStudent(r, {
+            id: currentUser.id,
+            email: currentUser.email,
+            studentCode: currentUser.studentCode,
+            name: currentUser.fullName,
+          })
+        )
+        .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
+    }
+    return [...base].sort(
+      (a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()
+    );
+  }, [results, exams, currentUser, isTeacher]);
+
+  const handleExportExcel = () => {
+    if (currentUser && !isTeacher) {
+      const enrolledClassNames = classrooms
+        .filter((cls) => isStudentMemberOfClass(cls, currentUser))
+        .map((cls) => cls.name)
+        .join(', ');
+
+      const coursesProgress = courses.map((course) => {
+        const rawProg = getStudentCourseProgress(course.id, currentUser.id);
+        const synced = syncCourseScormState(course, rawProg);
+        const pct = calculateCourseProgressPercentage(course, synced);
+        const totalLessons = course.chapters
+          ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
+          : course.lessons?.length || 0;
+        const status = synced.scormData?.lessonStatus || 'not attempted';
+        const statusLabel =
+          status === 'passed'
+            ? 'Đạt chuẩn'
+            : status === 'completed'
+            ? 'Hoàn thành'
+            : status === 'incomplete'
+            ? 'Đang học'
+            : 'Chưa học';
+        return {
+          courseTitle: course.title,
+          subject: course.subject,
+          grade: course.grade,
+          progressPercent: pct,
+          completedLessons: synced.completedLessonIds?.length || 0,
+          totalLessons,
+          statusLabel,
+        };
+      });
+
+      exportStudentLearningResultsToExcel({
+        studentName: currentUser.fullName || currentUser.name || 'Học sinh',
+        studentCode: currentUser.studentCode,
+        studentEmail: currentUser.email,
+        className: enrolledClassNames || 'Tự do',
+        results: visibleResults,
+        coursesProgress,
+      });
+      return;
+    }
+
+    if (!isTeacher) {
+      exportStudentLearningResultsToExcel({
+        studentName: visibleResults[0]?.studentName || 'Học sinh',
+        studentCode: visibleResults[0]?.studentCode,
+        results: visibleResults,
+      });
+      return;
+    }
+
+    exportResultsToExcel(visibleResults);
+  };
 
   const formatSeconds = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -36,11 +136,12 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
     return `${m}m ${s > 0 ? `${s}s` : ''}`;
   };
 
-  const avgScore = results.length > 0 
-    ? Number((results.reduce((acc, r) => acc + r.score, 0) / results.length).toFixed(1))
-    : 0;
+  const avgScore =
+    visibleResults.length > 0
+      ? Number((visibleResults.reduce((acc, r) => acc + r.score, 0) / visibleResults.length).toFixed(1))
+      : 0;
 
-  const totalQuestionsDone = results.reduce((acc, r) => acc + r.totalQuestions, 0);
+  const totalQuestionsDone = visibleResults.reduce((acc, r) => acc + r.totalQuestions, 0);
 
   return (
     <div className="max-w-5xl mx-auto py-8 px-4 sm:px-6 font-sans">
@@ -59,48 +160,43 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
               Lịch sử làm bài & Thống kê tiến độ
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Theo dõi kết quả các bài thi đã làm, điểm số và sự tiến bộ qua từng ngày
+              {isTeacher
+                ? 'Theo dõi, xuất báo cáo và quản lý lịch sử kết quả các bài thi đã làm'
+                : 'Theo dõi kết quả các bài thi đã làm, điểm số và sự tiến bộ qua từng ngày (lịch sử được lưu cố định)'}
             </p>
           </div>
         </div>
 
-        {results.length > 0 && (
-          <div>
-            {!isConfirmingClear ? (
+        {visibleResults.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              className="py-2 px-3.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Xuất kết quả học tập ra file Excel (.xlsx)"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>
+                {isTeacher ? 'Xuất Excel kết quả (.xlsx)' : 'Xuất Excel kết quả học tập (.xlsx)'}
+              </span>
+            </button>
+            {isTeacher && onClearResults && (
               <button
-                onClick={() => setIsConfirmingClear(true)}
+                type="button"
+                onClick={onClearResults}
                 className="py-2 px-3 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
-                title="Xóa toàn bộ lịch sử thi đã lưu"
+                title="Xóa toàn bộ lịch sử làm bài (Giáo viên)"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Xóa lịch sử</span>
+                <span>Xóa tất cả</span>
               </button>
-            ) : (
-              <div className="flex items-center gap-1.5 animate-in fade-in duration-150">
-                <button
-                  onClick={() => {
-                    setIsConfirmingClear(false);
-                    onClearHistory();
-                  }}
-                  className="py-2 px-3 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Xác nhận xóa hết</span>
-                </button>
-                <button
-                  onClick={() => setIsConfirmingClear(false)}
-                  className="py-2 px-2.5 text-xs text-slate-600 hover:bg-slate-200 rounded-lg cursor-pointer"
-                >
-                  Hủy
-                </button>
-              </div>
             )}
           </div>
         )}
       </div>
 
       {/* Aggregate Stats */}
-      {results.length > 0 && (
+      {visibleResults.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-700 border border-blue-100 flex items-center justify-center">
@@ -109,7 +205,7 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
             <div>
               <div className="text-xs text-slate-500 font-semibold uppercase">Tổng bài đã thi</div>
               <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">
-                {results.length} bài
+                {visibleResults.length} bài
               </div>
             </div>
           </div>
@@ -141,7 +237,7 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
       )}
 
       {/* Results List */}
-      {results.length === 0 ? (
+      {visibleResults.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs">
           <Trophy className="w-12 h-12 text-slate-300 mx-auto mb-3" />
           <h3 className="text-base font-bold text-slate-900 mb-1">
@@ -160,9 +256,12 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
           <div className="divide-y divide-slate-100">
-            {results.map((res) => {
+            {visibleResults.map((res) => {
               const formattedDate = new Date(res.completedAt).toLocaleDateString('vi-VN');
-              const formattedTime = new Date(res.completedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+              const formattedTime = new Date(res.completedAt).toLocaleTimeString('vi-VN', {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
 
               return (
                 <div
@@ -171,9 +270,7 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-semibold text-blue-700">
-                        {res.grade}
-                      </span>
+                      <span className="text-xs font-semibold text-blue-700">{res.grade}</span>
                       <span className="text-slate-300">·</span>
                       <span className="text-xs text-slate-500 flex items-center gap-1">
                         <Calendar className="w-3 h-3 text-slate-400" />
@@ -186,7 +283,9 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
                     </h4>
 
                     <div className="flex items-center gap-3 text-xs text-slate-500 mt-1 font-mono">
-                      <span>Đúng: {res.correctCount}/{res.totalQuestions} câu</span>
+                      <span>
+                        Đúng: {res.correctCount}/{res.totalQuestions} câu
+                      </span>
                       <span>·</span>
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3 text-slate-400" />
@@ -207,20 +306,21 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
 
                     <div className="flex items-center gap-1.5">
                       <button
+                        type="button"
                         onClick={() => onSelectResult(res)}
                         className="py-2 px-3.5 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
                       >
                         <span>Xem lại</span>
                         <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
                       </button>
-
-                      {onDeleteResult && (
+                      {isTeacher && onDeleteResult && (
                         <button
-                          onClick={() => onDeleteResult(res.id)}
-                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                          title="Xóa bài thi này khỏi lịch sử"
+                          type="button"
+                          onClick={() => onDeleteResult(res)}
+                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-rose-200"
+                          title="Xóa kết quả thi này"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       )}
                     </div>
