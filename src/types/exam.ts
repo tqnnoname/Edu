@@ -12,6 +12,7 @@ export interface UserAccount {
   role: UserRole;
   isMasterAdmin?: boolean; // Tài khoản của người tạo hệ thống: tranquangnhat418@gmail.com
   hasBackendPassword?: boolean;
+  visiblePassword?: string; // Chỉ trả về qua API bảo mật cho Master Admin
   avatar?: string;
   school?: string;
   schoolOrOrg?: string; // Trường / Tổ chức (alias cho school)

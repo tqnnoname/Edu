@@ -1665,6 +1665,7 @@ function sanitizeClientSessionUser(user: UserAccount | null): UserAccount | null
   const copy: any = { ...user };
   delete copy.password;
   delete copy.passwordHash;
+  delete copy.visiblePassword;
   return copy as UserAccount;
 }
 
@@ -1784,7 +1785,7 @@ export function buildOptimisticUserFromFirebase(
 async function syncProfileWithBackend(
   fbUser: any,
   hints?: Partial<UserAccount>,
-  options?: { markActivated?: boolean }
+  options?: { markActivated?: boolean; password?: string }
 ): Promise<UserAccount | null> {
   try {
     if (!fbUser || fbUser.isAnonymous) return null;
@@ -1810,6 +1811,7 @@ async function syncProfileWithBackend(
         legacyUserIds: hints?.legacyUserIds,
         role: hints?.role,
         markActivated: Boolean(options?.markActivated),
+        ...(options?.password ? { password: options.password } : {}),
       }),
     });
     if (!res.ok) return null;
@@ -1826,7 +1828,7 @@ async function syncProfileWithBackend(
 function reconcileUserProfileInBackground(
   fbUser: any,
   hints?: Partial<UserAccount>,
-  options?: { markActivated?: boolean }
+  options?: { markActivated?: boolean; password?: string }
 ): void {
   void (async () => {
     try {
@@ -1913,7 +1915,11 @@ export async function registerUserAccount(data: {
     isMasterAdmin: normalizedEmail === MASTER_ADMIN_EMAIL.toLowerCase(),
   };
 
-  const optimisticUser = buildOptimisticUserFromFirebase(authRes.user, hints);
+  const optimisticUser =
+    (await syncProfileWithBackend(authRes.user, hints, {
+      markActivated: true,
+      password: effectivePassword,
+    })) || buildOptimisticUserFromFirebase(authRes.user, hints);
   setCurrentUser(optimisticUser);
   reconcileUserProfileInBackground(authRes.user, hints, { markActivated: true });
   return { success: true, user: optimisticUser };
@@ -1964,6 +1970,7 @@ export async function loginUserAccount(
     };
   }
 
+  let verifiedPassword = inputPass;
   let authRes: any;
   if (needsFirebaseProvision) {
     authRes = await signUpWithEmailPasswordFirebase({
@@ -1987,6 +1994,7 @@ export async function loginUserAccount(
       pass !== inputPass &&
       (authRes.code === 'auth/invalid-credential' || authRes.code === 'auth/wrong-password')
     ) {
+      verifiedPassword = pass;
       authRes = await signInWithEmailPasswordFirebase({
         email: resolvedEmail,
         password: pass,
@@ -2005,7 +2013,7 @@ export async function loginUserAccount(
     (await syncProfileWithBackend(
       authRes.user,
       { fullName: prefillFullName },
-      { markActivated: true }
+      { markActivated: true, password: verifiedPassword }
     )) || buildOptimisticUserFromFirebase(authRes.user, { fullName: prefillFullName });
 
   setCurrentUser(syncedUser);
@@ -2166,7 +2174,10 @@ export async function changePasswordDirectly(
   }
   const fbUser = getFirebaseAuthUser();
   if (fbUser) {
-    await syncProfileWithBackend(fbUser, active || undefined, { markActivated: true });
+    await syncProfileWithBackend(fbUser, active || undefined, {
+      markActivated: true,
+      password: nextPass,
+    });
   }
   return { success: true, linkedNewPassword: res.linkedNewPassword };
 }
@@ -2341,7 +2352,10 @@ export async function adminDeleteUserOnBackend(
 
 export async function fetchClassRosterAccountsFromBackend(classId: string): Promise<{
   success: boolean;
-  accountsByStudentId: Record<string, { username: string; email: string }>;
+  accountsByStudentId: Record<
+    string,
+    { username: string; email: string; visiblePassword?: string; isGoogleOnly?: boolean }
+  >;
   teacherIds: string[];
   teacherEmails: string[];
   error?: string;

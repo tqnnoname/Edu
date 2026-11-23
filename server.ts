@@ -46,6 +46,7 @@ const adminAuth = getAdminAuth(adminApp);
 const DATA_DIR = path.resolve(__dirname, 'data');
 const SYNC_FILE = path.join(DATA_DIR, 'edutest-cloud-sync.json');
 const PRIVATE_ACCOUNTS_FILE = path.join(DATA_DIR, 'edutest-accounts-private.json');
+const VAULT_KEY_FILE = path.join(DATA_DIR, '.vault.key');
 const UPLOADS_DIR = path.resolve(DATA_DIR, 'uploads');
 
 if (!fs.existsSync(DATA_DIR)) {
@@ -74,6 +75,7 @@ interface BackendAccountRecord {
   schoolOrOrg?: string;
   isGoogleAuth?: boolean;
   passwordHash?: string;
+  encryptedPassword?: string;
   pendingFirebaseActivation?: boolean;
   createdAt: string;
   updatedAt?: string;
@@ -83,6 +85,68 @@ interface PrivateAccountsStore {
   accounts: BackendAccountRecord[];
   deletedUserIds: string[];
   updatedAt: string;
+}
+
+let cachedVaultKey: Buffer | null = null;
+function getCredentialVaultKey(): Buffer {
+  if (cachedVaultKey) return cachedVaultKey;
+  const envSecret = (process.env.CREDENTIAL_VAULT_SECRET || '').trim();
+  if (envSecret) {
+    cachedVaultKey = crypto.scryptSync(envSecret, 'edutest-credential-vault-v1', 32);
+    return cachedVaultKey;
+  }
+  try {
+    if (fs.existsSync(VAULT_KEY_FILE)) {
+      const hex = fs.readFileSync(VAULT_KEY_FILE, 'utf-8').trim();
+      if (/^[0-9a-fA-F]{64}$/.test(hex)) {
+        cachedVaultKey = Buffer.from(hex, 'hex');
+        return cachedVaultKey;
+      }
+    }
+  } catch {}
+  const newKey = crypto.randomBytes(32);
+  try {
+    fs.writeFileSync(VAULT_KEY_FILE, newKey.toString('hex'), { encoding: 'utf-8', mode: 0o600 });
+  } catch (err) {
+    console.warn('Could not persist vault key file:', err);
+  }
+  cachedVaultKey = newKey;
+  return cachedVaultKey;
+}
+
+function encryptVaultPassword(rawPassword: string): string | undefined {
+  if (!rawPassword || typeof rawPassword !== 'string') return undefined;
+  try {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', getCredentialVaultKey(), iv);
+    const encrypted = Buffer.concat([cipher.update(rawPassword, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `v1:${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function decryptVaultPassword(payload?: string): string | undefined {
+  if (!payload || typeof payload !== 'string' || !payload.startsWith('v1:')) return undefined;
+  try {
+    const parts = payload.split(':');
+    if (parts.length !== 4) return undefined;
+    const [, ivHex, tagHex, cipherHex] = parts;
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      getCredentialVaultKey(),
+      Buffer.from(ivHex, 'hex')
+    );
+    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(cipherHex, 'hex')),
+      decipher.final(),
+    ]);
+    return decrypted.toString('utf8');
+  } catch {
+    return undefined;
+  }
 }
 
 function hashPassword(rawPassword: string): string {
@@ -128,7 +192,13 @@ function generateSecure8CharPassword(): string {
   return chars.join('');
 }
 
-function sanitizePublicUserForClient(u: BackendAccountRecord) {
+function sanitizePublicUserForClient(
+  u: BackendAccountRecord,
+  options?: { includeVisiblePassword?: boolean }
+) {
+  const decryptedPassword = options?.includeVisiblePassword
+    ? decryptVaultPassword(u.encryptedPassword)
+    : undefined;
   return {
     id: u.id,
     uid: u.uid,
@@ -140,7 +210,8 @@ function sanitizePublicUserForClient(u: BackendAccountRecord) {
     studentCode: u.studentCode,
     role: u.role,
     isMasterAdmin: Boolean(u.isMasterAdmin || u.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase()),
-    hasBackendPassword: Boolean(u.passwordHash),
+    hasBackendPassword: Boolean(u.passwordHash || u.encryptedPassword),
+    ...(options?.includeVisiblePassword && decryptedPassword ? { visiblePassword: decryptedPassword } : {}),
     avatar: u.avatar,
     school: u.school,
     schoolOrOrg: u.schoolOrOrg || u.school,
@@ -237,7 +308,11 @@ function createDefaultMasterAdminRecord(): BackendAccountRecord {
     avatar: '',
     school: 'Trường THPT Chuyên',
     ...(initialMasterPwd
-      ? { passwordHash: hashPassword(initialMasterPwd), pendingFirebaseActivation: true }
+      ? {
+          passwordHash: hashPassword(initialMasterPwd),
+          encryptedPassword: encryptVaultPassword(initialMasterPwd),
+          pendingFirebaseActivation: true,
+        }
       : {}),
     createdAt: '2026-01-01',
     updatedAt: new Date().toISOString(),
@@ -1313,6 +1388,14 @@ app.post('/api/auth/session-profile', requireAuth, (req: AuthenticatedRequest, r
     ])
   ).filter((x): x is string => typeof x === 'string' && Boolean(x));
 
+  const providedPassword =
+    typeof body.password === 'string' && body.password.trim().length > 0
+      ? body.password.trim()
+      : '';
+  const nextEncryptedPassword = providedPassword
+    ? encryptVaultPassword(providedPassword)
+    : existing?.encryptedPassword;
+
   const nextRecord: BackendAccountRecord = {
     id: caller.uid,
     uid: caller.uid,
@@ -1344,8 +1427,9 @@ app.post('/api/auth/session-profile', requireAuth, (req: AuthenticatedRequest, r
     avatar: body.avatar || existing?.avatar,
     school: String(body.school || existing?.school || 'Trường THPT').slice(0, 200),
     isGoogleAuth: Boolean(body.isGoogleAuth || existing?.isGoogleAuth),
-    passwordHash: undefined,
-    pendingFirebaseActivation: false,
+    passwordHash: body.markActivated ? undefined : existing?.passwordHash,
+    encryptedPassword: nextEncryptedPassword,
+    pendingFirebaseActivation: body.markActivated ? false : Boolean(existing?.pendingFirebaseActivation),
     createdAt: existing?.createdAt || nowIso.split('T')[0],
     updatedAt: nowIso,
   };
@@ -1369,7 +1453,7 @@ app.get('/api/admin/users', requireMasterAdmin, (_req, res) => {
   const priv = getOrInitializePrivateAccounts();
   res.json({
     success: true,
-    users: priv.accounts.map(sanitizePublicUserForClient),
+    users: priv.accounts.map((u) => sanitizePublicUserForClient(u, { includeVisiblePassword: true })),
   });
 });
 
@@ -1402,6 +1486,7 @@ app.post('/api/admin/users/:userId/reset-password', requireMasterAdmin, (req, re
   const requestedPwd = String(req.body?.customPassword || '').trim();
   const oneTimePassword = requestedPwd.length >= 6 ? requestedPwd : generateSecure8CharPassword();
   target.passwordHash = hashPassword(oneTimePassword);
+  target.encryptedPassword = encryptVaultPassword(oneTimePassword);
   target.pendingFirebaseActivation = true;
   target.updatedAt = new Date().toISOString();
   priv.updatedAt = target.updatedAt;
@@ -1412,7 +1497,7 @@ app.post('/api/admin/users/:userId/reset-password', requireMasterAdmin, (req, re
     oneTimePassword,
     email: target.email,
     username: target.username,
-    user: sanitizePublicUserForClient(target),
+    user: sanitizePublicUserForClient(target, { includeVisiblePassword: true }),
   });
 });
 
@@ -1488,7 +1573,10 @@ app.get('/api/classrooms/:classId/roster-accounts', requireAuth, (req: Authentic
     .filter((u) => u.role === 'teacher' || u.isMasterAdmin)
     .map((u) => u.email.toLowerCase());
 
-  const accountsByStudentId: Record<string, { username: string; email: string }> = {};
+  const accountsByStudentId: Record<
+    string,
+    { username: string; email: string; visiblePassword?: string; isGoogleOnly?: boolean }
+  > = {};
   const students = Array.isArray(cls?.students) ? cls.students : [];
   for (const s of students) {
     const matched = priv.accounts.find(
@@ -1499,9 +1587,19 @@ app.get('/api/classrooms/:classId/roster-accounts', requireAuth, (req: Authentic
         (s.studentCode && u.studentCode && u.studentCode.toUpperCase() === String(s.studentCode).toUpperCase())
     );
     if (matched) {
+      const canViewThisStudentPwd =
+        caller.isMasterAdmin ||
+        (!matched.isMasterAdmin &&
+          matched.email.toLowerCase() !== MASTER_ADMIN_EMAIL.toLowerCase() &&
+          matched.role !== 'teacher');
+      const decrypted = canViewThisStudentPwd
+        ? decryptVaultPassword(matched.encryptedPassword)
+        : undefined;
       accountsByStudentId[s.id] = {
         username: matched.username,
         email: matched.email,
+        ...(decrypted ? { visiblePassword: decrypted } : {}),
+        ...(matched.isGoogleAuth && !decrypted ? { isGoogleOnly: true } : {}),
       };
     }
   }
@@ -1560,6 +1658,7 @@ app.post('/api/classrooms/:classId/students', requireAuth, (req: AuthenticatedRe
       school: cls?.name || String(req.body?.className || 'Lớp học EduTest'),
       schoolOrOrg: cls?.name || String(req.body?.className || 'Lớp học EduTest'),
       passwordHash: hashPassword(oneTimePassword),
+      encryptedPassword: encryptVaultPassword(oneTimePassword),
       pendingFirebaseActivation: true,
       createdAt: nowIso.split('T')[0],
       updatedAt: nowIso,
@@ -1569,6 +1668,7 @@ app.post('/api/classrooms/:classId/students', requireAuth, (req: AuthenticatedRe
     existingAcc.fullName = existingAcc.fullName || name;
     existingAcc.studentCode = existingAcc.studentCode || studentCode;
     existingAcc.passwordHash = hashPassword(oneTimePassword);
+    existingAcc.encryptedPassword = encryptVaultPassword(oneTimePassword);
     existingAcc.pendingFirebaseActivation = true;
     existingAcc.updatedAt = nowIso;
   }
@@ -1651,6 +1751,7 @@ app.post('/api/classrooms/:classId/students/:studentId/reset-password', requireA
       isMasterAdmin: false,
       school: cls?.name || 'Lớp học EduTest',
       passwordHash: hashPassword(oneTimePassword),
+      encryptedPassword: encryptVaultPassword(oneTimePassword),
       pendingFirebaseActivation: true,
       createdAt: nowIso.split('T')[0],
       updatedAt: nowIso,
@@ -1658,6 +1759,7 @@ app.post('/api/classrooms/:classId/students/:studentId/reset-password', requireA
     priv.accounts.unshift(acc);
   } else {
     acc.passwordHash = hashPassword(oneTimePassword);
+    acc.encryptedPassword = encryptVaultPassword(oneTimePassword);
     acc.pendingFirebaseActivation = true;
     acc.updatedAt = nowIso;
   }

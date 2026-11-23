@@ -39,7 +39,9 @@ import {
   FileSpreadsheet,
   FileDown,
   FileCheck2,
-  MonitorPlay
+  MonitorPlay,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { 
   saveClassroom, 
@@ -182,12 +184,16 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
   const [joinNoteInput, setJoinNoteInput] = useState('');
   const [isSubmittingJoin, setIsSubmittingJoin] = useState(false);
 
-  // Copy status & backend-fetched account state (no plaintext passwords stored or cached on frontend)
+  // Copy status & backend-fetched account state (kept only in React memory, never cached in browser storage)
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [allUsersList, setAllUsersList] = useState<UserAccount[]>([]);
   const [rosterAccountsByStudentId, setRosterAccountsByStudentId] = useState<
-    Record<string, { username: string; email: string }>
+    Record<string, { username: string; email: string; visiblePassword?: string; isGoogleOnly?: boolean }>
   >({});
+  const [revealedStudentPasswordIds, setRevealedStudentPasswordIds] = useState<Record<string, boolean>>({});
+  const [showAllClassPasswords, setShowAllClassPasswords] = useState(false);
+  const [revealedAdminPasswordIds, setRevealedAdminPasswordIds] = useState<Record<string, boolean>>({});
+  const [showAllAdminPasswords, setShowAllAdminPasswords] = useState(false);
   const [classTeacherIds, setClassTeacherIds] = useState<string[]>([]);
   const [classTeacherEmails, setClassTeacherEmails] = useState<string[]>([]);
   const [issuedCredentialNotice, setIssuedCredentialNotice] = useState<{
@@ -754,12 +760,13 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
     };
 
     saveClassroom(updatedClass);
-    if (res.accountUsername) {
+    if (res.accountUsername || res.oneTimePassword) {
       setRosterAccountsByStudentId((prev) => ({
         ...prev,
         [newStudent.id]: {
           username: res.accountUsername || '',
           email: res.email || newStudent.email || '',
+          ...(res.oneTimePassword ? { visiblePassword: res.oneTimePassword } : {}),
         },
       }));
     }
@@ -842,12 +849,13 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
       return;
     }
 
-    if (res.accountUsername) {
+    if (res.accountUsername || res.oneTimePassword) {
       setRosterAccountsByStudentId((prev) => ({
         ...prev,
         [student.id]: {
-          username: res.accountUsername || '',
-          email: res.email || student.email || '',
+          username: res.accountUsername || prev[student.id]?.username || '',
+          email: res.email || student.email || prev[student.id]?.email || '',
+          visiblePassword: res.oneTimePassword,
         },
       }));
     }
@@ -1057,6 +1065,24 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                   : 'Vào lớp'}
               </button>
             </div>
+
+            {isMasterAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('all_accounts');
+                  void refreshAdminUsersFromBackend();
+                }}
+                className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer border ${
+                  activeTab === 'all_accounts'
+                    ? 'bg-purple-950 text-white border-purple-800'
+                    : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200'
+                }`}
+              >
+                <Crown className="w-4 h-4 text-amber-500" />
+                <span>Tài khoản & Mật khẩu ({allUsersList.length})</span>
+              </button>
+            )}
 
             {isTeacher && (
               <button
@@ -2207,13 +2233,22 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">
                     {isTeacher 
-                      ? 'Giáo viên có quyền xem tên đăng nhập của học sinh lớp mình và cấp lại mật khẩu 8 ký tự mới (bảo mật backend).' 
+                      ? 'Giáo viên có quyền xem tên đăng nhập, mật khẩu của học sinh lớp mình và cấp lại mật khẩu 8 ký tự mới (lưu mã hóa bảo mật trên Backend).' 
                       : `Học sinh có thể tự gia nhập bằng mã lớp ${currentClass.code}`}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {isTeacher ? (
                     <>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllClassPasswords((v) => !v)}
+                        className="px-3 py-1.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                        title={showAllClassPasswords ? 'Ẩn toàn bộ mật khẩu học sinh' : 'Hiện toàn bộ mật khẩu học sinh trong lớp'}
+                      >
+                        {showAllClassPasswords ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        <span>{showAllClassPasswords ? 'Ẩn tất cả MK' : 'Hiện tất cả MK'}</span>
+                      </button>
                       <button
                         type="button"
                         onClick={handleExportClassOverviewExcel}
@@ -2263,7 +2298,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                       <th className="py-2.5 px-4 font-mono">Số báo danh / Mã HS</th>
                       <th className="py-2.5 px-4">Email</th>
                       {isTeacher && <th className="py-2.5 px-4 font-mono">Tên đăng nhập</th>}
-                      {isTeacher && <th className="py-2.5 px-4 font-mono">Bảo mật MK</th>}
+                      {isTeacher && <th className="py-2.5 px-4 font-mono">Mật khẩu</th>}
                       <th className="py-2.5 px-4">Ngày tham gia</th>
                       {(isTeacher || Boolean(user)) && <th className="py-2.5 px-4 text-right">Thao tác</th>}
                     </tr>
@@ -2280,6 +2315,10 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                         rosterAcc?.username ||
                         linkedAcc?.username ||
                         `hs_${s.studentCode.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+                      const visibleStudentPwd =
+                        rosterAcc?.visiblePassword ||
+                        (isMasterAdmin ? linkedAcc?.visiblePassword : undefined);
+                      const isPwdRevealed = showAllClassPasswords || Boolean(revealedStudentPasswordIds[s.id]);
                       const isSelfRow = Boolean(
                         user &&
                           (s.id === user.id ||
@@ -2313,10 +2352,47 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                           )}
                           {isTeacher && (
                             <td className="py-2.5 px-4">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-semibold">
-                                <Lock className="w-3 h-3" />
-                                <span>Bảo mật (Backend)</span>
-                              </span>
+                              {visibleStudentPwd ? (
+                                <div className="inline-flex items-center gap-1.5 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                                  <span className="font-mono font-bold text-slate-900 select-all">
+                                    {isPwdRevealed ? visibleStudentPwd : '••••••••'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setRevealedStudentPasswordIds((prev) => ({
+                                        ...prev,
+                                        [s.id]: !isPwdRevealed,
+                                      }))
+                                    }
+                                    className="p-0.5 text-slate-500 hover:text-slate-900 cursor-pointer"
+                                    title={isPwdRevealed ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                                  >
+                                    {isPwdRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyText(visibleStudentPwd, `stu_pwd_${s.id}`)}
+                                    className="p-0.5 text-slate-500 hover:text-emerald-700 cursor-pointer"
+                                    title="Sao chép mật khẩu"
+                                  >
+                                    {copiedId === `stu_pwd_${s.id}` ? (
+                                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                    ) : (
+                                      <Copy className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+                                </div>
+                              ) : rosterAcc?.isGoogleOnly ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 text-[11px] font-medium">
+                                  Đăng nhập Google
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 text-[11px]">
+                                  <Lock className="w-3 h-3" />
+                                  <span>Chưa đồng bộ</span>
+                                </span>
+                              )}
                             </td>
                           )}
                           <td className="py-2.5 px-4 text-slate-500 font-mono">{s.joinedAt}</td>
@@ -2463,7 +2539,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                       <Crown className="w-5 h-5" />
                     </span>
                     <h3 className="text-base font-extrabold text-slate-900">
-                      Bảng Quản Trị Tối Cao — Toàn Bộ Tài Khoản Hệ Thống
+                      Bảng Quản Trị Tối Cao — Toàn Bộ Tài Khoản & Mật Khẩu
                     </h3>
                     <span className="px-2 py-0.5 rounded text-[11px] font-extrabold bg-amber-400 text-slate-950 uppercase tracking-wide">
                       Super Admin
@@ -2471,11 +2547,20 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                   </div>
                   <p className="text-xs text-slate-600 mt-1">
                     Chỉ hiển thị cho tài khoản Quản trị viên tối cao (<code className="font-mono text-purple-900 font-bold">{MASTER_ADMIN_EMAIL}</code>). 
-                    Mật khẩu được băm và lưu bảo mật tuyệt đối trên máy chủ Backend; QTV có toàn quyền tra cứu tài khoản, cấp lại mật khẩu 8 ký tự mới (hiển thị 1 lần) và phân quyền người dùng.
+                    Mật khẩu được mã hóa bảo mật trên máy chủ Backend; QTV có toàn quyền xem mật khẩu, cấp lại mật khẩu 8 ký tự mới và phân quyền người dùng.
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAllAdminPasswords((v) => !v)}
+                    className="px-3 py-1.5 text-xs font-bold text-purple-900 bg-purple-100 hover:bg-purple-200 rounded-lg border border-purple-300 transition-colors cursor-pointer flex items-center gap-1.5"
+                    title={showAllAdminPasswords ? 'Ẩn tất cả mật khẩu' : 'Hiển thị tất cả mật khẩu'}
+                  >
+                    {showAllAdminPasswords ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showAllAdminPasswords ? 'Ẩn tất cả MK' : 'Hiện tất cả MK'}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -2571,7 +2656,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                       <th className="py-3 px-4">STT</th>
                       <th className="py-3 px-4">Họ và tên & Email</th>
                       <th className="py-3 px-4 font-mono">Tên đăng nhập</th>
-                      <th className="py-3 px-4 font-mono">Bảo mật MK</th>
+                      <th className="py-3 px-4 font-mono">Mật khẩu</th>
                       <th className="py-3 px-4">Trường / Tổ chức</th>
                       <th className="py-3 px-4">Vai trò & Phân quyền</th>
                       <th className="py-3 px-4 text-right">Cấp lại Mật khẩu</th>
@@ -2580,6 +2665,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                   <tbody className="divide-y divide-slate-100">
                     {filteredAccounts.map((acc, idx) => {
                       const isSuper = acc.isMasterAdmin || acc.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
+                      const isPwdRevealed = showAllAdminPasswords || Boolean(revealedAdminPasswordIds[acc.id]);
 
                       return (
                         <tr key={acc.id} className="hover:bg-purple-50/30 transition-colors">
@@ -2612,10 +2698,47 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                           </td>
 
                           <td className="py-3 px-4">
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-semibold">
-                              <Lock className="w-3 h-3" />
-                              <span>{acc.hasBackendPassword ? 'Hash Backend' : 'Firebase Auth'}</span>
-                            </span>
+                            {acc.visiblePassword ? (
+                              <div className="inline-flex items-center gap-1.5 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1">
+                                <span className="font-mono font-bold text-slate-900 select-all">
+                                  {isPwdRevealed ? acc.visiblePassword : '••••••••'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setRevealedAdminPasswordIds((prev) => ({
+                                      ...prev,
+                                      [acc.id]: !isPwdRevealed,
+                                    }))
+                                  }
+                                  className="p-0.5 text-slate-500 hover:text-slate-900 cursor-pointer"
+                                  title={isPwdRevealed ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                                >
+                                  {isPwdRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyText(acc.visiblePassword!, `adm_pwd_${acc.id}`)}
+                                  className="p-0.5 text-slate-500 hover:text-emerald-700 cursor-pointer"
+                                  title="Sao chép mật khẩu"
+                                >
+                                  {copiedId === `adm_pwd_${acc.id}` ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            ) : acc.isGoogleAuth ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-100 text-slate-600 border border-slate-200 text-[11px] font-medium">
+                                Đăng nhập Google
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-100 text-slate-500 border border-slate-200 text-[11px]">
+                                <Lock className="w-3 h-3" />
+                                <span>Chưa đồng bộ (đăng nhập lại)</span>
+                              </span>
+                            )}
                           </td>
 
                           <td className="py-3 px-4 text-slate-600 text-xs">
@@ -2676,6 +2799,125 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
               </div>
             </div>
           )}
+        </div>
+      ) : activeTab === 'all_accounts' && isMasterAdmin ? (
+        <div className="bg-white rounded-2xl border-2 border-purple-200 p-6 shadow-sm space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-purple-100 bg-purple-50/50 p-4 rounded-xl">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-purple-900 text-amber-400 rounded-lg">
+                  <Crown className="w-5 h-5" />
+                </span>
+                <h3 className="text-base font-extrabold text-slate-900">
+                  Bảng Quản Trị Tối Cao — Toàn Bộ Tài Khoản & Mật Khẩu
+                </h3>
+                <span className="px-2 py-0.5 rounded text-[11px] font-extrabold bg-amber-400 text-slate-950 uppercase tracking-wide">
+                  Super Admin
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-1">
+                Chỉ hiển thị cho Quản trị viên tối cao (<code className="font-mono text-purple-900 font-bold">{MASTER_ADMIN_EMAIL}</code>).
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAllAdminPasswords((v) => !v)}
+                className="px-3 py-1.5 text-xs font-bold text-purple-900 bg-purple-100 hover:bg-purple-200 rounded-lg border border-purple-300 transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                {showAllAdminPasswords ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                <span>{showAllAdminPasswords ? 'Ẩn tất cả MK' : 'Hiện tất cả MK'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshAdminUsersFromBackend()}
+                className="px-3 py-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-300 transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Làm mới từ Backend</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-100/80 text-slate-700 uppercase font-bold border-b border-slate-200">
+                <tr>
+                  <th className="py-3 px-4">STT</th>
+                  <th className="py-3 px-4">Họ và tên & Email</th>
+                  <th className="py-3 px-4 font-mono">Tên đăng nhập</th>
+                  <th className="py-3 px-4 font-mono">Mật khẩu</th>
+                  <th className="py-3 px-4">Vai trò</th>
+                  <th className="py-3 px-4 text-right">Cấp lại Mật khẩu</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredAccounts.map((acc, idx) => {
+                  const isSuper = acc.isMasterAdmin || acc.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
+                  const isPwdRevealed = showAllAdminPasswords || Boolean(revealedAdminPasswordIds[acc.id]);
+                  return (
+                    <tr key={acc.id} className="hover:bg-purple-50/30 transition-colors">
+                      <td className="py-3 px-4 font-mono text-slate-400">{idx + 1}</td>
+                      <td className="py-3 px-4">
+                        <div className="font-bold text-slate-900">{acc.fullName || acc.name || acc.username}</div>
+                        <div className="text-slate-500 font-mono text-[11px]">{acc.email}</div>
+                      </td>
+                      <td className="py-3 px-4 font-mono font-bold text-slate-800">{acc.username || acc.email.split('@')[0]}</td>
+                      <td className="py-3 px-4">
+                        {acc.visiblePassword ? (
+                          <div className="inline-flex items-center gap-1.5 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1">
+                            <span className="font-mono font-bold text-slate-900 select-all">
+                              {isPwdRevealed ? acc.visiblePassword : '••••••••'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setRevealedAdminPasswordIds((prev) => ({
+                                  ...prev,
+                                  [acc.id]: !isPwdRevealed,
+                                }))
+                              }
+                              className="p-0.5 text-slate-500 hover:text-slate-900 cursor-pointer"
+                            >
+                              {isPwdRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyText(acc.visiblePassword!, `adm2_pwd_${acc.id}`)}
+                              className="p-0.5 text-slate-500 hover:text-emerald-700 cursor-pointer"
+                            >
+                              {copiedId === `adm2_pwd_${acc.id}` ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 text-[11px]">{acc.isGoogleAuth ? 'Đăng nhập Google' : 'Chưa đồng bộ'}</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">{acc.role === 'teacher' ? 'Giáo viên' : 'Học sinh'}</td>
+                      <td className="py-3 px-4 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleAdminResetAccountPassword(acc)}
+                          className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs cursor-pointer"
+                        >
+                          Cấp MK 8 ký tự
+                        </button>
+                        {!isSuper && (
+                          <button
+                            type="button"
+                            onClick={() => handleAdminDeleteAccount(acc)}
+                            className="ml-1.5 p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg border border-rose-200 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
 
