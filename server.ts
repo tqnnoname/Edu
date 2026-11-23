@@ -1,8 +1,10 @@
 import express, { Request, Response, NextFunction } from 'express';
+import http from 'http';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { mountainGameEngine } from './gameRoomsEngine';
 import { initializeApp, getApps } from 'firebase/app';
 import {
   getFirestore,
@@ -1242,18 +1244,16 @@ app.post('/api/auth/login-lookup', (req, res) => {
   }
 
   if (matched.pendingFirebaseActivation) {
-    if (!password || !matched.passwordHash || !verifyPassword(password, matched.passwordHash)) {
-      return res.status(401).json({
-        success: false,
-        error: 'Tài khoản hoặc mật khẩu không chính xác!',
+    if (password && matched.passwordHash && verifyPassword(password, matched.passwordHash)) {
+      return res.json({
+        success: true,
+        email: matched.email,
+        needsFirebaseProvision: true,
+        fullName: matched.fullName,
       });
     }
-    return res.json({
-      success: true,
-      email: matched.email,
-      needsFirebaseProvision: true,
-      fullName: matched.fullName,
-    });
+    // Fall through to Firebase Auth verification in case the user already activated/changed
+    // their password via Google Sign-In, ChangePasswordModal, or Firebase Password Reset email.
   }
 
   return res.json({
@@ -1344,10 +1344,8 @@ app.post('/api/auth/session-profile', requireAuth, (req: AuthenticatedRequest, r
     avatar: body.avatar || existing?.avatar,
     school: String(body.school || existing?.school || 'Trường THPT').slice(0, 200),
     isGoogleAuth: Boolean(body.isGoogleAuth || existing?.isGoogleAuth),
-    passwordHash: existing?.passwordHash,
-    pendingFirebaseActivation: body.markActivated
-      ? false
-      : existing?.pendingFirebaseActivation,
+    passwordHash: undefined,
+    pendingFirebaseActivation: false,
     createdAt: existing?.createdAt || nowIso.split('T')[0],
     updatedAt: nowIso,
   };
@@ -1903,6 +1901,103 @@ app.post('/api/oj/run', async (req, res) => {
   }
 });
 
+// --- Mountain Climb Quiz Game REST Endpoints ---
+app.post('/api/games/rooms', (req, res) => {
+  const { customCode, hostId, hostName, petId, config, questions } = req.body || {};
+  const result = mountainGameEngine.createRoom({
+    customCode,
+    hostId,
+    hostName,
+    petId,
+    config,
+    questions,
+  });
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json({ room: result.room, playerId: result.playerId });
+});
+
+app.get('/api/games/rooms/:code', (req, res) => {
+  const room = mountainGameEngine.getRoom(req.params.code);
+  if (!room) {
+    return res.status(404).json({ error: 'Không tìm thấy phòng chơi này.' });
+  }
+  return res.json({ room });
+});
+
+app.post('/api/games/rooms/:code/join', (req, res) => {
+  const { playerId, playerName, petId } = req.body || {};
+  const result = mountainGameEngine.joinRoom(req.params.code, {
+    playerId,
+    playerName,
+    petId,
+  });
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json({ room: result.room, playerId: result.playerId });
+});
+
+app.post('/api/games/rooms/:code/leave', (req, res) => {
+  const { playerId } = req.body || {};
+  mountainGameEngine.leaveRoom(req.params.code, String(playerId || ''));
+  return res.json({ success: true });
+});
+
+app.put('/api/games/rooms/:code/config', (req, res) => {
+  const { hostId, config, questions } = req.body || {};
+  const result = mountainGameEngine.updateLobbyConfig(req.params.code, {
+    hostId: String(hostId || ''),
+    config,
+    questions,
+  });
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json({ room: result.room });
+});
+
+app.post('/api/games/rooms/:code/start', (req, res) => {
+  const { hostId } = req.body || {};
+  const result = mountainGameEngine.startGame(req.params.code, String(hostId || ''));
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json({ room: result.room });
+});
+
+app.post('/api/games/rooms/:code/restart', (req, res) => {
+  const { hostId } = req.body || {};
+  const result = mountainGameEngine.restartToLobby(req.params.code, String(hostId || ''));
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json({ room: result.room });
+});
+
+app.post('/api/games/rooms/:code/answer', (req, res) => {
+  const { playerId, questionId, selectedIndex } = req.body || {};
+  const result = mountainGameEngine.submitAnswer(req.params.code, {
+    playerId: String(playerId || ''),
+    questionId: String(questionId || ''),
+    selectedIndex: Number(selectedIndex),
+  });
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json({ room: result.room });
+});
+
+app.post('/api/games/rooms/:code/advance', (req, res) => {
+  const { hostId } = req.body || {};
+  const result = mountainGameEngine.forceAdvanceRound(req.params.code, String(hostId || ''));
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json({ room: result.room });
+});
+
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -1921,7 +2016,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = http.createServer(app);
+  httpServer.on('upgrade', (req, socket, head) => {
+    mountainGameEngine.handleUpgrade(req, socket, head);
+  });
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`EduTest server listening on http://0.0.0.0:${PORT}`);
   });
 }

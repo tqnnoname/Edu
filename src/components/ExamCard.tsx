@@ -490,18 +490,24 @@ export const ExamCard: React.FC<ExamCardProps> = ({
                 ? 'Đề thi đang ở chế độ Người ra đề riêng tư. Khi nào người ra đề mở công khai hoặc mở thi mới cho phép học sinh xem trước và làm bài.'
                 : isStudentNotInClass
                 ? 'Chỉ học sinh trong lớp học này mới được xem và làm bài thi. Vui lòng tham gia lớp để mở khóa.'
+                : isAttemptsExceeded
+                ? `Bạn đã hoàn thành ${attemptCount}/${exam.maxAttempts} lượt làm bài cho phép. Không thể vào thi hoặc nhập mã dự thi thêm.`
                 : 'Đề thi hiện đang bị khóa truy cập theo quy chế.'}
             </p>
-            {(isCreatorOnly || isStudentNotInClass || exam.requireAccessCode) && (
-              <button
-                type="button"
-                onClick={() => onStartExam(exam, 'exam')}
-                className="mt-1 py-1.5 px-3 text-xs font-semibold text-blue-700 bg-blue-100/90 hover:bg-blue-200 active:bg-blue-300 rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <KeyRound className="w-3.5 h-3.5 text-blue-600" />
-                <span>Nhập mã số vào thi / Mở khóa</span>
-              </button>
-            )}
+            {!isAttemptsExceeded &&
+              !isBeforeOpen &&
+              !isAfterClose &&
+              exam.status !== 'closed' &&
+              (isCreatorOnly || isStudentNotInClass || exam.requireAccessCode) && (
+                <button
+                  type="button"
+                  onClick={() => onStartExam(exam, 'exam')}
+                  className="mt-1 py-1.5 px-3 text-xs font-semibold text-blue-700 bg-blue-100/90 hover:bg-blue-200 active:bg-blue-300 rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Nhập mã số vào thi / Mở khóa</span>
+                </button>
+              )}
           </div>
         ) : (
           <>

@@ -125,13 +125,21 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
 
   // Early submit lockout check
   const minSubmitMinutes = bundle.minSubmitMinutes || 0;
-  const timeSpentSeconds = clusterDurationMinutes * 60 - remainingSeconds;
-  const minRequiredSeconds = minSubmitMinutes * 60;
-  const isEarlySubmitBlocked = 
-    userRole === 'student' && 
-    minSubmitMinutes > 0 && 
+  const totalDurationSeconds = Math.max(1, clusterDurationMinutes * 60);
+  const timeSpentSeconds = totalDurationSeconds - remainingSeconds;
+  const minRequiredSeconds =
+    minSubmitMinutes > 0
+      ? Math.min(totalDurationSeconds, minSubmitMinutes * 60)
+      : totalDurationSeconds;
+  const isEarlySubmitBlocked =
+    userRole === 'student' &&
     timeSpentSeconds < minRequiredSeconds;
   const remainingEarlySeconds = Math.max(0, minRequiredSeconds - timeSpentSeconds);
+  const formatTime = (totalSecs: number) => {
+    const mins = Math.floor(totalSecs / 60);
+    const secs = totalSecs % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
 
   // Stats calculation across the whole cluster
   const clusterStats = useMemo(() => {
@@ -503,11 +511,19 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                 }
                 setIsSubmitModalOpen(true);
               }}
-              className="py-2 px-3.5 sm:px-4 rounded-xl text-xs sm:text-sm font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md flex items-center gap-2 cursor-pointer transition-all hover:scale-[1.02]"
+              className={`py-2 px-3.5 sm:px-4 rounded-xl text-xs sm:text-sm font-bold text-white shadow-md flex items-center gap-2 cursor-pointer transition-all ${
+                isEarlySubmitBlocked
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-emerald-600 hover:bg-emerald-500 hover:scale-[1.02]'
+              }`}
             >
-              <Send className="w-4 h-4" />
-              <span className="hidden sm:inline">Nộp bài Cụm tự chọn</span>
-              <span className="sm:hidden">Nộp bài</span>
+              {isEarlySubmitBlocked ? <Lock className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+              <span className="hidden sm:inline">
+                {isEarlySubmitBlocked ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})` : 'Nộp bài Cụm tự chọn'}
+              </span>
+              <span className="sm:hidden">
+                {isEarlySubmitBlocked ? formatTime(remainingEarlySeconds) : 'Nộp bài'}
+              </span>
             </button>
           </div>
         </div>
@@ -1001,10 +1017,16 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                   }
                   setIsSubmitModalOpen(true);
                 }}
-                className="py-2.5 px-5 rounded-xl text-xs sm:text-sm font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs flex items-center gap-1.5 cursor-pointer"
+                className={`py-2.5 px-5 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs flex items-center gap-1.5 cursor-pointer ${
+                  isEarlySubmitBlocked ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-500'
+                }`}
               >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Nộp bài Cụm tự chọn</span>
+                {isEarlySubmitBlocked ? <Lock className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>
+                  {isEarlySubmitBlocked
+                    ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})`
+                    : 'Nộp bài Cụm tự chọn'}
+                </span>
               </button>
             )}
           </div>
@@ -1209,10 +1231,16 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                   }
                   setIsSubmitModalOpen(true);
                 }}
-                className="w-full py-2.5 px-3 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold text-white transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                  isEarlySubmitBlocked ? 'bg-amber-600 hover:bg-amber-700' : 'bg-slate-900 hover:bg-slate-800'
+                }`}
               >
-                <Send className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Nộp bài cụm tự chọn</span>
+                {isEarlySubmitBlocked ? <Lock className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5 text-emerald-400" />}
+                <span>
+                  {isEarlySubmitBlocked
+                    ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})`
+                    : 'Nộp bài cụm tự chọn'}
+                </span>
               </button>
             </div>
           </div>
@@ -1267,11 +1295,14 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
               <Lock className="w-6 h-6" />
             </div>
             <h3 className="text-base font-extrabold text-slate-900 mb-2">
-              Chưa đến thời gian nộp bài quy định!
+              Chưa đến giờ được phép nộp bài!
             </h3>
             <p className="text-xs text-slate-600 mb-4">
-              Quy chế thi yêu cầu thí sinh làm bài tối thiểu <strong>{minSubmitMinutes} phút</strong>.
-              Bạn cần làm thêm ít nhất <strong>{Math.ceil(remainingEarlySeconds / 60)} phút</strong> nữa mới được phép nộp bài.
+              {minSubmitMinutes > 0 ? (
+                <>Quy chế thi yêu cầu thí sinh làm bài tối thiểu <strong>{minSubmitMinutes} phút</strong>. Bạn cần làm thêm <strong>{formatTime(remainingEarlySeconds)}</strong> nữa mới được phép nộp bài.</>
+              ) : (
+                <>Chế độ nộp bài sớm đã bị tắt. Thí sinh phải làm đúng hết <strong>{clusterDurationMinutes} phút</strong> quy định (còn <strong>{formatTime(remainingEarlySeconds)}</strong>, hết giờ hệ thống sẽ tự động thu bài).</>
+              )}
             </p>
             <button
               type="button"
@@ -1350,7 +1381,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                 className="py-2.5 px-5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-xl transition-colors shadow-xs cursor-pointer flex items-center gap-1.5"
               >
                 <Check className="w-4 h-4" />
-                <span>Nộp bài ngay</span>
+                <span>Xác nhận nộp bài</span>
               </button>
             </div>
           </div>

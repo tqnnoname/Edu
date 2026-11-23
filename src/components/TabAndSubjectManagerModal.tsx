@@ -56,10 +56,12 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
   // Tab operations
   const handleAddNewTab = () => {
     if (!newTabLabel.trim()) return;
+    const resolvedIcon: NavTabItem['iconName'] =
+      newTabTarget === 'games' ? 'gamepad' : newTabIcon;
     const newTab: NavTabItem = {
       id: 'tab_custom_' + Date.now(),
       label: newTabLabel.trim(),
-      iconName: newTabIcon,
+      iconName: resolvedIcon,
       targetView: newTabTarget,
       isCustom: true,
     };
@@ -291,6 +293,7 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
                       <option value="classrooms">Lớp học & Xếp hạng</option>
                       <option value="courses">Khóa học nhỏ</option>
                       <option value="battle">Đấu trường 1v1</option>
+                      <option value="games">Trò chơi (Leo núi)</option>
                       <option value="analytics">Năng lực cá nhân</option>
                       <option value="history">Lịch sử thi</option>
                     </select>

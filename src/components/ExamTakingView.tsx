@@ -187,14 +187,18 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   // Live score display toggle
   const isLiveScoreVisible = Boolean(exam.showLiveScoreDuringExam || exam.settings?.showLiveScoreDuringExam);
 
-  // Early submit lockout check
+  // Early submit lockout check: students in exam mode cannot submit early;
+  // if minSubmitMinutes > 0 wait until minSubmitMinutes, else wait until full exam time expires.
   const minSubmitMinutes = exam.minSubmitMinutes || 0;
-  const timeSpentSeconds = (exam.durationMinutes * 60) - remainingSeconds;
-  const minRequiredSeconds = minSubmitMinutes * 60;
-  const isEarlySubmitBlocked = 
-    mode === 'exam' && 
-    userRole === 'student' && 
-    minSubmitMinutes > 0 && 
+  const totalDurationSeconds = Math.max(1, exam.durationMinutes * 60);
+  const timeSpentSeconds = totalDurationSeconds - remainingSeconds;
+  const minRequiredSeconds =
+    minSubmitMinutes > 0
+      ? Math.min(totalDurationSeconds, minSubmitMinutes * 60)
+      : totalDurationSeconds;
+  const isEarlySubmitBlocked =
+    mode === 'exam' &&
+    userRole === 'student' &&
     timeSpentSeconds < minRequiredSeconds;
   const remainingEarlySeconds = Math.max(0, minRequiredSeconds - timeSpentSeconds);
 
@@ -1313,10 +1317,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 ? 'bg-amber-600 hover:bg-amber-700 text-white'
                 : 'text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
             }`}
-            title={isEarlySubmitBlocked ? `Chưa đủ thời gian nộp bài: Còn ${formatTime(remainingEarlySeconds)} nữa mới được nộp!` : 'Nộp bài thi'}
+            title={isEarlySubmitBlocked ? `Chưa đến giờ nộp bài: Còn ${formatTime(remainingEarlySeconds)} nữa mới được nộp!` : 'Nộp bài thi'}
           >
             {isEarlySubmitBlocked ? <Lock className="w-4 h-4" /> : <Send className="w-4 h-4" />}
-            <span>{isEarlySubmitBlocked ? `Nộp sau (${formatTime(remainingEarlySeconds)})` : 'Nộp bài'}</span>
+            <span>{isEarlySubmitBlocked ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})` : 'Nộp bài'}</span>
           </button>
         </div>
       </header>
@@ -1568,7 +1572,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                   }`}
                 >
                   {isEarlySubmitBlocked ? <Lock className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
-                  <span>{isEarlySubmitBlocked ? `Nộp sau (${formatTime(remainingEarlySeconds)})` : 'Hoàn thành & Nộp bài'}</span>
+                  <span>{isEarlySubmitBlocked ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})` : 'Hoàn thành & Nộp bài'}</span>
                 </button>
               )}
             </div>
@@ -1611,7 +1615,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 }`}
               >
                 {isEarlySubmitBlocked ? <Lock className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
-                <span>{isEarlySubmitBlocked ? `Chưa đủ thời gian nộp (còn ${formatTime(remainingEarlySeconds)})` : 'Nộp bài thi'}</span>
+                <span>{isEarlySubmitBlocked ? `Đúng giờ mới nộp (còn ${formatTime(remainingEarlySeconds)})` : 'Nộp bài thi'}</span>
               </button>
             </div>
           </div>
@@ -1775,11 +1779,26 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           {/* Quick tips & submit button */}
           <div className="mt-6 pt-4 border-t border-slate-100">
             <button
-              onClick={() => setIsSubmitModalOpen(true)}
-              className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-xs cursor-pointer"
+              type="button"
+              onClick={() => {
+                if (isEarlySubmitBlocked) {
+                  setIsEarlySubmitNoticeOpen(true);
+                } else {
+                  setIsSubmitModalOpen(true);
+                }
+              }}
+              className={`w-full py-2.5 px-4 text-xs font-semibold text-white rounded-lg transition-colors flex items-center justify-center gap-2 shadow-xs cursor-pointer ${
+                isEarlySubmitBlocked
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-slate-900 hover:bg-slate-800'
+              }`}
             >
-              <Send className="w-4 h-4" />
-              Nộp bài thi ngay
+              {isEarlySubmitBlocked ? <Lock className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+              <span>
+                {isEarlySubmitBlocked
+                  ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})`
+                  : 'Nộp bài thi'}
+              </span>
             </button>
           </div>
         </aside>
@@ -2002,13 +2021,17 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 Giới hạn thời gian nộp bài
               </span>
               <h3 className="text-base font-extrabold text-slate-900 mt-1">
-                Chưa đủ thời gian làm bài tối thiểu!
+                Chưa đến giờ được phép nộp bài!
               </h3>
               <p className="text-xs text-slate-600 mt-2 leading-relaxed">
-                Quy định đề thi yêu cầu thí sinh phải làm bài tối thiểu <strong>{minSubmitMinutes} phút</strong> trước khi được phép nộp bài.
+                {minSubmitMinutes > 0 ? (
+                  <>Quy định đề thi yêu cầu thí sinh phải làm bài tối thiểu <strong>{minSubmitMinutes} phút</strong> trước khi được phép nộp bài.</>
+                ) : (
+                  <>Chế độ nộp bài ngay đã được tắt. Thí sinh phải làm bài đúng hết <strong>{exam.durationMinutes} phút</strong> quy định (khi hết giờ hệ thống sẽ tự động thu bài).</>
+                )}
               </p>
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 mt-3">
-                <span className="text-xs text-amber-900 block font-medium">Thời gian còn lại trước khi mở nút nộp bài:</span>
+                <span className="text-xs text-amber-900 block font-medium">Thời gian còn lại trước khi được nộp bài:</span>
                 <span className="text-2xl font-mono font-extrabold text-amber-950 tracking-wider">
                   {formatTime(remainingEarlySeconds)}
                 </span>

@@ -52,7 +52,10 @@ import {
   hasLocalCachedLibraryData,
   syncUserSessionFromFirebaseAuth,
   buildOptimisticUserFromFirebase,
-  isExamHiddenFromStudents
+  isExamHiddenFromStudents,
+  isItemScheduleOpen,
+  getUserAttemptCountForExam,
+  getUserAttemptCountForBundle
 } from './utils/storage';
 import {
   attachRealtimeFirestoreListeners,
@@ -77,6 +80,7 @@ import { BundleElectiveSelectorModal } from './components/BundleElectiveSelector
 import { ClassroomManagementView } from './components/ClassroomManagementView';
 import { MicroCoursesView } from './components/MicroCoursesView';
 import { BattleArenaView } from './components/BattleArenaView';
+import { MountainGamesView } from './components/MountainGamesView';
 import { TabAndSubjectManagerModal } from './components/TabAndSubjectManagerModal';
 import { ExamAccessModal } from './components/ExamAccessModal';
 import { FeedbackModal } from './components/FeedbackModal';
@@ -128,7 +132,8 @@ import {
   Link2,
   Check,
   Award,
-  Lock
+  Lock,
+  Gamepad2
 } from 'lucide-react';
 import {
   buildAppUrlPath,
@@ -150,11 +155,13 @@ type ViewState =
   | 'classrooms'
   | 'courses'
   | 'battle'
+  | 'games'
   | 'analytics'
   | 'teacher-tools';
 
 interface ActiveBundleState {
   bundle: ExamBundle;
+  bundleAttemptId: string;
   allSelectedExams: Exam[];
   compulsoryExams: Exam[];
   electiveExams: Exam[];
@@ -190,7 +197,12 @@ export default function App() {
   );
   const [isTabAndSubjectModalOpen, setIsTabAndSubjectModalOpen] = useState(false);
   const [isExamAccessModalOpen, setIsExamAccessModalOpen] = useState(false);
-  const [accessModalInitialCode, setAccessModalInitialCode] = useState('');
+  const [accessModalTarget, setAccessModalTarget] = useState<{
+    exam?: Exam | null;
+    bundle?: ExamBundle | null;
+    mode?: 'exam' | 'practice' | null;
+    sourceClassId?: string | null;
+  } | null>(null);
   const [candidateProfile, setCandidateProfile] = useState(() => getCandidateProfile());
   
   // Session-scoped auth
@@ -228,6 +240,9 @@ export default function App() {
     tab?: ClassroomTabRouteId;
   }>({ classroom: null, tab: initialParsedRoute.classroomTab });
   const [copiedRouteLink, setCopiedRouteLink] = useState(false);
+  const [activeGameRoomCode, setActiveGameRoomCode] = useState<string | undefined>(
+    initialParsedRoute.gameRoomCode
+  );
   const [presentingExamForStage, setPresentingExamForStage] = useState<Exam | null>(null);
 
   // Xác định quyền Giáo viên thực sự: chỉ tài khoản Master Admin hoặc tài khoản giáo viên đã được phê duyệt
@@ -533,6 +548,11 @@ export default function App() {
 
   // Elective subject selector modal state (Tổ hợp tự chọn môn thi)
   const [selectingElectiveBundle, setSelectingElectiveBundle] = useState<ExamBundle | null>(null);
+  const [pendingElectiveEntry, setPendingElectiveEntry] = useState<{
+    candidateName?: string;
+    studentCode?: string;
+    sourceClassId?: string | null;
+  } | null>(null);
 
   // Single active test state
   const [activeExam, setActiveExam] = useState<Exam | null>(null);
@@ -569,6 +589,7 @@ export default function App() {
       activeBundleTitle: activeBundleSession?.bundle.title,
       editingExamTitle: editingExam?.title,
       resultExamTitle: currentResult?.examTitle,
+      gameRoomCode: activeGameRoomCode,
     });
   }, [
     currentView,
@@ -581,6 +602,7 @@ export default function App() {
     activeBundleSession?.bundle.title,
     editingExam?.title,
     currentResult?.examTitle,
+    activeGameRoomCode,
   ]);
 
   useEffect(() => {
@@ -624,6 +646,9 @@ export default function App() {
           setActiveClassIdState(parsed.classroomId);
         }
         setUrlClassroomTab(parsed.classroomTab);
+      }
+      if (parsed.view === 'games') {
+        setActiveGameRoomCode(parsed.gameRoomCode);
       }
     };
     window.addEventListener('popstate', handlePopState);
@@ -770,9 +795,9 @@ export default function App() {
 
   // --- Single Exam Handlers ---
   const handleStartExam = (
-    exam: Exam, 
-    mode: 'exam' | 'practice', 
-    candidateNameOverride?: string, 
+    exam: Exam,
+    mode: 'exam' | 'practice',
+    candidateNameOverride?: string,
     studentCodeOverride?: string,
     sourceClassId?: string
   ) => {
@@ -790,9 +815,52 @@ export default function App() {
       return;
     }
 
+    if (userRole === 'student') {
+      const sched = isItemScheduleOpen({
+        openTime: exam.openTime,
+        closeTime: exam.closeTime,
+        status: exam.status,
+      });
+      if (!sched.isOpen) {
+        setConfirmModal({
+          isOpen: true,
+          title: 'Đề thi đang khóa',
+          message: sched.reason || 'Đề thi hiện tại không nằm trong thời gian mở thi.',
+          confirmText: 'Đã hiểu',
+          cancelText: 'Đóng',
+          isDanger: false,
+          onConfirm: () => {},
+        });
+        return;
+      }
+
+      const attempts = getUserAttemptCountForExam(exam.id, results, currentUser, candidateProfile);
+      if (exam.maxAttempts && exam.maxAttempts > 0 && attempts >= exam.maxAttempts) {
+        setConfirmModal({
+          isOpen: true,
+          title: 'Đã hết lượt làm bài cho phép',
+          message: `Bạn đã sử dụng hết ${attempts}/${exam.maxAttempts} lượt làm bài cho đề thi "${exam.title}". Không thể vào thi hay nhập mã dự thi thêm.`,
+          confirmText: 'Đã hiểu',
+          cancelText: 'Đóng',
+          isDanger: true,
+          onConfirm: () => {},
+        });
+        return;
+      }
+    }
+
+    const resolvedClassId =
+      sourceClassId || (exam.visibility === 'class' ? exam.assignedClassId || null : null);
+
+    // Require entering Mã đề thi + Mã dự thi ONCE before entering exam (without pre-filled numbers)
     const isCreatorTeacher = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(exam, currentUser);
-    if (!isCreatorTeacher && exam.requireAccessCode && !candidateNameOverride) {
-      setAccessModalInitialCode(exam.examCode || '');
+    if (!isCreatorTeacher && userRole === 'student' && (mode === 'exam' || exam.requireAccessCode) && !candidateNameOverride) {
+      setAccessModalTarget({
+        exam,
+        bundle: null,
+        mode,
+        sourceClassId: resolvedClassId,
+      });
       setIsExamAccessModalOpen(true);
       return;
     }
@@ -802,14 +870,20 @@ export default function App() {
       targetExam = instantiateExamWithRandomQuestions(targetExam);
     }
 
-    if (candidateNameOverride) {
+    const resolvedCandidateName =
+      candidateNameOverride ||
+      (resolvedClassId && currentUser
+        ? currentUser.username?.trim() || currentUser.fullName
+        : undefined);
+
+    if (resolvedCandidateName) {
       setCandidateProfile({
-        fullName: candidateNameOverride,
-        studentCode: studentCodeOverride,
+        fullName: resolvedCandidateName,
+        studentCode: studentCodeOverride || '',
       });
       saveCandidateProfile({
-        fullName: candidateNameOverride,
-        studentCode: studentCodeOverride,
+        fullName: resolvedCandidateName,
+        studentCode: '',
       });
     }
 
@@ -817,9 +891,7 @@ export default function App() {
       void tryEnterKioskFullscreen();
     }
 
-    setActiveAttemptClassId(
-      sourceClassId || (exam.visibility === 'class' ? exam.assignedClassId || null : null)
-    );
+    setActiveAttemptClassId(resolvedClassId);
     setActiveExam(targetExam);
     setActiveMode(mode);
     setCurrentView('taking');
@@ -853,14 +925,25 @@ export default function App() {
     setCurrentView('bundle-create');
   };
 
-  const enrichResultWithUser = (res: ExamResult, extraClassId?: string | null): ExamResult => ({
-    ...res,
-    classId: res.classId || extraClassId || undefined,
-    userId: res.userId || currentUser?.id,
-    userEmail: res.userEmail || currentUser?.email,
-    studentName: res.studentName || currentUser?.fullName || candidateProfile.fullName,
-    studentCode: res.studentCode || currentUser?.studentCode || candidateProfile.studentCode,
-  });
+  const enrichResultWithUser = (
+    res: ExamResult,
+    extraClassId?: string | null,
+    extraBundleMeta?: { bundleId: string; bundleAttemptId: string }
+  ): ExamResult => {
+    const fallbackName = extraClassId
+      ? currentUser?.username?.trim() || currentUser?.fullName || candidateProfile.fullName
+      : currentUser?.fullName || candidateProfile.fullName;
+    return {
+      ...res,
+      classId: res.classId || extraClassId || undefined,
+      bundleId: res.bundleId || extraBundleMeta?.bundleId,
+      bundleAttemptId: res.bundleAttemptId || extraBundleMeta?.bundleAttemptId,
+      userId: res.userId || currentUser?.id,
+      userEmail: res.userEmail || currentUser?.email,
+      studentName: res.studentName || fallbackName,
+      studentCode: res.studentCode || candidateProfile.studentCode || currentUser?.studentCode,
+    };
+  };
 
   const isTeacherClassroomAttempt = (
     item?: { id?: string; visibility?: string; assignedClassId?: string } | null
@@ -983,7 +1066,7 @@ export default function App() {
 
   // --- Bundle Handlers ---
   const handleStartBundle = (
-    bundle: ExamBundle, 
+    bundle: ExamBundle,
     selectedExamsOverride?: Exam[],
     candidateNameOverride?: string,
     studentCodeOverride?: string,
@@ -1003,9 +1086,51 @@ export default function App() {
       return;
     }
 
+    if (userRole === 'student') {
+      const sched = isItemScheduleOpen({
+        openTime: bundle.openTime,
+        closeTime: bundle.closeTime,
+        status: bundle.status,
+      });
+      if (!sched.isOpen) {
+        setConfirmModal({
+          isOpen: true,
+          title: 'Tổ hợp thi đang khóa',
+          message: sched.reason || 'Tổ hợp đề thi hiện tại không trong thời gian mở.',
+          confirmText: 'Đã hiểu',
+          cancelText: 'Đóng',
+          isDanger: false,
+          onConfirm: () => {},
+        });
+        return;
+      }
+
+      const attempts = getUserAttemptCountForBundle(bundle, results, currentUser, candidateProfile);
+      if (bundle.maxAttempts && bundle.maxAttempts > 0 && attempts >= bundle.maxAttempts) {
+        setConfirmModal({
+          isOpen: true,
+          title: 'Đã hết lượt thi tổ hợp cho phép',
+          message: `Bạn đã sử dụng hết ${attempts}/${bundle.maxAttempts} lượt làm bài cho tổ hợp "${bundle.title}". Không thể vào thi hay nhập mã dự thi thêm.`,
+          confirmText: 'Đã hiểu',
+          cancelText: 'Đóng',
+          isDanger: true,
+          onConfirm: () => {},
+        });
+        return;
+      }
+    }
+
+    const resolvedClassId =
+      sourceClassId || (bundle.visibility === 'class' ? bundle.assignedClassId || null : null);
+
     const isCreatorTeacher = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(bundle, currentUser);
-    if (!isCreatorTeacher && bundle.requireAccessCode && !candidateNameOverride) {
-      setAccessModalInitialCode(bundle.bundleCode || '');
+    if (!isCreatorTeacher && userRole === 'student' && !candidateNameOverride) {
+      setAccessModalTarget({
+        exam: null,
+        bundle,
+        mode: 'exam',
+        sourceClassId: resolvedClassId,
+      });
       setIsExamAccessModalOpen(true);
       return;
     }
@@ -1015,6 +1140,11 @@ export default function App() {
     if (!memberExams) {
       // If bundle has elective groups and no specific override passed, ask user to select electives
       if (bundle.selectionMode === 'has_electives' && bundle.electiveGroups && bundle.electiveGroups.length > 0) {
+        setPendingElectiveEntry({
+          candidateName: candidateNameOverride,
+          studentCode: studentCodeOverride,
+          sourceClassId: resolvedClassId,
+        });
         setSelectingElectiveBundle(bundle);
         return;
       }
@@ -1037,14 +1167,20 @@ export default function App() {
       return;
     }
 
-    if (candidateNameOverride) {
+    const resolvedCandidateName =
+      candidateNameOverride ||
+      (resolvedClassId && currentUser
+        ? currentUser.username?.trim() || currentUser.fullName
+        : undefined);
+
+    if (resolvedCandidateName) {
       setCandidateProfile({
-        fullName: candidateNameOverride,
-        studentCode: studentCodeOverride,
+        fullName: resolvedCandidateName,
+        studentCode: studentCodeOverride || '',
       });
       saveCandidateProfile({
-        fullName: candidateNameOverride,
-        studentCode: studentCodeOverride,
+        fullName: resolvedCandidateName,
+        studentCode: '',
       });
     }
 
@@ -1085,18 +1221,17 @@ export default function App() {
       elecExams = [];
     }
 
-    const initialPhase: 'compulsory_exam' | 'elective_cluster' = 
+    const initialPhase: 'compulsory_exam' | 'elective_cluster' =
       compExams.length > 0 ? 'compulsory_exam' : 'elective_cluster';
 
     if (userRole === 'student' && (bundle.lockExitUntilTimeout || processedMemberExams.some((e) => e.lockExitUntilTimeout))) {
       void tryEnterKioskFullscreen();
     }
 
-    setActiveAttemptClassId(
-      sourceClassId || (bundle.visibility === 'class' ? bundle.assignedClassId || null : null)
-    );
+    setActiveAttemptClassId(resolvedClassId);
     setActiveBundleSession({
       bundle,
+      bundleAttemptId: `b_attempt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       allSelectedExams: processedMemberExams,
       compulsoryExams: compExams,
       electiveExams: elecExams,
@@ -1112,29 +1247,29 @@ export default function App() {
 
     const skipTeacherClassScore = isTeacherClassroomAttempt(activeBundleSession.bundle);
     const resolvedClassId = activeAttemptClassId || activeBundleSession.bundle.assignedClassId || null;
-    const taggedResult = enrichResultWithUser(result, resolvedClassId);
+    const taggedResult = enrichResultWithUser(result, resolvedClassId, {
+      bundleId: activeBundleSession.bundle.id,
+      bundleAttemptId: activeBundleSession.bundleAttemptId,
+    });
 
     const updatedResults = [...activeBundleSession.results, taggedResult];
-    const isLastCompulsory = 
-      activeBundleSession.compulsoryExams.length === 0 || 
+    const isLastCompulsory =
+      activeBundleSession.compulsoryExams.length === 0 ||
       activeBundleSession.currentCompulsoryIndex >= activeBundleSession.compulsoryExams.length - 1;
 
     if (!isLastCompulsory) {
-      // More compulsory exams remain -> hold saving/announcing until full bundle completion
       setActiveBundleSession({
         ...activeBundleSession,
         results: updatedResults,
         phase: 'break_to_compulsory',
       });
     } else if (activeBundleSession.electiveExams.length > 0) {
-      // Completed last compulsory exam, next is elective cluster -> hold until full bundle completion
       setActiveBundleSession({
         ...activeBundleSession,
         results: updatedResults,
         phase: 'break_to_elective_cluster',
       });
     } else {
-      // All subjects in bundle completed -> persist & reveal all results together now
       if (!skipTeacherClassScore) {
         updatedResults.forEach((res) => {
           saveExamResult(res);
@@ -1158,7 +1293,12 @@ export default function App() {
 
     const skipTeacherClassScore = isTeacherClassroomAttempt(activeBundleSession.bundle);
     const resolvedClassId = activeAttemptClassId || activeBundleSession.bundle.assignedClassId || null;
-    const taggedClusterResults = clusterResults.map((res) => enrichResultWithUser(res, resolvedClassId));
+    const taggedClusterResults = clusterResults.map((res) =>
+      enrichResultWithUser(res, resolvedClassId, {
+        bundleId: activeBundleSession.bundle.id,
+        bundleAttemptId: activeBundleSession.bundleAttemptId,
+      })
+    );
 
     const updatedResults = [...activeBundleSession.results, ...taggedClusterResults];
     if (!skipTeacherClassScore) {
@@ -1308,6 +1448,9 @@ export default function App() {
         setCurrentView('courses');
       } else if (tab.targetView === 'battle') {
         setCurrentView('battle');
+      } else if (tab.targetView === 'games') {
+        setActiveGameRoomCode(undefined);
+        setCurrentView('games');
       } else if (tab.targetView === 'history') {
         setCurrentView('history');
       } else if (tab.targetView === 'analytics') {
@@ -1427,6 +1570,7 @@ export default function App() {
                 (tab.targetView === 'classrooms' && currentView === 'classrooms') ||
                 (tab.targetView === 'courses' && currentView === 'courses') ||
                 (tab.targetView === 'battle' && currentView === 'battle') ||
+                (tab.targetView === 'games' && currentView === 'games') ||
                 (tab.targetView === 'history' && currentView === 'history') ||
                 (tab.targetView === 'analytics' && currentView === 'analytics') ||
                 (selectedSubject === tab.targetView && currentView === 'home');
@@ -1457,9 +1601,10 @@ export default function App() {
                       {tab.iconName === 'users' && <Users className="w-4 h-4" />}
                       {tab.iconName === 'graduation' && <GraduationCap className="w-4 h-4" />}
                       {tab.iconName === 'swords' && <Swords className="w-4 h-4" />}
+                      {tab.iconName === 'gamepad' && <Gamepad2 className="w-4 h-4" />}
                       {tab.iconName === 'chart' && <BarChart3 className="w-4 h-4" />}
                       {tab.iconName === 'clock' && <Clock className="w-4 h-4" />}
-                      {!['book', 'layers', 'users', 'graduation', 'swords', 'chart', 'clock'].includes(
+                      {!['book', 'layers', 'users', 'graduation', 'swords', 'gamepad', 'chart', 'clock'].includes(
                         tab.iconName || ''
                       ) && <BookOpen className="w-4 h-4" />}
                     </span>
@@ -1553,7 +1698,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => {
-            setAccessModalInitialCode('');
+            setAccessModalTarget(null);
             setIsExamAccessModalOpen(true);
             setIsMobileNavOpen(false);
           }}
@@ -1971,6 +2116,7 @@ export default function App() {
                     {currentView === 'classrooms' && 'Hệ thống Lớp học & Khóa học'}
                     {currentView === 'courses' && 'Khóa học & Lý thuyết tương tác'}
                     {currentView === 'battle' && 'Đấu trường Tri thức (1v1 Arena)'}
+                    {currentView === 'games' && 'Trò chơi · Vượt chướng ngại vật — Chinh phục đỉnh núi'}
                     {currentView === 'analytics' && 'Năng lực cá nhân Học sinh'}
                     {currentView === 'teacher-tools' && 'Công cụ Giáo viên · Bảng điểm & Vinh danh'}
                     {currentView === 'history' && 'Lịch sử & Báo cáo Điểm số'}
@@ -2020,7 +2166,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setAccessModalInitialCode('');
+                    setAccessModalTarget(null);
                     setIsExamAccessModalOpen(true);
                   }}
                   className="px-2.5 sm:px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer shadow-2xs"
@@ -2365,6 +2511,23 @@ export default function App() {
         </main>
       )}
 
+      {/* View 10-games: Interactive Mountain Climb Quiz Game */}
+      {currentView === 'games' && (
+        <main className="flex-1 min-w-0">
+          <MountainGamesView
+            visibleExams={visibleLibraryExams}
+            currentUser={currentUser}
+            userRole={userRole}
+            initialRoomCode={activeGameRoomCode}
+            onRoomCodeChange={(code) => setActiveGameRoomCode(code)}
+            onBackToHome={() => {
+              setActiveGameRoomCode(undefined);
+              setCurrentView('home');
+            }}
+          />
+        </main>
+      )}
+
       {/* View 10b: Dedicated Private Student Competency Tab */}
       {currentView === 'analytics' && (
         <main className="flex-1">
@@ -2470,7 +2633,7 @@ export default function App() {
                   <div className="flex flex-wrap items-center gap-3 mb-6">
                     <button
                       onClick={() => {
-                        setAccessModalInitialCode('');
+                        setAccessModalTarget(null);
                         setIsExamAccessModalOpen(true);
                       }}
                       className="py-3 px-5 text-xs sm:text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-md shadow-blue-500/20"
@@ -2806,12 +2969,13 @@ export default function App() {
                         : true;
                       const isCreator = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(exam, currentUser);
                       const examResultCount = results.filter((r) => r.examId === exam.id).length;
+                      const userAttemptCount = getUserAttemptCountForExam(exam.id, results, currentUser, candidateProfile);
                       return (
                         <ExamCard
                           key={exam.id}
                           exam={exam}
                           userRole={isActualTeacher ? userRole : 'student'}
-                          attemptCount={examResultCount}
+                          attemptCount={userAttemptCount}
                           resultCount={examResultCount}
                           activeClassId={activeClassId}
                           isEnrolledInClass={isEnrolled}
@@ -2898,14 +3062,16 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {filteredBundles.map((bundle) => {
                       const isCreator = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(bundle, currentUser);
+                      const userBundleAttempts = getUserAttemptCountForBundle(bundle, results, currentUser, candidateProfile);
                       return (
                         <BundleCard
                           key={bundle.id}
                           bundle={bundle}
                           allExams={exams}
                           userRole={isActualTeacher ? userRole : 'student'}
+                          attemptCount={userBundleAttempts}
                           onStartBundle={handleStartBundle}
-                          onSelectElectives={(b) => setSelectingElectiveBundle(b)}
+                          onSelectElectives={(b) => handleStartBundle(b)}
                           onEditBundle={isCreator ? handleEditBundle : undefined}
                           onDeleteCustom={isCreator ? handleDeleteCustomBundle : undefined}
                         />
@@ -2973,7 +3139,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        setAccessModalInitialCode('');
+                        setAccessModalTarget(null);
                         setIsExamAccessModalOpen(true);
                       }}
                       className="py-2.5 px-4 text-xs sm:text-sm font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-colors cursor-pointer flex items-center gap-2"
@@ -3119,11 +3285,23 @@ export default function App() {
         allExams={exams}
         onConfirm={(chosenExams) => {
           if (selectingElectiveBundle) {
-            handleStartBundle(selectingElectiveBundle, chosenExams);
+            const target = selectingElectiveBundle;
+            const verified = pendingElectiveEntry;
             setSelectingElectiveBundle(null);
+            setPendingElectiveEntry(null);
+            handleStartBundle(
+              target,
+              chosenExams,
+              verified?.candidateName,
+              verified?.studentCode,
+              verified?.sourceClassId || undefined
+            );
           }
         }}
-        onClose={() => setSelectingElectiveBundle(null)}
+        onClose={() => {
+          setSelectingElectiveBundle(null);
+          setPendingElectiveEntry(null);
+        }}
       />
 
       {/* Tab & Subject Manager Modal */}
@@ -3143,16 +3321,27 @@ export default function App() {
         isOpen={isExamAccessModalOpen}
         allExams={exams}
         allBundles={bundles}
+        results={results}
         userRole={userRole}
-        initialExamCode={accessModalInitialCode}
-        onClose={() => setIsExamAccessModalOpen(false)}
-        onEnterExam={(ex, name, code, chosenMode) => {
+        targetExam={accessModalTarget?.exam || null}
+        targetBundle={accessModalTarget?.bundle || null}
+        lockedMode={accessModalTarget?.mode || null}
+        sourceClassId={accessModalTarget?.sourceClassId || null}
+        onClose={() => {
           setIsExamAccessModalOpen(false);
-          handleStartExam(ex, chosenMode || 'exam', name, code);
+          setAccessModalTarget(null);
+        }}
+        onEnterExam={(ex, name, code, chosenMode) => {
+          const clsId = accessModalTarget?.sourceClassId || undefined;
+          setIsExamAccessModalOpen(false);
+          setAccessModalTarget(null);
+          handleStartExam(ex, chosenMode || 'exam', name, code, clsId);
         }}
         onEnterBundle={(b, name, code) => {
+          const clsId = accessModalTarget?.sourceClassId || undefined;
           setIsExamAccessModalOpen(false);
-          handleStartBundle(b, undefined, name, code);
+          setAccessModalTarget(null);
+          handleStartBundle(b, undefined, name, code, clsId);
         }}
       />
 

@@ -302,6 +302,8 @@ export interface ExamResult {
   studentCode?: string; // Số báo danh
   classId?: string;     // Lớp nếu có
   className?: string;
+  bundleId?: string;    // ID tổ hợp môn nếu thi theo tổ hợp
+  bundleAttemptId?: string; // ID phiên làm bài tổ hợp
   earnedPoints: number; // Điểm đạt được
   totalPoints: number;  // Điểm tối đa của đề thi
   scoreOnTenScale: number; // Quy đổi ra thang điểm 10.0
@@ -598,13 +600,137 @@ export interface StudentCourseProgress {
 export interface NavTabItem {
   id: string;
   label: string;
-  iconName: 'book' | 'layers' | 'users' | 'graduation' | 'swords' | 'chart' | 'clock' | 'folder' | 'atom' | 'code';
-  targetView: 'single' | 'bundle' | 'classrooms' | 'courses' | 'battle' | 'analytics' | 'history' | 'custom_subject';
+  iconName: 'book' | 'layers' | 'users' | 'graduation' | 'swords' | 'gamepad' | 'chart' | 'clock' | 'folder' | 'atom' | 'code';
+  targetView: 'single' | 'bundle' | 'classrooms' | 'courses' | 'battle' | 'games' | 'analytics' | 'history' | 'custom_subject';
   subjectFilter?: string; // Nếu là tab môn học cụ thể
   badgeText?: string;
   isCustom?: boolean;
   isVisible?: boolean;
   isDefault?: boolean;
+}
+
+// --- Mountain Climb Interactive Quiz Game ("Vượt chướng ngại vật — Chinh phục đỉnh núi") ---
+export type MountainGameMode = 'solo' | 'duo' | 'multi';
+export type MountainTimeMode = 'per_question' | 'total_game';
+export type MountainRoomStatus = 'lobby' | 'playing' | 'finished';
+export type MountainPlayStage = 'main' | 'retry';
+export type MountainRoundPhase = 'question' | 'round_result' | 'retry_loop';
+
+export interface MountainPetDef {
+  id: string;
+  name: string;
+  emoji: string;
+  trait: string;
+  accentHex: string;
+  bgClass: string;
+  borderClass: string;
+  textClass: string;
+}
+
+export interface MountainQuestionItem {
+  id: string;
+  question: string;
+  imageUrl?: string;
+  options: string[];
+  correctAnswer?: number;
+  explanation?: string;
+  sourceTitle?: string;
+}
+
+export interface MountainGameConfig {
+  mode: MountainGameMode;
+  timeMode: MountainTimeMode;
+  questionTimeSec: number;
+  totalTimeSec: number;
+  summitSteps: number;
+  rank1Bonus: number;
+  rank2Bonus: number;
+  baseCorrectBonus: number;
+  wrongPenalty: number;
+  questionCount: number;
+  sourceExamId: string;
+  sourceTitle: string;
+}
+
+export interface MountainPlayerRoundDelta {
+  playerId: string;
+  playerName: string;
+  petId: string;
+  isCorrect: boolean;
+  selectedOptionIndex: number | null;
+  reactionMs: number | null;
+  rankInRound: number | null;
+  stepDelta: number;
+  badgeLabel: string;
+  newStep: number;
+}
+
+export interface MountainRoundResultSummary {
+  questionIndex: number;
+  questionId: string;
+  correctAnswer: number;
+  explanation?: string;
+  fastestPlayerId?: string;
+  secondPlayerId?: string;
+  deltas: MountainPlayerRoundDelta[];
+  resolvedAt: number;
+}
+
+export interface MountainRetryFeedback {
+  questionId: string;
+  isCorrect: boolean;
+  correctAnswer: number;
+  explanation?: string;
+  stepDelta: number;
+  remainingWrongCount: number;
+  timestamp: number;
+}
+
+export interface MountainPlayerState {
+  id: string;
+  name: string;
+  petId: string;
+  isHost: boolean;
+  connected: boolean;
+  step: number;
+  rawSteps: number;
+  mainAnsweredCount: number;
+  firstTryCorrectCount: number;
+  wrongAttemptCount: number;
+  retryClearedCount: number;
+  wrongQueueIds: string[];
+  currentAnswer?: {
+    questionIndex: number;
+    selectedIndex: number;
+    reactionMs: number;
+  } | null;
+  currentRetryStartedAt?: number | null;
+  lastRetryFeedback?: MountainRetryFeedback | null;
+  totalReactionMs: number;
+  answeredCountForAvg: number;
+  reachedSummitAt?: number | null;
+  officiallyFinished: boolean;
+  finishedAt?: number | null;
+}
+
+export interface MountainGameRoomState {
+  code: string;
+  hostId: string;
+  status: MountainRoomStatus;
+  stage: MountainPlayStage;
+  roundPhase: MountainRoundPhase;
+  config: MountainGameConfig;
+  questions: MountainQuestionItem[];
+  players: MountainPlayerState[];
+  currentMainIndex: number;
+  questionStartedAt?: number | null;
+  questionEndsAt?: number | null;
+  roundResultEndsAt?: number | null;
+  gameStartedAt?: number | null;
+  gameEndsAt?: number | null;
+  lastRoundSummary?: MountainRoundResultSummary | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 // --- Online Judge / VNOI / SPOJ Competitive Programming ---

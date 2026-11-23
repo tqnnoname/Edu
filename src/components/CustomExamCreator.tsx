@@ -2063,11 +2063,13 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                       max={durationMinutes}
                       value={minSubmitMinutes}
                       onChange={(e) => setMinSubmitMinutes(Math.max(0, Number(e.target.value)))}
-                      placeholder="0 = nộp bất kỳ lúc nào"
+                      placeholder="0 = đúng hết giờ mới nộp"
                       className="w-24 px-2.5 py-1 text-xs bg-white border border-indigo-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-600 font-bold"
                     />
                     <span className="text-[11px] text-indigo-900">
-                      {minSubmitMinutes > 0 ? `Chỉ được nộp sau khi làm tối thiểu ${minSubmitMinutes} phút` : 'Không giới hạn thời gian nộp sớm'}
+                      {minSubmitMinutes > 0
+                        ? `Chỉ được nộp sau khi làm tối thiểu ${minSubmitMinutes} phút`
+                        : 'Mặc định (0): Phải làm đúng hết giờ mới được nộp (không nộp sớm)'}
                     </span>
                   </div>
                 </div>

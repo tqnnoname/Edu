@@ -346,7 +346,7 @@ export async function signUpWithEmailPasswordFirebase(params: {
   email: string;
   password: string;
   fullName: string;
-}): Promise<{ success: boolean; user?: FirebaseUser; error?: string }> {
+}): Promise<{ success: boolean; user?: FirebaseUser; code?: string; error?: string }> {
   try {
     const cleanEmail = params.email.trim().toLowerCase();
     const cred = await createUserWithEmailAndPassword(auth, cleanEmail, params.password);
@@ -357,6 +357,7 @@ export async function signUpWithEmailPasswordFirebase(params: {
   } catch (err: any) {
     return {
       success: false,
+      code: err?.code || '',
       error: mapFirebaseAuthErrorMessage(err),
     };
   }
@@ -741,34 +742,39 @@ export async function resolveOrCreateUnifiedUserProfile(
 
 // Lightweight payload converter (< 1KB per users/{uid} document)
 function toSafeUserDoc(user: UserAccount, ownerUid: string, isKnownUpdate: boolean) {
-  const email = (user.email || '').trim().toLowerCase();
+  const fbUser = getFirebaseAuthUser();
+  const resolvedRawEmail =
+    fbUser && ownerUid === fbUser.uid && fbUser.email
+      ? fbUser.email
+      : user.email || fbUser?.email || '';
+  const email = (resolvedRawEmail.trim().toLowerCase() || 'user@edutest.local').slice(0, 180);
   const isMaster = email === MASTER_ADMIN_EMAIL_LOWER;
   const cleanId = sanitizeDocId(user.uid || user.id || ownerUid);
-  const fullName = String(user.fullName || user.name || email.split('@')[0] || 'Thành viên').slice(
-    0,
-    150
-  );
+  const fullName = (
+    String(user.fullName || user.name || email.split('@')[0] || '').trim() || 'Thành viên'
+  ).slice(0, 150);
+  const username = (
+    String(user.username || email.split('@')[0] || '').trim().toLowerCase() ||
+    `user_${cleanId.slice(0, 8)}`
+  ).slice(0, 100);
   const compactAvatar =
     user.avatar && user.avatar.length <= 512 ? user.avatar : undefined;
 
   return stripUndefined({
     id: cleanId,
     uid: user.uid || ownerUid,
-    email: email.slice(0, 180),
-    username: String(user.username || email.split('@')[0] || 'user')
-      .trim()
-      .toLowerCase()
-      .slice(0, 100),
+    email,
+    username,
     fullName,
     displayName: fullName,
     role: isMaster ? 'teacher' : user.role === 'teacher' ? 'teacher' : 'student',
-    isMasterAdmin: isMaster || Boolean(user.isMasterAdmin),
+    isMasterAdmin: isMaster,
     school: user.school ? String(user.school).slice(0, 200) : undefined,
     studentCode: user.studentCode ? String(user.studentCode).slice(0, 60) : undefined,
     avatar: compactAvatar,
     isGoogleAuth: Boolean(user.isGoogleAuth),
     legacyUserIds: Array.isArray(user.legacyUserIds)
-      ? user.legacyUserIds.slice(0, 20)
+      ? user.legacyUserIds.filter((x): x is string => typeof x === 'string').slice(0, 20)
       : undefined,
     createdAtStr: (user.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
@@ -818,6 +824,37 @@ function getEffectiveUid(activeWebUser?: UserAccount | null): string {
 // DOMAIN CONVERTERS
 // =========================================================================
 
+function isPlainObject(v: unknown): v is Record<string, any> {
+  return Boolean(v && typeof v === 'object' && !Array.isArray(v));
+}
+
+function filterObjects(arr: unknown, maxItems: number): Record<string, any>[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter(isPlainObject).slice(0, maxItems);
+}
+
+function filterStrings(arr: unknown, maxItems: number): string[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((x): x is string => typeof x === 'string').slice(0, maxItems);
+}
+
+function pickEnum<T extends string>(val: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof val === 'string' && (allowed as readonly string[]).includes(val)
+    ? (val as T)
+    : fallback;
+}
+
+function safeNonEmptyEmail(raw: unknown, fallbackEmail: string): string {
+  const clean = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return (clean.length >= 3 ? clean : fallbackEmail).slice(0, 180);
+}
+
+function safeFiniteNumber(val: unknown): number | undefined {
+  if (val === undefined || val === null || val === '') return undefined;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function toSafeExamDoc(
   exam: Exam,
   ownerUid: string,
@@ -840,8 +877,7 @@ function toSafeExamDoc(
         id: String(exam.attachedFile.id || 'att_exam').slice(0, 128),
         name: String(exam.attachedFile.name || 'document').slice(0, 220),
         mimeType: String(exam.attachedFile.mimeType || 'application/octet-stream').slice(0, 140),
-        sizeBytes:
-          exam.attachedFile.sizeBytes !== undefined ? Number(exam.attachedFile.sizeBytes) : undefined,
+        sizeBytes: safeFiniteNumber(exam.attachedFile.sizeBytes),
         dataUrl:
           exam.attachedFile.dataUrl && exam.attachedFile.dataUrl.length <= 720000
             ? exam.attachedFile.dataUrl
@@ -855,56 +891,65 @@ function toSafeExamDoc(
 
   return stripUndefined({
     id: sanitizeDocId(exam.id),
-    title: String(exam.title || 'Đề thi không tên').slice(0, 300),
-    subject: String(exam.subject || 'general').slice(0, 64),
+    title: (String(exam.title || '').trim() || 'Đề thi không tên').slice(0, 300),
+    subject: (String(exam.subject || '').trim() || 'general').slice(0, 64),
     grade: String(exam.grade || 'Tổng hợp').slice(0, 64),
-    durationMinutes: Number(exam.durationMinutes) || 45,
+    durationMinutes: safeFiniteNumber(exam.durationMinutes) ?? 45,
     description: String(exam.description || '').slice(0, 4000),
     instructions: exam.instructions ? String(exam.instructions).slice(0, 4000) : undefined,
-    settings: exam.settings || {},
-    parts: Array.isArray(exam.parts) ? exam.parts.slice(0, 30) : undefined,
+    settings: isPlainObject(exam.settings) ? exam.settings : {},
+    parts: Array.isArray(exam.parts) ? filterObjects(exam.parts, 50) : undefined,
     attachedFile: safeAttachedFile,
-    questions: Array.isArray(exam.questions) ? exam.questions.slice(0, 300) : [],
-    totalQuestions: Number(exam.totalQuestions ?? exam.questions?.length ?? 0),
-    totalPoints: Number(exam.totalPoints ?? 10),
+    questions: filterObjects(exam.questions, 300),
+    totalQuestions: safeFiniteNumber(exam.totalQuestions ?? exam.questions?.length) ?? 0,
+    totalPoints: safeFiniteNumber(exam.totalPoints) ?? 10,
     isCustom: Boolean(exam.isCustom ?? true),
-    visibility: exam.visibility || 'public',
+    visibility: pickEnum(
+      exam.visibility,
+      ['public', 'exam_only', 'private', 'class', 'bundle_only'] as const,
+      'public'
+    ),
     assignedClassId: exam.assignedClassId ? String(exam.assignedClassId).slice(0, 128) : undefined,
     assignedClassName: exam.assignedClassName
       ? String(exam.assignedClassName).slice(0, 200)
       : undefined,
     allowedEmails,
-    status: exam.status || 'open',
+    status: pickEnum(
+      exam.status,
+      ['draft', 'scheduled', 'open', 'closed', 'published'] as const,
+      'open'
+    ),
     openTime: exam.openTime ? String(exam.openTime).slice(0, 64) : undefined,
     closeTime: exam.closeTime ? String(exam.closeTime).slice(0, 64) : undefined,
-    modeType: exam.modeType || 'both',
-    maxAttempts: exam.maxAttempts !== undefined ? Number(exam.maxAttempts) : undefined,
-    maxTabSwitches: exam.maxTabSwitches !== undefined ? Number(exam.maxTabSwitches) : undefined,
+    modeType: pickEnum(exam.modeType, ['both', 'exam_only', 'practice_only'] as const, 'both'),
+    maxAttempts: safeFiniteNumber(exam.maxAttempts),
+    maxTabSwitches: safeFiniteNumber(exam.maxTabSwitches),
     allowCopy: exam.allowCopy ?? true,
     showAnswersAfterExam: exam.showAnswersAfterExam ?? true,
     showOnlyStudentAnswersAfterExam: exam.showOnlyStudentAnswersAfterExam ?? false,
     showLiveScoreDuringExam: exam.showLiveScoreDuringExam ?? true,
     showScoreAfterExam: exam.showScoreAfterExam ?? true,
     examCode: exam.examCode ? String(exam.examCode).slice(0, 32) : undefined,
-    randomQuestionCount:
-      exam.randomQuestionCount !== undefined ? Number(exam.randomQuestionCount) : undefined,
+    randomQuestionCount: safeFiniteNumber(exam.randomQuestionCount),
     lockExitUntilTimeout: exam.lockExitUntilTimeout ?? false,
-    minSubmitMinutes:
-      exam.minSubmitMinutes !== undefined ? Number(exam.minSubmitMinutes) : undefined,
+    minSubmitMinutes: safeFiniteNumber(exam.minSubmitMinutes),
     requireAccessCode: exam.requireAccessCode ?? false,
     accessSecurityCode: exam.accessSecurityCode
       ? String(exam.accessSecurityCode).slice(0, 64)
       : undefined,
-    accessMode: exam.accessMode || 'direct_and_code',
-    teacherMode: exam.teacherMode || (exam.isCreatorOnlyMode ? 'creator' : 'normal'),
+    accessMode: pickEnum(exam.accessMode, ['direct_and_code', 'code_only'] as const, 'direct_and_code'),
+    teacherMode: pickEnum(
+      exam.teacherMode || (exam.isCreatorOnlyMode ? 'creator' : 'normal'),
+      ['normal', 'creator', 'grading', 'presenting'] as const,
+      'normal'
+    ),
     isCreatorOnlyMode: Boolean(exam.isCreatorOnlyMode || exam.teacherMode === 'creator'),
     isOfficialClassExam: Boolean(exam.isOfficialClassExam),
-    preExamLockMinutes:
-      exam.preExamLockMinutes !== undefined ? Number(exam.preExamLockMinutes) : undefined,
+    preExamLockMinutes: safeFiniteNumber(exam.preExamLockMinutes),
     allowExitAfterSubmit: Boolean(exam.allowExitAfterSubmit),
     creatorId: sanitizeDocId(exam.creatorId || ownerUid),
     creatorUid: ownerUid,
-    creatorEmail: (exam.creatorEmail || ownerEmail).trim().toLowerCase().slice(0, 180),
+    creatorEmail: safeNonEmptyEmail(exam.creatorEmail || ownerEmail, 'teacher@edutest.local'),
     creatorName: exam.creatorName ? String(exam.creatorName).slice(0, 150) : undefined,
     createdAtStr: (exam.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
@@ -940,35 +985,47 @@ function toSafeBundleDoc(
 
   return stripUndefined({
     id: sanitizeDocId(bundle.id),
-    title: String(bundle.title || 'Tổ hợp thi').slice(0, 300),
+    title: (String(bundle.title || '').trim() || 'Tổ hợp thi').slice(0, 300),
     description: String(bundle.description || '').slice(0, 4000),
     bundleCode: bundle.bundleCode ? String(bundle.bundleCode).slice(0, 32) : undefined,
-    breakMinutes: Number(bundle.breakMinutes ?? 5),
-    intermissionMinutes:
-      bundle.intermissionMinutes !== undefined ? Number(bundle.intermissionMinutes) : undefined,
-    examIds: Array.isArray(bundle.examIds) ? bundle.examIds.slice(0, 50) : [],
-    selectionMode: bundle.selectionMode || 'all_compulsory',
-    timingMode: bundle.timingMode || 'compulsory_seq_elective_cluster_max',
+    breakMinutes: safeFiniteNumber(bundle.breakMinutes) ?? 5,
+    intermissionMinutes: safeFiniteNumber(bundle.intermissionMinutes),
+    examIds: filterStrings(bundle.examIds, 100),
+    selectionMode: pickEnum(
+      bundle.selectionMode,
+      ['all_compulsory', 'has_electives'] as const,
+      'all_compulsory'
+    ),
+    timingMode: pickEnum(
+      bundle.timingMode,
+      ['compulsory_seq_elective_cluster_max', 'all_sequential_independent'] as const,
+      'compulsory_seq_elective_cluster_max'
+    ),
     compulsoryExamIds: Array.isArray(bundle.compulsoryExamIds)
-      ? bundle.compulsoryExamIds.slice(0, 30)
+      ? filterStrings(bundle.compulsoryExamIds, 100)
       : undefined,
     electiveGroups: Array.isArray(bundle.electiveGroups)
-      ? bundle.electiveGroups.slice(0, 20)
+      ? filterObjects(bundle.electiveGroups, 50)
       : undefined,
-    minGroupsToSelect:
-      bundle.minGroupsToSelect !== undefined ? Number(bundle.minGroupsToSelect) : undefined,
-    maxGroupsToSelect:
-      bundle.maxGroupsToSelect !== undefined ? Number(bundle.maxGroupsToSelect) : undefined,
-    selectionTimeLimitSeconds:
-      bundle.selectionTimeLimitSeconds !== undefined
-        ? Number(bundle.selectionTimeLimitSeconds)
-        : undefined,
-    randomQuestionCountPerExam: bundle.randomQuestionCountPerExam || undefined,
+    minGroupsToSelect: safeFiniteNumber(bundle.minGroupsToSelect),
+    maxGroupsToSelect: safeFiniteNumber(bundle.maxGroupsToSelect),
+    selectionTimeLimitSeconds: safeFiniteNumber(bundle.selectionTimeLimitSeconds),
+    randomQuestionCountPerExam: isPlainObject(bundle.randomQuestionCountPerExam)
+      ? bundle.randomQuestionCountPerExam
+      : undefined,
     openTime: bundle.openTime ? String(bundle.openTime).slice(0, 64) : undefined,
     closeTime: bundle.closeTime ? String(bundle.closeTime).slice(0, 64) : undefined,
-    status: bundle.status || 'open',
-    maxAttempts: bundle.maxAttempts !== undefined ? Number(bundle.maxAttempts) : undefined,
-    visibility: bundle.visibility || 'public',
+    status: pickEnum(
+      bundle.status,
+      ['draft', 'scheduled', 'open', 'closed', 'published'] as const,
+      'open'
+    ),
+    maxAttempts: safeFiniteNumber(bundle.maxAttempts),
+    visibility: pickEnum(
+      bundle.visibility,
+      ['public', 'exam_only', 'private', 'class', 'bundle_only'] as const,
+      'public'
+    ),
     assignedClassId: bundle.assignedClassId
       ? String(bundle.assignedClassId).slice(0, 128)
       : undefined,
@@ -976,25 +1033,27 @@ function toSafeBundleDoc(
       ? String(bundle.assignedClassName).slice(0, 200)
       : undefined,
     allowedEmails,
-    accessMode: bundle.accessMode || 'direct_and_code',
+    accessMode: pickEnum(
+      bundle.accessMode,
+      ['direct_and_code', 'code_only'] as const,
+      'direct_and_code'
+    ),
     lockExitUntilTimeout: bundle.lockExitUntilTimeout ?? false,
     showScoreAfterExam: bundle.showScoreAfterExam ?? true,
     showAnswersAfterExam: bundle.showAnswersAfterExam ?? true,
     showOnlyStudentAnswersAfterExam: bundle.showOnlyStudentAnswersAfterExam ?? false,
-    minSubmitMinutes:
-      bundle.minSubmitMinutes !== undefined ? Number(bundle.minSubmitMinutes) : undefined,
+    minSubmitMinutes: safeFiniteNumber(bundle.minSubmitMinutes),
     requireAccessCode: bundle.requireAccessCode ?? false,
     accessSecurityCode: bundle.accessSecurityCode
       ? String(bundle.accessSecurityCode).slice(0, 64)
       : undefined,
     allowCopy: bundle.allowCopy ?? true,
-    maxTabSwitches:
-      bundle.maxTabSwitches !== undefined ? Number(bundle.maxTabSwitches) : undefined,
-    sections: Array.isArray(bundle.sections) ? bundle.sections.slice(0, 30) : undefined,
+    maxTabSwitches: safeFiniteNumber(bundle.maxTabSwitches),
+    sections: Array.isArray(bundle.sections) ? filterObjects(bundle.sections, 50) : undefined,
     isCustom: Boolean(bundle.isCustom ?? true),
     creatorId: sanitizeDocId(bundle.creatorId || ownerUid),
     creatorUid: ownerUid,
-    creatorEmail: (bundle.creatorEmail || ownerEmail).trim().toLowerCase().slice(0, 180),
+    creatorEmail: safeNonEmptyEmail(bundle.creatorEmail || ownerEmail, 'teacher@edutest.local'),
     creatorName: bundle.creatorName ? String(bundle.creatorName).slice(0, 150) : undefined,
     createdAtStr: (bundle.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
@@ -1030,19 +1089,27 @@ function toSafeCourseDoc(
 
   return stripUndefined({
     id: sanitizeDocId(course.id),
-    title: String(course.title || 'Khóa học').slice(0, 300),
-    subject: String(course.subject || 'general').slice(0, 64),
+    title: (String(course.title || '').trim() || 'Khóa học').slice(0, 300),
+    subject: (String(course.subject || '').trim() || 'general').slice(0, 64),
     grade: String(course.grade || 'Lớp 12').slice(0, 64),
     description: String(course.description || '').slice(0, 4000),
     instructor: String(course.instructor || 'Giáo viên').slice(0, 150),
-    chapters: Array.isArray(course.chapters) ? course.chapters.slice(0, 50) : [],
-    lessons: Array.isArray(course.lessons) ? course.lessons.slice(0, 100) : [],
+    chapters: filterObjects(course.chapters, 100),
+    lessons: filterObjects(course.lessons, 200),
     finalExamId: course.finalExamId ? String(course.finalExamId).slice(0, 128) : undefined,
     finalExamTitle: course.finalExamTitle ? String(course.finalExamTitle).slice(0, 300) : undefined,
-    status: course.status || 'open',
+    status: pickEnum(
+      course.status,
+      ['draft', 'scheduled', 'open', 'closed', 'published'] as const,
+      'open'
+    ),
     openTime: course.openTime ? String(course.openTime).slice(0, 64) : undefined,
     closeTime: course.closeTime ? String(course.closeTime).slice(0, 64) : undefined,
-    visibility: course.visibility || 'public',
+    visibility: pickEnum(
+      course.visibility,
+      ['public', 'exam_only', 'private', 'class', 'bundle_only'] as const,
+      'public'
+    ),
     assignedClassId: course.assignedClassId
       ? String(course.assignedClassId).slice(0, 128)
       : undefined,
@@ -1052,10 +1119,10 @@ function toSafeCourseDoc(
     allowedEmails,
     creatorId: sanitizeDocId(course.creatorId || ownerUid),
     creatorUid: ownerUid,
-    creatorEmail: (course.creatorEmail || ownerEmail).trim().toLowerCase().slice(0, 180),
+    creatorEmail: safeNonEmptyEmail(course.creatorEmail || ownerEmail, 'teacher@edutest.local'),
     creatorName: course.creatorName ? String(course.creatorName).slice(0, 150) : undefined,
     isScormEnabled: course.isScormEnabled ?? true,
-    scormVersion: course.scormVersion || '1.2',
+    scormVersion: pickEnum(course.scormVersion, ['1.2', '2004'] as const, '1.2'),
     createdAtStr: (course.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
     updatedAt: serverTimestamp(),
@@ -1077,14 +1144,17 @@ function toSafeClassroomDoc(
   ownerEmail: string,
   isKnownUpdate: boolean
 ) {
-  const teacherEmail = (cls.teacherEmail || ownerEmail).trim().toLowerCase();
-  const safeStudents = (cls.students || []).slice(0, 300).map((s) => {
-    const copy: any = { ...s };
-    delete copy.password;
-    delete copy.username;
-    if (copy.email) copy.email = String(copy.email).trim().toLowerCase();
-    return copy;
-  });
+  const teacherEmail = safeNonEmptyEmail(cls.teacherEmail || ownerEmail, 'teacher@edutest.local');
+  const safeStudents = (Array.isArray(cls.students) ? cls.students : [])
+    .filter(isPlainObject)
+    .slice(0, 500)
+    .map((s) => {
+      const copy: any = { ...s };
+      delete copy.password;
+      delete copy.username;
+      if (copy.email) copy.email = String(copy.email).trim().toLowerCase();
+      return copy;
+    });
 
   const memberEmails = normalizeEmailList([
     teacherEmail,
@@ -1093,21 +1163,19 @@ function toSafeClassroomDoc(
 
   return stripUndefined({
     id: sanitizeDocId(cls.id),
-    name: String(cls.name || 'Lớp học').slice(0, 200),
+    name: (String(cls.name || '').trim() || 'Lớp học').slice(0, 200),
     grade: String(cls.grade || '').slice(0, 64),
-    code: sanitizeDocId(cls.code || 'CLASS').slice(0, 64),
+    code: sanitizeDocId(String(cls.code || 'CLASS').trim().toUpperCase()).slice(0, 64),
     teacherId: sanitizeDocId(cls.teacherId || ownerUid),
     teacherUid: ownerUid,
     teacherName: String(cls.teacherName || 'Giáo viên').slice(0, 150),
-    teacherEmail: teacherEmail.slice(0, 180),
+    teacherEmail,
     description: cls.description ? String(cls.description).slice(0, 2000) : undefined,
     students: safeStudents,
     memberEmails,
-    pendingRequests: Array.isArray(cls.pendingRequests) ? cls.pendingRequests.slice(0, 200) : [],
-    assignedExamIds: Array.isArray(cls.assignedExamIds) ? cls.assignedExamIds.slice(0, 200) : [],
-    assignedCourseIds: Array.isArray(cls.assignedCourseIds)
-      ? cls.assignedCourseIds.slice(0, 200)
-      : [],
+    pendingRequests: filterObjects(cls.pendingRequests, 200),
+    assignedExamIds: filterStrings(cls.assignedExamIds, 200),
+    assignedCourseIds: filterStrings(cls.assignedCourseIds, 200),
     createdAtStr: (cls.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
     updatedAt: serverTimestamp(),
@@ -1151,22 +1219,61 @@ function toSafeResultDoc(
   ownerEmail: string,
   exams: Exam[],
   classrooms: Classroom[],
-  isKnownUpdate: boolean
+  isKnownUpdate: boolean,
+  isMineByOwner: boolean = true
 ) {
   const exam = exams.find((e) => e.id === r.examId);
   const cls = r.classId ? classrooms.find((c) => c.id === r.classId) : undefined;
   const teacherEmail = (cls?.teacherEmail || exam?.creatorEmail || '').trim().toLowerCase();
+  const resolvedStudentUid = isMineByOwner
+    ? ownerUid
+    : String((r as any).studentUid || '').trim() || sanitizeDocId(r.userId || ownerUid);
 
   return stripUndefined({
-    ...r,
     id: sanitizeDocId(r.id),
-    examId: sanitizeDocId(r.examId),
-    examTitle: String(r.examTitle || 'Bài thi').slice(0, 300),
-    studentUid: ownerUid,
-    userId: r.userId || ownerUid,
-    userEmail: (r.userEmail || ownerEmail).trim().toLowerCase().slice(0, 180),
+    examId: sanitizeDocId(r.examId || 'exam_unknown'),
+    examTitle: (String(r.examTitle || '').trim() || 'Bài thi').slice(0, 300),
+    subject: r.subject ? String(r.subject).slice(0, 64) : undefined,
+    grade: r.grade ? String(r.grade).slice(0, 64) : undefined,
+    studentUid: resolvedStudentUid.slice(0, 128),
+    userId: r.userId ? String(r.userId).slice(0, 128) : ownerUid.slice(0, 128),
+    userEmail: safeNonEmptyEmail(r.userEmail || ownerEmail, 'student@edutest.local'),
     teacherEmail: teacherEmail ? teacherEmail.slice(0, 180) : undefined,
-    completedAt: String(r.completedAt || new Date().toISOString()).slice(0, 64),
+    studentName: r.studentName ? String(r.studentName).slice(0, 150) : undefined,
+    studentCode: r.studentCode ? String(r.studentCode).slice(0, 60) : undefined,
+    classId: r.classId ? String(r.classId).slice(0, 128) : undefined,
+    className: r.className ? String(r.className).slice(0, 200) : undefined,
+    bundleId: r.bundleId ? String(r.bundleId).slice(0, 128) : undefined,
+    bundleAttemptId: r.bundleAttemptId ? String(r.bundleAttemptId).slice(0, 128) : undefined,
+    earnedPoints: safeFiniteNumber(r.earnedPoints),
+    totalPoints: safeFiniteNumber(r.totalPoints),
+    scoreOnTenScale: safeFiniteNumber(r.scoreOnTenScale),
+    score: safeFiniteNumber(r.score) ?? 0,
+    percentage: safeFiniteNumber(r.percentage),
+    correctCount: safeFiniteNumber(r.correctCount),
+    partialCount: safeFiniteNumber(r.partialCount),
+    wrongCount: safeFiniteNumber(r.wrongCount),
+    skippedCount: safeFiniteNumber(r.skippedCount),
+    totalQuestions: safeFiniteNumber(r.totalQuestions),
+    timeSpentSeconds: safeFiniteNumber(r.timeSpentSeconds),
+    totalDurationSeconds: safeFiniteNumber(r.totalDurationSeconds),
+    completedAt: (String(r.completedAt || '').trim() || new Date().toISOString()).slice(0, 64),
+    examCode: r.examCode ? String(r.examCode).slice(0, 32) : undefined,
+    submissionReason: r.submissionReason ? String(r.submissionReason).slice(0, 500) : undefined,
+    tabSwitchCount: safeFiniteNumber(r.tabSwitchCount),
+    answers: isPlainObject(r.answers) ? r.answers : {},
+    questions: filterObjects(r.questions, 300),
+    scoreDetails: isPlainObject(r.scoreDetails) ? r.scoreDetails : {},
+    topicBreakdown: isPlainObject(r.topicBreakdown) ? r.topicBreakdown : {},
+    partBreakdowns: Array.isArray(r.partBreakdowns) ? filterObjects(r.partBreakdowns, 50) : undefined,
+    showScoreAfterExam:
+      r.showScoreAfterExam !== undefined ? Boolean(r.showScoreAfterExam) : undefined,
+    showAnswersAfterExam:
+      r.showAnswersAfterExam !== undefined ? Boolean(r.showAnswersAfterExam) : undefined,
+    showOnlyStudentAnswersAfterExam:
+      r.showOnlyStudentAnswersAfterExam !== undefined
+        ? Boolean(r.showOnlyStudentAnswersAfterExam)
+        : undefined,
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
     updatedAt: serverTimestamp(),
   });
@@ -1192,25 +1299,23 @@ function toSafeCourseProgressDoc(
   return stripUndefined({
     id: sanitizeDocId(progressKey),
     courseId: sanitizeDocId(p.courseId),
-    studentId: sanitizeDocId(p.studentId),
+    studentId: sanitizeDocId(p.studentId || ownerUid),
     studentUid: ownerUid,
-    studentEmail: ownerEmail.slice(0, 180),
+    studentEmail: safeNonEmptyEmail(ownerEmail, 'student@edutest.local'),
     teacherEmail: course?.creatorEmail
       ? course.creatorEmail.trim().toLowerCase().slice(0, 180)
       : undefined,
-    completedLessonIds: Array.isArray(p.completedLessonIds)
-      ? p.completedLessonIds.slice(0, 300)
-      : [],
-    completedBlockIds: Array.isArray(p.completedBlockIds)
-      ? p.completedBlockIds.slice(0, 1000)
-      : [],
-    currentChapterId: p.currentChapterId || undefined,
-    currentLessonId: p.currentLessonId || undefined,
-    currentBlockIdsByLesson: p.currentBlockIdsByLesson || {},
-    interactiveAnswers: p.interactiveAnswers || {},
-    completedExamIds: Array.isArray(p.completedExamIds) ? p.completedExamIds.slice(0, 100) : [],
-    scormData: p.scormData || undefined,
-    lastStudiedAt: String(p.lastStudiedAt || new Date().toISOString()).slice(0, 64),
+    completedLessonIds: filterStrings(p.completedLessonIds, 500),
+    completedBlockIds: filterStrings(p.completedBlockIds, 2000),
+    currentChapterId: p.currentChapterId ? String(p.currentChapterId).slice(0, 128) : undefined,
+    currentLessonId: p.currentLessonId ? String(p.currentLessonId).slice(0, 128) : undefined,
+    currentBlockIdsByLesson: isPlainObject(p.currentBlockIdsByLesson)
+      ? p.currentBlockIdsByLesson
+      : {},
+    interactiveAnswers: isPlainObject(p.interactiveAnswers) ? p.interactiveAnswers : {},
+    completedExamIds: filterStrings(p.completedExamIds, 200),
+    scormData: isPlainObject(p.scormData) ? p.scormData : undefined,
+    lastStudiedAt: (String(p.lastStudiedAt || '').trim() || new Date().toISOString()).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
     updatedAt: serverTimestamp(),
   });
@@ -1224,7 +1329,7 @@ function toSafeClassroomHomeworkDoc(
   isKnownUpdate: boolean
 ) {
   const cls = classrooms.find((c) => c.id === hw.classId);
-  const teacherEmail = (cls?.teacherEmail || ownerEmail).trim().toLowerCase();
+  const teacherEmail = safeNonEmptyEmail(cls?.teacherEmail || ownerEmail, 'teacher@edutest.local');
   const allowedEmails = normalizeEmailList([
     ownerEmail,
     teacherEmail,
@@ -1234,15 +1339,15 @@ function toSafeClassroomHomeworkDoc(
   return stripUndefined({
     id: sanitizeDocId(hw.id),
     classId: sanitizeDocId(hw.classId),
-    title: String(hw.title || 'Bài tập về nhà').slice(0, 300),
+    title: (String(hw.title || '').trim() || 'Bài tập về nhà').slice(0, 300),
     instructions: hw.instructions ? String(hw.instructions).slice(0, 20000) : undefined,
-    attachments: Array.isArray(hw.attachments) ? hw.attachments.slice(0, 15) : undefined,
+    attachments: Array.isArray(hw.attachments) ? filterObjects(hw.attachments, 20) : undefined,
     openTime: hw.openTime ? String(hw.openTime).slice(0, 64) : undefined,
     closeTime: hw.closeTime ? String(hw.closeTime).slice(0, 64) : undefined,
-    maxScore: hw.maxScore !== undefined ? Number(hw.maxScore) : 10,
+    maxScore: safeFiniteNumber(hw.maxScore) ?? 10,
     createdBy: hw.createdBy ? String(hw.createdBy).slice(0, 150) : undefined,
     teacherUid: ownerUid,
-    teacherEmail: teacherEmail.slice(0, 180),
+    teacherEmail,
     allowedEmails,
     createdAtStr: (hw.createdAt || new Date().toISOString()).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
@@ -1256,11 +1361,15 @@ function toSafeHomeworkSubmissionDoc(
   ownerEmail: string,
   classrooms: Classroom[],
   courses: MicroCourse[],
-  isKnownUpdate: boolean
+  isKnownUpdate: boolean,
+  isStudentOwner: boolean = true
 ) {
   const cls = sub.classId ? classrooms.find((c) => c.id === sub.classId) : undefined;
   const course = sub.courseId ? courses.find((c) => c.id === sub.courseId) : undefined;
   const teacherEmail = (cls?.teacherEmail || course?.creatorEmail || '').trim().toLowerCase();
+  const resolvedStudentUid = isStudentOwner
+    ? ownerUid
+    : String((sub as any).studentUid || '').trim() || sanitizeDocId(sub.studentId || ownerUid);
 
   return stripUndefined({
     id: sanitizeDocId(sub.id),
@@ -1271,19 +1380,19 @@ function toSafeHomeworkSubmissionDoc(
     courseTitle: sub.courseTitle ? String(sub.courseTitle).slice(0, 300) : undefined,
     lessonId: sub.lessonId ? sanitizeDocId(sub.lessonId) : undefined,
     lessonTitle: sub.lessonTitle ? String(sub.lessonTitle).slice(0, 300) : undefined,
-    studentUid: ownerUid,
+    studentUid: resolvedStudentUid.slice(0, 128),
     studentId: sanitizeDocId(sub.studentId || ownerUid),
-    studentName: String(sub.studentName || 'Học sinh').slice(0, 150),
-    studentEmail: (sub.studentEmail || ownerEmail).trim().toLowerCase().slice(0, 180),
+    studentName: (String(sub.studentName || '').trim() || 'Học sinh').slice(0, 150),
+    studentEmail: safeNonEmptyEmail(sub.studentEmail || ownerEmail, 'student@edutest.local'),
     studentCode: sub.studentCode ? String(sub.studentCode).slice(0, 60) : undefined,
     teacherEmail: teacherEmail ? teacherEmail.slice(0, 180) : undefined,
-    imageUrls: Array.isArray(sub.imageUrls) ? sub.imageUrls.slice(0, 12) : [],
-    attachments: Array.isArray(sub.attachments) ? sub.attachments.slice(0, 12) : undefined,
+    imageUrls: filterStrings(sub.imageUrls, 20),
+    attachments: Array.isArray(sub.attachments) ? filterObjects(sub.attachments, 20) : undefined,
     textAnswer: sub.textAnswer ? String(sub.textAnswer).slice(0, 50000) : undefined,
     note: sub.note ? String(sub.note).slice(0, 2000) : undefined,
-    submittedAt: String(sub.submittedAt || new Date().toISOString()).slice(0, 64),
-    score: sub.score !== undefined ? Number(sub.score) : undefined,
-    maxScore: sub.maxScore !== undefined ? Number(sub.maxScore) : undefined,
+    submittedAt: (String(sub.submittedAt || '').trim() || new Date().toISOString()).slice(0, 64),
+    score: safeFiniteNumber(sub.score),
+    maxScore: safeFiniteNumber(sub.maxScore),
     teacherFeedback: sub.teacherFeedback ? String(sub.teacherFeedback).slice(0, 4000) : undefined,
     gradedAt: sub.gradedAt ? String(sub.gradedAt).slice(0, 64) : undefined,
     gradedBy: sub.gradedBy ? String(sub.gradedBy).slice(0, 180) : undefined,
@@ -1300,18 +1409,22 @@ function toSafeScoreboardDoc(
 ) {
   return stripUndefined({
     id: sanitizeDocId(sb.id),
-    title: String(sb.title || 'Bảng điểm vinh danh').slice(0, 300),
+    title: (String(sb.title || '').trim() || 'Bảng điểm vinh danh').slice(0, 300),
     description: sb.description ? String(sb.description).slice(0, 2000) : undefined,
-    mode: sb.mode || 'group',
-    topN: sb.topN !== undefined ? Number(sb.topN) : undefined,
-    specialMode: sb.specialMode || 'normal',
+    mode: pickEnum(sb.mode, ['1v1', 'group', 'top_n'] as const, 'group'),
+    topN: safeFiniteNumber(sb.topN),
+    specialMode: pickEnum(
+      sb.specialMode,
+      ['normal', 'creator', 'grading', 'presenting'] as const,
+      'normal'
+    ),
     classId: sb.classId ? String(sb.classId).slice(0, 128) : undefined,
     className: sb.className ? String(sb.className).slice(0, 200) : undefined,
-    rounds: Array.isArray(sb.rounds) ? sb.rounds.slice(0, 50) : [],
-    participants: Array.isArray(sb.participants) ? sb.participants.slice(0, 500) : [],
+    rounds: filterObjects(sb.rounds, 50),
+    participants: filterObjects(sb.participants, 500),
     creatorId: sanitizeDocId(sb.creatorId || ownerUid),
     creatorUid: ownerUid,
-    creatorEmail: (sb.creatorEmail || ownerEmail).trim().toLowerCase().slice(0, 180),
+    creatorEmail: safeNonEmptyEmail(sb.creatorEmail || ownerEmail, 'teacher@edutest.local'),
     creatorName: sb.creatorName ? String(sb.creatorName).slice(0, 150) : undefined,
     createdAtStr: (sb.createdAt || new Date().toISOString()).slice(0, 64),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
@@ -1331,7 +1444,7 @@ function fromFirestoreScoreboardDoc(d: any): Scoreboard {
 }
 
 // =========================================================================
-// BATCHED FIRESTORE WRITES (< 0.3s atomic batch commits)
+// BATCHED FIRESTORE WRITES (< 0.3s atomic batch commits + per-op fallback)
 // =========================================================================
 
 interface BatchWriteOp {
@@ -1343,17 +1456,50 @@ interface BatchWriteOp {
 async function commitBatchOperations(ops: BatchWriteOp[]): Promise<void> {
   if (ops.length === 0) return;
   const CHUNK_SIZE = 400; // Safe margin under Firestore's 500 write limit per batch
+  const failedDetails: { docKey: string; message: string }[] = [];
+
   for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
     const chunk = ops.slice(i, i + CHUNK_SIZE);
     const batch = writeBatch(db);
     for (const op of chunk) {
       batch.set(op.ref, op.data, { merge: true });
     }
-    await batch.commit();
-    for (const op of chunk) {
-      const [col, id] = op.docKey.split('/');
-      markCloudDocKnown(col, id);
+    try {
+      await batch.commit();
+      for (const op of chunk) {
+        const [col, id] = op.docKey.split('/');
+        markCloudDocKnown(col, id);
+      }
+    } catch (batchErr: any) {
+      // Fallback per-op write so a single invalid/denied doc never blocks all valid user writes,
+      // and surface the exact failing document path via FirestoreErrorInfo.
+      await Promise.all(
+        chunk.map(async (op) => {
+          try {
+            await setDoc(op.ref, op.data, { merge: true });
+            const [col, id] = op.docKey.split('/');
+            markCloudDocKnown(col, id);
+          } catch (opErr: any) {
+            const message = opErr instanceof Error ? opErr.message : String(opErr);
+            failedDetails.push({ docKey: op.docKey, message });
+            try {
+              handleFirestoreError(opErr, OperationType.WRITE, op.docKey);
+            } catch {}
+          }
+        })
+      );
+      if (failedDetails.length === 0) {
+        throw batchErr;
+      }
     }
+  }
+
+  if (failedDetails.length > 0) {
+    const summary = failedDetails
+      .slice(0, 5)
+      .map((f) => `${f.docKey}: ${f.message}`)
+      .join(' | ');
+    throw new Error(summary);
   }
 }
 
@@ -1398,8 +1544,14 @@ export async function safeDeleteFirestoreDoc(col: string, id: string): Promise<v
   const fbUser = getFirebaseAuthUser();
   if (!fbUser) return;
   const cleanId = sanitizeDocId(id);
+  const targetRef = doc(db, col, cleanId);
   try {
-    await deleteDoc(doc(db, col, cleanId));
+    const snap = await getDoc(targetRef).catch(() => null);
+    if (snap && !snap.exists()) {
+      knownCloudDocIds.delete(`${col}/${cleanId}`);
+      return;
+    }
+    await deleteDoc(targetRef);
     knownCloudDocIds.delete(`${col}/${cleanId}`);
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `${col}/${cleanId}`);
@@ -1907,10 +2059,8 @@ export async function pushAuthorizedDataToFirestore(
 
   const effectiveUid = fbUser.uid;
   const userEmails = resolveUserAccessEmails(currentUser);
-  const primaryEmail = userEmails[0] || '';
-  const isAdmin =
-    primaryEmail === MASTER_ADMIN_EMAIL_LOWER ||
-    Boolean(currentUser?.isMasterAdmin);
+  const primaryEmail = (fbUser.email || userEmails[0] || '').trim().toLowerCase();
+  const isAdmin = primaryEmail === MASTER_ADMIN_EMAIL_LOWER;
   const isTeacher = isAdmin || currentUser?.role === 'teacher';
   const minTsMs = options?.lastLocalMutationMs ? options.lastLocalMutationMs - 60000 : 0;
 
@@ -1928,14 +2078,16 @@ export async function pushAuthorizedDataToFirestore(
     return false;
   };
 
-  const deletedExamSet = new Set<string>(payload.deletedExamIds || []);
-  const deletedBundleSet = new Set<string>(payload.deletedBundleIds || []);
-  const deletedClassroomSet = new Set<string>(payload.deletedClassroomIds || []);
-  const deletedCourseSet = new Set<string>(payload.deletedCourseIds || []);
-  const deletedResultSet = new Set<string>(payload.deletedResultIds || []);
-  const deletedHomeworkSet = new Set<string>(payload.deletedHomeworkIds || []);
-  const deletedClassroomHwSet = new Set<string>(payload.deletedClassroomHomeworkIds || []);
-  const deletedScoreboardSet = new Set<string>(payload.deletedScoreboardIds || []);
+  const deletedExamSet = new Set<string>(filterStrings(payload.deletedExamIds, 500));
+  const deletedBundleSet = new Set<string>(filterStrings(payload.deletedBundleIds, 500));
+  const deletedClassroomSet = new Set<string>(filterStrings(payload.deletedClassroomIds, 500));
+  const deletedCourseSet = new Set<string>(filterStrings(payload.deletedCourseIds, 500));
+  const deletedResultSet = new Set<string>(filterStrings(payload.deletedResultIds, 500));
+  const deletedHomeworkSet = new Set<string>(filterStrings(payload.deletedHomeworkIds, 500));
+  const deletedClassroomHwSet = new Set<string>(
+    filterStrings(payload.deletedClassroomHomeworkIds, 500)
+  );
+  const deletedScoreboardSet = new Set<string>(filterStrings(payload.deletedScoreboardIds, 500));
 
   const allClassrooms: Classroom[] = payload.classrooms || [];
   const allExams: Exam[] = payload.customExams || [];
@@ -1948,16 +2100,19 @@ export async function pushAuthorizedDataToFirestore(
     // 1. Tombstones & Site Config (write lightweight settings & tombstones)
     const tombPayload = stripUndefined({
       id: 'tombstones',
-      deletedExamIds: (payload.deletedExamIds || []).slice(-500),
-      deletedBundleIds: (payload.deletedBundleIds || []).slice(-500),
-      deletedClassroomIds: (payload.deletedClassroomIds || []).slice(-500),
-      deletedCourseIds: (payload.deletedCourseIds || []).slice(-500),
-      deletedUserIds: (payload.deletedUserIds || []).slice(-500),
-      deletedResultIds: (payload.deletedResultIds || []).slice(-500),
-      deletedHomeworkIds: (payload.deletedHomeworkIds || []).slice(-500),
-      deletedClassroomHomeworkIds: (payload.deletedClassroomHomeworkIds || []).slice(-500),
-      deletedSubjectIds: (payload.deletedSubjectIds || []).slice(-500),
-      deletedScoreboardIds: (payload.deletedScoreboardIds || []).slice(-500),
+      deletedExamIds: filterStrings(payload.deletedExamIds, 500).slice(-500),
+      deletedBundleIds: filterStrings(payload.deletedBundleIds, 500).slice(-500),
+      deletedClassroomIds: filterStrings(payload.deletedClassroomIds, 500).slice(-500),
+      deletedCourseIds: filterStrings(payload.deletedCourseIds, 500).slice(-500),
+      deletedUserIds: filterStrings(payload.deletedUserIds, 500).slice(-500),
+      deletedResultIds: filterStrings(payload.deletedResultIds, 500).slice(-500),
+      deletedHomeworkIds: filterStrings(payload.deletedHomeworkIds, 500).slice(-500),
+      deletedClassroomHomeworkIds: filterStrings(
+        payload.deletedClassroomHomeworkIds,
+        500
+      ).slice(-500),
+      deletedSubjectIds: filterStrings(payload.deletedSubjectIds, 500).slice(-500),
+      deletedScoreboardIds: filterStrings(payload.deletedScoreboardIds, 500).slice(-500),
       updatedById: effectiveUid,
       ...(knownCloudDocIds.has('siteConfig/tombstones')
         ? {}
@@ -1975,7 +2130,7 @@ export async function pushAuthorizedDataToFirestore(
         ref: doc(db, 'siteConfig', 'subjects'),
         data: stripUndefined({
           id: 'subjects',
-          items: payload.subjects.slice(0, 100),
+          items: filterObjects(payload.subjects, 100),
           updatedById: effectiveUid,
           ...(knownCloudDocIds.has('siteConfig/subjects')
             ? {}
@@ -1991,7 +2146,7 @@ export async function pushAuthorizedDataToFirestore(
         ref: doc(db, 'siteConfig', 'navTabs'),
         data: stripUndefined({
           id: 'navTabs',
-          items: payload.navTabs.slice(0, 50),
+          items: filterObjects(payload.navTabs, 50),
           updatedById: effectiveUid,
           ...(knownCloudDocIds.has('siteConfig/navTabs')
             ? {}
@@ -2005,7 +2160,7 @@ export async function pushAuthorizedDataToFirestore(
     if (
       isAdmin &&
       payload.liveTextOverrides &&
-      typeof payload.liveTextOverrides === 'object'
+      isPlainObject(payload.liveTextOverrides)
     ) {
       ops.push({
         ref: doc(db, 'siteConfig', 'liveText'),
@@ -2057,7 +2212,7 @@ export async function pushAuthorizedDataToFirestore(
       }
       for (const delId of deletedExamSet) {
         if (knownCloudDocIds.has(`exams/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('exams', delId));
+          deletePromises.push(safeDeleteFirestoreDoc('exams', delId).catch(() => {}));
         }
       }
     }
@@ -2084,7 +2239,7 @@ export async function pushAuthorizedDataToFirestore(
       }
       for (const delId of deletedBundleSet) {
         if (knownCloudDocIds.has(`bundles/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('bundles', delId));
+          deletePromises.push(safeDeleteFirestoreDoc('bundles', delId).catch(() => {}));
         }
       }
     }
@@ -2111,7 +2266,7 @@ export async function pushAuthorizedDataToFirestore(
       }
       for (const delId of deletedCourseSet) {
         if (knownCloudDocIds.has(`courses/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('courses', delId));
+          deletePromises.push(safeDeleteFirestoreDoc('courses', delId).catch(() => {}));
         }
       }
     }
@@ -2123,7 +2278,7 @@ export async function pushAuthorizedDataToFirestore(
         if (!isOwnedOrCreator(cls.teacherEmail, cls.teacherId)) continue;
         const cleanId = sanitizeDocId(cls.id);
         const key = `classrooms/${cleanId}`;
-        const cleanCode = sanitizeDocId(String(cls.code || '').trim().toUpperCase());
+        const cleanCode = sanitizeDocId(String(cls.code || 'CLASS').trim().toUpperCase()).slice(0, 64);
         const codeKey = `classroomCodes/${cleanCode}`;
         if (!shouldSyncItem(key, cls.updatedAt) && knownCloudDocIds.has(codeKey)) continue;
 
@@ -2139,9 +2294,12 @@ export async function pushAuthorizedDataToFirestore(
             data: stripUndefined({
               code: cleanCode,
               classroomId: cleanId,
-              className: String(cls.name || 'Lớp học').slice(0, 200),
+              className: (String(cls.name || '').trim() || 'Lớp học').slice(0, 200),
               teacherUid: effectiveUid,
-              teacherEmail: (cls.teacherEmail || primaryEmail).trim().toLowerCase().slice(0, 180),
+              teacherEmail: safeNonEmptyEmail(
+                cls.teacherEmail || primaryEmail,
+                'teacher@edutest.local'
+              ),
               teacherName: String(cls.teacherName || 'Giáo viên').slice(0, 150),
               ...(knownCloudDocIds.has(codeKey) ? {} : { createdAt: serverTimestamp() }),
               updatedAt: serverTimestamp(),
@@ -2152,7 +2310,7 @@ export async function pushAuthorizedDataToFirestore(
       }
       for (const delId of deletedClassroomSet) {
         if (knownCloudDocIds.has(`classrooms/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('classrooms', delId));
+          deletePromises.push(safeDeleteFirestoreDoc('classrooms', delId).catch(() => {}));
         }
       }
     }
@@ -2161,9 +2319,10 @@ export async function pushAuthorizedDataToFirestore(
     for (const r of (payload.results || []) as ExamResult[]) {
       if (!r.id || deletedResultSet.has(r.id)) continue;
       const re = (r.userEmail || '').trim().toLowerCase();
-      const isMine =
-        (re && userEmails.includes(re)) || (r.userId && ownerIdsSet.has(r.userId)) || isAdmin;
-      if (!isMine) continue;
+      const isMineByOwner =
+        (Boolean(re) && userEmails.includes(re)) ||
+        Boolean(r.userId && ownerIdsSet.has(r.userId));
+      if (!isMineByOwner && !isAdmin) continue;
       const cleanId = sanitizeDocId(r.id);
       const key = `results/${cleanId}`;
       if (!shouldSyncItem(key, r.updatedAt || r.completedAt)) continue;
@@ -2175,14 +2334,15 @@ export async function pushAuthorizedDataToFirestore(
           primaryEmail,
           allExams,
           allClassrooms,
-          knownCloudDocIds.has(key)
+          knownCloudDocIds.has(key),
+          isMineByOwner
         ),
         docKey: key,
       });
     }
     for (const delId of deletedResultSet) {
       if (knownCloudDocIds.has(`results/${sanitizeDocId(delId)}`)) {
-        deletePromises.push(safeDeleteFirestoreDoc('results', delId));
+        deletePromises.push(safeDeleteFirestoreDoc('results', delId).catch(() => {}));
       }
     }
 
@@ -2231,7 +2391,7 @@ export async function pushAuthorizedDataToFirestore(
       }
       for (const delId of deletedClassroomHwSet) {
         if (knownCloudDocIds.has(`classroomHomeworks/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('classroomHomeworks', delId));
+          deletePromises.push(safeDeleteFirestoreDoc('classroomHomeworks', delId).catch(() => {}));
         }
       }
     }
@@ -2242,7 +2402,7 @@ export async function pushAuthorizedDataToFirestore(
       const se = (sub.studentEmail || '').trim().toLowerCase();
       const parentCls = sub.classId ? allClassrooms.find((c) => c.id === sub.classId) : undefined;
       const isStudentOwner =
-        (se && userEmails.includes(se)) || ownerIdsSet.has(sub.studentId);
+        (Boolean(se) && userEmails.includes(se)) || ownerIdsSet.has(sub.studentId);
       const isClassTeacher = Boolean(
         parentCls && isOwnedOrCreator(parentCls.teacherEmail, parentCls.teacherId)
       );
@@ -2258,14 +2418,15 @@ export async function pushAuthorizedDataToFirestore(
           primaryEmail,
           allClassrooms,
           allCourses,
-          knownCloudDocIds.has(key)
+          knownCloudDocIds.has(key),
+          isStudentOwner
         ),
         docKey: key,
       });
     }
     for (const delId of deletedHomeworkSet) {
       if (knownCloudDocIds.has(`homeworkSubmissions/${sanitizeDocId(delId)}`)) {
-        deletePromises.push(safeDeleteFirestoreDoc('homeworkSubmissions', delId));
+        deletePromises.push(safeDeleteFirestoreDoc('homeworkSubmissions', delId).catch(() => {}));
       }
     }
 
@@ -2273,8 +2434,11 @@ export async function pushAuthorizedDataToFirestore(
     for (const req of (payload.teacherRequests || []) as TeacherRoleRequest[]) {
       if (!req.id) continue;
       const re = (req.userEmail || '').trim().toLowerCase();
-      const isMine = (re && userEmails.includes(re)) || ownerIdsSet.has(req.userId);
+      const isMine = (Boolean(re) && userEmails.includes(re)) || ownerIdsSet.has(req.userId);
       if (!isMine && !isAdmin) continue;
+      const status = pickEnum(req.status, ['pending', 'approved', 'rejected'] as const, 'pending');
+      // Non-admins can only create or update pending requests; approved/rejected are admin-only
+      if (!isAdmin && status !== 'pending') continue;
       const cleanId = sanitizeDocId(req.id);
       const key = `teacherRequests/${cleanId}`;
       if (!shouldSyncItem(key, req.updatedAt || req.reviewedAt)) continue;
@@ -2282,14 +2446,18 @@ export async function pushAuthorizedDataToFirestore(
         ref: doc(db, 'teacherRequests', cleanId),
         data: stripUndefined({
           id: cleanId,
-          userUid: ownerIdsSet.has(req.userId) ? effectiveUid : sanitizeDocId(req.userId),
-          userId: sanitizeDocId(req.userId),
-          userEmail: (req.userEmail || primaryEmail).trim().toLowerCase().slice(0, 180),
-          userName: String(req.userName || 'Người dùng').slice(0, 150),
+          userUid: isAdmin
+            ? ownerIdsSet.has(req.userId)
+              ? effectiveUid
+              : sanitizeDocId(req.userId)
+            : effectiveUid,
+          userId: sanitizeDocId(req.userId || effectiveUid),
+          userEmail: safeNonEmptyEmail(req.userEmail || primaryEmail, 'user@edutest.local'),
+          userName: (String(req.userName || '').trim() || 'Người dùng').slice(0, 150),
           schoolName: req.schoolName ? String(req.schoolName).slice(0, 200) : undefined,
           subject: req.subject ? String(req.subject).slice(0, 100) : undefined,
           reason: req.reason ? String(req.reason).slice(0, 2000) : undefined,
-          status: req.status || 'pending',
+          status,
           createdAtStr: (req.createdAt || new Date().toISOString()).slice(0, 64),
           reviewedAt: req.reviewedAt ? String(req.reviewedAt).slice(0, 64) : undefined,
           reviewedBy: req.reviewedBy ? String(req.reviewedBy).slice(0, 180) : undefined,
@@ -2304,20 +2472,34 @@ export async function pushAuthorizedDataToFirestore(
     for (const fb of (payload.feedbacks || []) as FeedbackItem[]) {
       if (!fb.id) continue;
       const fe = (fb.email || '').trim().toLowerCase();
-      if (!((fe && userEmails.includes(fe)) || isAdmin || !fb.email)) continue;
+      const isMyFeedback =
+        (Boolean(fe) && userEmails.includes(fe)) ||
+        (fb as any).authorUid === effectiveUid;
+      if (!isMyFeedback && !isAdmin) continue;
       const cleanId = sanitizeDocId(fb.id);
       const key = `feedbacks/${cleanId}`;
+      // Non-admins only have create permission on feedbacks; updates are Master Admin only
+      if (!isAdmin && knownCloudDocIds.has(key)) continue;
       if (!shouldSyncItem(key, fb.updatedAt || fb.createdAt)) continue;
+      const safeRating = Math.min(5, Math.max(1, safeFiniteNumber(fb.rating) ?? 5));
       ops.push({
         ref: doc(db, 'feedbacks', cleanId),
         data: stripUndefined({
           id: cleanId,
-          authorUid: effectiveUid,
-          rating: Number(fb.rating || 5),
-          category: fb.category || 'general',
-          comments: String(fb.comments || '').slice(0, 4000),
+          authorUid:
+            isAdmin && (fb as any).authorUid
+              ? String((fb as any).authorUid).slice(0, 128)
+              : effectiveUid,
+          rating: safeRating,
+          category: pickEnum(
+            fb.category,
+            ['ui', 'exams', 'feature', 'bug', 'general'] as const,
+            'general'
+          ),
+          comments: (String(fb.comments || '').trim() || 'Góp ý').slice(0, 4000),
           userName: fb.userName ? String(fb.userName).slice(0, 150) : undefined,
-          userRole: fb.userRole || undefined,
+          userRole:
+            fb.userRole === 'student' || fb.userRole === 'teacher' ? fb.userRole : undefined,
           email: fb.email ? String(fb.email).trim().toLowerCase().slice(0, 180) : undefined,
           createdAtStr: (fb.createdAt || new Date().toISOString()).slice(0, 64),
           ...(knownCloudDocIds.has(key) ? {} : { createdAt: serverTimestamp() }),
@@ -2343,7 +2525,7 @@ export async function pushAuthorizedDataToFirestore(
       }
       for (const delId of deletedScoreboardSet) {
         if (knownCloudDocIds.has(`scoreboards/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('scoreboards', delId));
+          deletePromises.push(safeDeleteFirestoreDoc('scoreboards', delId).catch(() => {}));
         }
       }
     }

@@ -775,11 +775,13 @@ export const BundleCreator: React.FC<BundleCreatorProps> = ({
                   min={0}
                   value={minSubmitMinutes}
                   onChange={(e) => setMinSubmitMinutes(Math.max(0, Number(e.target.value)))}
-                  placeholder="0 = nộp bất kỳ lúc nào"
+                  placeholder="0 = đúng hết giờ mới nộp"
                   className="w-24 px-2.5 py-1 text-xs bg-white border border-indigo-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-600 font-bold"
                 />
                 <span className="text-[11px] text-indigo-900">
-                  {minSubmitMinutes > 0 ? `Làm tối thiểu ${minSubmitMinutes}p mới được nộp` : 'Tự do nộp bài bất kỳ lúc nào'}
+                  {minSubmitMinutes > 0
+                    ? `Làm tối thiểu ${minSubmitMinutes}p mới được nộp`
+                    : 'Mặc định (0): Phải làm đúng hết giờ mới được nộp'}
                 </span>
               </div>
             </div>

@@ -19,6 +19,7 @@ export type AppViewRoute =
   | 'classrooms'
   | 'courses'
   | 'battle'
+  | 'games'
   | 'analytics'
   | 'teacher-tools';
 
@@ -104,6 +105,8 @@ export function buildNavTabPath(
       return '/khoa-hoc';
     case 'battle':
       return '/dau-truong';
+    case 'games':
+      return '/tro-choi';
     case 'history':
       return '/lich-su-thi';
     case 'analytics':
@@ -165,6 +168,7 @@ export function buildAppUrlPath(params: {
   activeBundleTitle?: string;
   editingExamTitle?: string;
   resultExamTitle?: string;
+  gameRoomCode?: string;
 }): string {
   const {
     currentView,
@@ -177,6 +181,7 @@ export function buildAppUrlPath(params: {
     activeBundleTitle,
     editingExamTitle,
     resultExamTitle,
+    gameRoomCode,
   } = params;
 
   switch (currentView) {
@@ -193,6 +198,8 @@ export function buildAppUrlPath(params: {
       return buildClassroomUrlPath(classroomState || {});
     case 'battle':
       return '/dau-truong';
+    case 'games':
+      return gameRoomCode ? `/tro-choi/${gameRoomCode.toUpperCase()}` : '/tro-choi';
     case 'history':
       return '/lich-su-thi';
     case 'analytics':
@@ -233,6 +240,7 @@ export interface ParsedAppRoute {
   courseLessonSlug?: string;
   classroomId?: string;
   classroomTab?: ClassroomTabRouteId;
+  gameRoomCode?: string;
 }
 
 export function resolveCourseSegments(
@@ -408,6 +416,12 @@ export function parsePathnameToRoute(
   }
 
   if (root === 'dau-truong') return { view: 'battle' };
+  if (root === 'tro-choi') {
+    return {
+      view: 'games',
+      gameRoomCode: segments[1] ? segments[1].trim().toUpperCase() : undefined,
+    };
+  }
   if (root === 'lich-su-thi') return { view: 'history' };
   if (root === 'phan-tich-nang-luc') return { view: 'analytics' };
   if (root === 'cong-cu-giao-vien') return { view: 'teacher-tools' };

@@ -25,7 +25,7 @@ service cloud.firestore {
     }
 
     function userEmail() {
-      return hasEmail() ? request.auth.token.email : '';
+      return hasEmail() ? request.auth.token.email.lower() : '';
     }
 
     function isAdmin() {
@@ -322,6 +322,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'examId', 'examTitle', 'subject', 'grade', 'studentUid', 'userId', 'userEmail',
           'teacherEmail', 'studentName', 'studentCode', 'classId', 'className',
+          'bundleId', 'bundleAttemptId',
           'earnedPoints', 'totalPoints', 'scoreOnTenScale', 'score', 'percentage',
           'correctCount', 'partialCount', 'wrongCount', 'skippedCount', 'totalQuestions',
           'timeSpentSeconds', 'totalDurationSeconds', 'completedAt', 'examCode',
@@ -342,6 +343,8 @@ service cloud.firestore {
         && (!('studentCode' in data) || isValidString(data.studentCode, 0, 60))
         && (!('classId' in data) || isValidString(data.classId, 0, 128))
         && (!('className' in data) || isValidString(data.className, 0, 200))
+        && (!('bundleId' in data) || isValidString(data.bundleId, 0, 128))
+        && (!('bundleAttemptId' in data) || isValidString(data.bundleAttemptId, 0, 128))
         && data.score is number
         && isValidString(data.completedAt, 1, 64)
         && (!('examCode' in data) || isValidString(data.examCode, 0, 32))

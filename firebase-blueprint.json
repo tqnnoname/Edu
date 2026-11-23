@@ -866,6 +866,14 @@
           "type": "string",
           "maxLength": 200
         },
+        "bundleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "bundleAttemptId": {
+          "type": "string",
+          "maxLength": 128
+        },
         "earnedPoints": {
           "type": "number"
         },

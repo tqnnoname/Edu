@@ -306,9 +306,9 @@ export interface CandidateProfile {
 export function getCandidateProfile(): CandidateProfile {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_CANDIDATE_PROFILE);
-    return raw ? JSON.parse(raw) : { fullName: 'Thí sinh tự do', studentCode: 'SBD-' + Math.floor(1000 + Math.random() * 9000) };
+    return raw ? JSON.parse(raw) : { fullName: 'Thí sinh tự do', studentCode: '' };
   } catch {
-    return { fullName: 'Thí sinh tự do', studentCode: 'SBD-1205' };
+    return { fullName: 'Thí sinh tự do', studentCode: '' };
   }
 }
 
@@ -319,6 +319,78 @@ export function saveCandidateProfile(profile: CandidateProfile): void {
   } catch (err) {
     console.error('Error saving candidate profile', err);
   }
+}
+
+export function doesResultBelongToUser(
+  result: ExamResult,
+  user: UserAccount | null,
+  fallbackProfile?: CandidateProfile | null
+): boolean {
+  if (user) {
+    const uid = user.id || user.uid;
+    const uEmail = (user.email || '').trim().toLowerCase();
+    if (result.userId && uid && result.userId === uid) return true;
+    if (result.userEmail && uEmail && result.userEmail.trim().toLowerCase() === uEmail) return true;
+    if (!result.userId && !result.userEmail) {
+      if (user.studentCode && result.studentCode && result.studentCode.trim() === user.studentCode.trim()) return true;
+      if (user.username && result.studentName && result.studentName.trim().toLowerCase() === user.username.trim().toLowerCase()) return true;
+      if (user.fullName && result.studentName && result.studentName.trim().toLowerCase() === user.fullName.trim().toLowerCase()) return true;
+    }
+    return false;
+  }
+  if (!result.userId && !result.userEmail) {
+    return true;
+  }
+  if (fallbackProfile?.studentCode && result.studentCode && result.studentCode === fallbackProfile.studentCode) {
+    return true;
+  }
+  return false;
+}
+
+export function getUserAttemptCountForExam(
+  examId: string,
+  results: ExamResult[],
+  user: UserAccount | null,
+  fallbackProfile?: CandidateProfile | null
+): number {
+  return results.filter(
+    (r) => r.examId === examId && doesResultBelongToUser(r, user, fallbackProfile)
+  ).length;
+}
+
+export function getUserAttemptCountForBundle(
+  bundle: ExamBundle,
+  results: ExamResult[],
+  user: UserAccount | null,
+  fallbackProfile?: CandidateProfile | null
+): number {
+  const userResults = results.filter((r) => doesResultBelongToUser(r, user, fallbackProfile));
+  if (userResults.length === 0) return 0;
+
+  const taggedAttemptIds = new Set<string>();
+  userResults.forEach((r) => {
+    if (r.bundleId === bundle.id && r.bundleAttemptId) {
+      taggedAttemptIds.add(r.bundleAttemptId);
+    }
+  });
+
+  const legacyResults = userResults.filter((r) => !r.bundleAttemptId);
+  let legacyCount = 0;
+  if (bundle.compulsoryExamIds && bundle.compulsoryExamIds.length > 0) {
+    const firstCompId = bundle.compulsoryExamIds[0];
+    legacyCount = legacyResults.filter((r) => r.examId === firstCompId).length;
+  } else if (bundle.examIds && bundle.examIds.length > 0) {
+    if (bundle.selectionMode !== 'has_electives') {
+      legacyCount = legacyResults.filter((r) => r.examId === bundle.examIds[0]).length;
+    } else {
+      legacyCount = Math.max(
+        0,
+        ...bundle.examIds.map((exId) => legacyResults.filter((r) => r.examId === exId).length)
+      );
+    }
+  }
+
+  return taggedAttemptIds.size + legacyCount;
 }
 
 // --- Exams Storage ---
@@ -620,21 +692,53 @@ export function deleteSubject(subjectId: string): void {
 }
 
 // --- Customizable Navigation Tabs ---
+const STORAGE_KEY_GAMES_TAB_MIGRATED = 'edutest_games_tab_migrated_v1';
+
 export const DEFAULT_NAV_TABS: NavTabItem[] = [
   { id: 'tab_single', label: 'Đề thi theo môn', iconName: 'book', targetView: 'single', isDefault: true },
   { id: 'tab_bundle', label: 'Tổ hợp liên môn', iconName: 'layers', targetView: 'bundle', isDefault: true },
   { id: 'tab_classes', label: 'Lớp học & Xếp hạng', iconName: 'users', targetView: 'classrooms', isDefault: true },
   { id: 'tab_courses', label: 'Khóa học lý thuyết', iconName: 'graduation', targetView: 'courses', isDefault: true },
   { id: 'tab_battle', label: 'Đấu trường 1v1', iconName: 'swords', targetView: 'battle', badgeText: 'HOT', isDefault: true },
+  { id: 'tab_games', label: 'Trò chơi', iconName: 'gamepad', targetView: 'games', badgeText: 'MỚI', isDefault: true },
   { id: 'tab_analytics', label: 'Năng lực cá nhân', iconName: 'chart', targetView: 'analytics', isDefault: true },
   { id: 'tab_history', label: 'Lịch sử thi', iconName: 'clock', targetView: 'history', isDefault: true },
 ];
+
+const DEFAULT_GAMES_TAB: NavTabItem = {
+  id: 'tab_games',
+  label: 'Trò chơi',
+  iconName: 'gamepad',
+  targetView: 'games',
+  badgeText: 'MỚI',
+  isDefault: true,
+};
+
+function injectGamesTabIfNeeded(tabs: NavTabItem[]): { tabs: NavTabItem[]; injected: boolean } {
+  const hasGames = tabs.some((t) => t.targetView === 'games' || t.id === 'tab_games');
+  if (hasGames || localStorage.getItem(STORAGE_KEY_GAMES_TAB_MIGRATED) === '1') {
+    if (hasGames) {
+      localStorage.setItem(STORAGE_KEY_GAMES_TAB_MIGRATED, '1');
+    }
+    return { tabs, injected: false };
+  }
+  const next = [...tabs];
+  const battleIdx = next.findIndex((t) => t.targetView === 'battle' || t.id === 'tab_battle');
+  if (battleIdx >= 0) {
+    next.splice(battleIdx + 1, 0, DEFAULT_GAMES_TAB);
+  } else {
+    next.push(DEFAULT_GAMES_TAB);
+  }
+  localStorage.setItem(STORAGE_KEY_GAMES_TAB_MIGRATED, '1');
+  return { tabs: next, injected: true };
+}
 
 export function getNavTabs(): NavTabItem[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_NAV_TABS);
     if (!raw) {
       localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(DEFAULT_NAV_TABS));
+      localStorage.setItem(STORAGE_KEY_GAMES_TAB_MIGRATED, '1');
       return DEFAULT_NAV_TABS;
     }
     const parsed: NavTabItem[] = JSON.parse(raw);
@@ -653,10 +757,11 @@ export function getNavTabs(): NavTabItem[] {
         }
         return t;
       });
-    if (changed) {
-      localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(filtered));
+    const migrated = injectGamesTabIfNeeded(filtered);
+    if (changed || migrated.injected) {
+      localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(migrated.tabs));
     }
-    return filtered.length > 0 ? filtered : DEFAULT_NAV_TABS;
+    return migrated.tabs.length > 0 ? migrated.tabs : DEFAULT_NAV_TABS;
   } catch (e) {
     console.error(e);
     return DEFAULT_NAV_TABS;
@@ -1810,7 +1915,7 @@ export async function registerUserAccount(data: {
 
   const optimisticUser = buildOptimisticUserFromFirebase(authRes.user, hints);
   setCurrentUser(optimisticUser);
-  reconcileUserProfileInBackground(authRes.user, hints);
+  reconcileUserProfileInBackground(authRes.user, hints, { markActivated: true });
   return { success: true, user: optimisticUser };
 }
 
@@ -1877,6 +1982,16 @@ export async function loginUserAccount(
       email: resolvedEmail,
       password: inputPass,
     });
+    if (
+      !authRes.success &&
+      pass !== inputPass &&
+      (authRes.code === 'auth/invalid-credential' || authRes.code === 'auth/wrong-password')
+    ) {
+      authRes = await signInWithEmailPasswordFirebase({
+        email: resolvedEmail,
+        password: pass,
+      });
+    }
   }
 
   if (!authRes.success || !authRes.user) {
@@ -1890,12 +2005,12 @@ export async function loginUserAccount(
     (await syncProfileWithBackend(
       authRes.user,
       { fullName: prefillFullName },
-      { markActivated: needsFirebaseProvision }
+      { markActivated: true }
     )) || buildOptimisticUserFromFirebase(authRes.user, { fullName: prefillFullName });
 
   setCurrentUser(syncedUser);
   reconcileUserProfileInBackground(authRes.user, syncedUser, {
-    markActivated: needsFirebaseProvision,
+    markActivated: true,
   });
   return { success: true, user: syncedUser };
 }
@@ -1918,10 +2033,10 @@ export async function loginWithGoogleAccount(): Promise<{
   };
 
   const optimisticUser =
-    (await syncProfileWithBackend(res.user, hints)) ||
+    (await syncProfileWithBackend(res.user, hints, { markActivated: true })) ||
     buildOptimisticUserFromFirebase(res.user, hints);
   setCurrentUser(optimisticUser);
-  reconcileUserProfileInBackground(res.user, optimisticUser);
+  reconcileUserProfileInBackground(res.user, optimisticUser, { markActivated: true });
   return { success: true, user: optimisticUser };
 }
 
@@ -1964,7 +2079,7 @@ export async function syncUserSessionFromFirebaseAuth(
   setCurrentUser(optimistic);
 
   try {
-    const backendProfile = await syncProfileWithBackend(fbUser, optimistic);
+    const backendProfile = await syncProfileWithBackend(fbUser, optimistic, { markActivated: true });
     const unified = await resolveOrCreateUnifiedUserProfile(fbUser, {
       ...optimistic,
       ...(backendProfile || {}),
@@ -2048,6 +2163,10 @@ export async function changePasswordDirectly(
   if (active) {
     const updated = { ...active, updatedAt: new Date().toISOString() };
     setCurrentUser(updated);
+  }
+  const fbUser = getFirebaseAuthUser();
+  if (fbUser) {
+    await syncProfileWithBackend(fbUser, active || undefined, { markActivated: true });
   }
   return { success: true, linkedNewPassword: res.linkedNewPassword };
 }
@@ -3727,7 +3846,8 @@ function applyMergedSnapshotToLocalStorage(
     if (!hasLocalTabs || incomingNavTs > localNavTs || (incomingNavTs === localNavTs && preferIncomingOnTie)) {
       const filtered = sourceData.navTabs.filter((t: NavTabItem) => (t as any).targetView !== 'oj' && t.id !== 'tab_oj');
       if (filtered.length > 0) {
-        localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(filtered));
+        const migrated = injectGamesTabIfNeeded(filtered);
+        localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(migrated.tabs));
         if (sourceData.navTabsUpdatedAt) {
           localStorage.setItem(STORAGE_KEY_NAV_TABS_UPDATED_AT, String(sourceData.navTabsUpdatedAt));
         }

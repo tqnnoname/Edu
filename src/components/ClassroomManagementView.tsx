@@ -73,6 +73,8 @@ import {
   isResultHiddenFromStudent,
   getPendingJoinRequestForClass,
   clearTrackedJoinRequestForClass,
+  getUserAttemptCountForExam,
+  getUserAttemptCountForBundle,
 } from '../utils/storage';
 import { ConfirmModal } from './ConfirmModal';
 import { ClassroomHomeworkTab } from './ClassroomHomeworkTab';
@@ -1782,6 +1784,15 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {assignedExams.map((exam) => {
                         const examSubmissionCount = classResults.filter((r) => r.examId === exam.id).length;
+                        const myAttemptCount = getUserAttemptCountForExam(exam.id, results, user);
+                        const maxAtt = exam.maxAttempts || 0;
+                        const isAttemptsExceeded = !isTeacher && maxAtt > 0 && myAttemptCount >= maxAtt;
+                        const schedCheck = isItemScheduleOpen({
+                          openTime: exam.openTime,
+                          closeTime: exam.closeTime,
+                          status: exam.status,
+                        });
+                        const isBlocked = !isTeacher && (isAttemptsExceeded || !schedCheck.isOpen);
                         return (
                           <div
                             key={exam.id}
@@ -1795,30 +1806,51 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                               <h4 className="font-bold text-slate-900 text-sm mb-2 line-clamp-2">
                                 {exam.title}
                               </h4>
-                              <div className="text-xs text-slate-500 mb-3 flex items-center gap-2">
+                              <div className="text-xs text-slate-500 mb-3 flex items-center gap-2 flex-wrap">
                                 <span>{exam.questions.length} câu</span>
                                 <span>·</span>
                                 <span className="font-mono font-bold text-blue-700">{exam.totalPoints || 10}đ</span>
+                                {maxAtt > 0 && (
+                                  <>
+                                    <span>·</span>
+                                    <span className={`font-semibold ${isAttemptsExceeded ? 'text-rose-700' : 'text-slate-600'}`}>
+                                      Lượt: {!isTeacher ? `${myAttemptCount}/${maxAtt}` : `Tối đa ${maxAtt}`}
+                                    </span>
+                                  </>
+                                )}
                               </div>
                             </div>
 
                             <div className="pt-3 border-t border-slate-100 space-y-2">
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => onStartExam(exam, 'exam', currentClass.id)}
-                                  className="flex-1 py-1.5 px-3 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition-colors cursor-pointer text-center"
-                                >
-                                  Làm đề thi
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => onStartExam(exam, 'practice', currentClass.id)}
-                                  className="py-1.5 px-2.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer"
-                                >
-                                  Luyện tập
-                                </button>
-                              </div>
+                              {isBlocked ? (
+                                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold flex items-center justify-center gap-1.5">
+                                  <Lock className="w-3.5 h-3.5 shrink-0" />
+                                  <span>
+                                    {isAttemptsExceeded
+                                      ? `Đã hết lượt thi (${myAttemptCount}/${maxAtt})`
+                                      : schedCheck.statusLabel || 'Đang đóng đề'}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => onStartExam(exam, 'exam', currentClass.id)}
+                                    className="flex-1 py-1.5 px-3 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition-colors cursor-pointer text-center"
+                                  >
+                                    Làm đề thi
+                                  </button>
+                                  {exam.modeType !== 'exam_only' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onStartExam(exam, 'practice', currentClass.id)}
+                                      className="py-1.5 px-2.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer"
+                                    >
+                                      Luyện tập
+                                    </button>
+                                  )}
+                                </div>
+                              )}
 
                               {isTeacher && (
                                 <div className="space-y-1.5">
@@ -1868,34 +1900,57 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                         Tổ hợp liên môn riêng của lớp ({assignedBundles.length})
                       </h4>
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {assignedBundles.map((bundle) => (
-                          <div
-                            key={bundle.id}
-                            className="bg-purple-50/50 p-5 rounded-xl border border-purple-200 hover:border-purple-300 shadow-xs flex flex-col justify-between"
-                          >
-                            <div>
-                              <div className="flex items-center justify-between text-xs text-purple-700 mb-2">
-                                <span className="font-bold uppercase">Tổ hợp lớp</span>
-                                <span className="font-mono">{bundle.examIds.length} môn</span>
+                        {assignedBundles.map((bundle) => {
+                          const myBundleAttempts = getUserAttemptCountForBundle(bundle, results, user);
+                          const maxAtt = bundle.maxAttempts || 0;
+                          const isBundleAttemptsExceeded = !isTeacher && maxAtt > 0 && myBundleAttempts >= maxAtt;
+                          const bSched = isItemScheduleOpen({
+                            openTime: bundle.openTime,
+                            closeTime: bundle.closeTime,
+                            status: bundle.status,
+                          });
+                          const isBundleBlocked = !isTeacher && (isBundleAttemptsExceeded || !bSched.isOpen);
+
+                          return (
+                            <div
+                              key={bundle.id}
+                              className="bg-purple-50/50 p-5 rounded-xl border border-purple-200 hover:border-purple-300 shadow-xs flex flex-col justify-between"
+                            >
+                              <div>
+                                <div className="flex items-center justify-between text-xs text-purple-700 mb-2">
+                                  <span className="font-bold uppercase">Tổ hợp lớp</span>
+                                  <span className="font-mono">{bundle.examIds.length} môn</span>
+                                </div>
+                                <h4 className="font-bold text-slate-900 text-sm mb-1.5 line-clamp-2">
+                                  {bundle.title}
+                                </h4>
+                                <p className="text-xs text-slate-600 line-clamp-2 mb-3">
+                                  {bundle.description}
+                                </p>
                               </div>
-                              <h4 className="font-bold text-slate-900 text-sm mb-1.5 line-clamp-2">
-                                {bundle.title}
-                              </h4>
-                              <p className="text-xs text-slate-600 line-clamp-2 mb-3">
-                                {bundle.description}
-                              </p>
+                              {onStartBundle && (
+                                isBundleBlocked ? (
+                                  <div className="w-full py-2 px-3 text-xs font-bold bg-rose-50 text-rose-800 border border-rose-200 rounded-lg flex items-center justify-center gap-1.5">
+                                    <Lock className="w-3.5 h-3.5 shrink-0" />
+                                    <span>
+                                      {isBundleAttemptsExceeded
+                                        ? `Đã hết lượt (${myBundleAttempts}/${maxAtt})`
+                                        : bSched.statusLabel || 'Đang đóng'}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => onStartBundle(bundle, currentClass.id)}
+                                    className="w-full py-2 px-3 text-xs font-bold bg-purple-700 hover:bg-purple-800 text-white rounded-lg transition-colors cursor-pointer"
+                                  >
+                                    Bắt đầu thi tổ hợp
+                                  </button>
+                                )
+                              )}
                             </div>
-                            {onStartBundle && (
-                              <button
-                                type="button"
-                                onClick={() => onStartBundle(bundle, currentClass.id)}
-                                className="w-full py-2 px-3 text-xs font-bold bg-purple-700 hover:bg-purple-800 text-white rounded-lg transition-colors cursor-pointer"
-                              >
-                                Bắt đầu thi tổ hợp
-                              </button>
-                            )}
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}

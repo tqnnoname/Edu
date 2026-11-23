@@ -24,6 +24,7 @@ interface BundleCardProps {
   bundle: ExamBundle;
   allExams: Exam[];
   userRole?: UserRole;
+  attemptCount?: number;
   onStartBundle: (bundle: ExamBundle, selectedExamsOverride?: Exam[]) => void;
   onSelectElectives?: (bundle: ExamBundle) => void;
   onEditBundle?: (bundle: ExamBundle) => void;
@@ -34,6 +35,7 @@ export const BundleCard: React.FC<BundleCardProps> = ({
   bundle,
   allExams,
   userRole = 'student',
+  attemptCount = 0,
   onStartBundle,
   onSelectElectives,
   onEditBundle,
@@ -57,6 +59,12 @@ export const BundleCard: React.FC<BundleCardProps> = ({
   });
 
   const isBlockedBySchedule = !isTeacher && !scheduleCheck.isOpen;
+  const isAttemptsExceeded =
+    !isTeacher &&
+    bundle.maxAttempts !== undefined &&
+    bundle.maxAttempts > 0 &&
+    attemptCount >= bundle.maxAttempts;
+  const isBlockedForStudent = isBlockedBySchedule || isAttemptsExceeded;
 
   const memberExams = bundle.examIds
     .map((id) => allExams.find((e) => e.id === id))
@@ -73,12 +81,8 @@ export const BundleCard: React.FC<BundleCardProps> = ({
   const totalQuestions = memberExams.reduce((acc, e) => acc + e.questions.length, 0);
 
   const handleStartClick = () => {
-    if (isBlockedBySchedule) return;
-    if (isElectiveMode && onSelectElectives && electiveGroups.length > 0) {
-      onSelectElectives(bundle);
-    } else {
-      onStartBundle(bundle);
-    }
+    if (isBlockedForStudent) return;
+    onStartBundle(bundle);
   };
 
   const formatDateTimeStr = (isoOrLocal?: string) => {
@@ -206,6 +210,18 @@ export const BundleCard: React.FC<BundleCardProps> = ({
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-cyan-50 text-cyan-800 border border-cyan-200">
               <Eye className="w-3 h-3 text-cyan-600" />
               Chỉ xem bài đã làm
+            </span>
+          )}
+
+          {bundle.maxAttempts !== undefined && bundle.maxAttempts > 0 && (
+            <span
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border ${
+                isAttemptsExceeded
+                  ? 'bg-rose-50 text-rose-800 border-rose-200'
+                  : 'bg-slate-100 text-slate-700 border-slate-200'
+              }`}
+            >
+              Lượt: {!isTeacher ? `${attemptCount}/${bundle.maxAttempts}` : `Tối đa ${bundle.maxAttempts}`}
             </span>
           )}
         </div>
@@ -338,14 +354,19 @@ export const BundleCard: React.FC<BundleCardProps> = ({
       <div className="pt-3 border-t border-slate-100 flex items-center gap-2">
         <button
           onClick={handleStartClick}
-          disabled={isBlockedBySchedule}
+          disabled={isBlockedForStudent}
           className={`flex-1 py-2.5 px-4 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-xs ${
-            isBlockedBySchedule 
-              ? 'bg-slate-300 text-slate-500 cursor-not-allowed' 
+            isBlockedForStudent
+              ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
               : 'text-white bg-purple-700 hover:bg-purple-800 active:bg-purple-900 cursor-pointer'
           }`}
         >
-          {isBlockedBySchedule ? (
+          {isAttemptsExceeded ? (
+            <>
+              <Lock className="w-3.5 h-3.5" />
+              <span>Đã hết lượt thi ({attemptCount}/{bundle.maxAttempts})</span>
+            </>
+          ) : isBlockedBySchedule ? (
             <span>Đang đóng (Chưa mở thi)</span>
           ) : isElectiveMode ? (
             <>
