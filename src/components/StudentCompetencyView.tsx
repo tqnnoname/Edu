@@ -439,9 +439,10 @@ export const StudentCompetencyView: React.FC<StudentCompetencyViewProps> = ({
               type="button"
               onClick={() => {
                 const coursesProgress = myCoursesProgress.map(({ course, progress, pct, status }) => {
-                  const totalLessons = course.chapters
-                    ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
-                    : course.lessons?.length || 0;
+                  const totalLessons =
+                    course.chapters && course.chapters.length > 0
+                      ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
+                      : course.lessonCount ?? course.lessons?.length ?? 0;
                   const statusLabel =
                     status === 'passed'
                       ? 'Đạt chuẩn'

@@ -65,6 +65,22 @@ import {
 import { processImageFile } from '../utils/imageUpload';
 import { CopyContentButton } from './CopyContentButton';
 import { formatQuestionForCopy } from '../utils/clipboard';
+import {
+  AttachedImageBox,
+  InlineImageStrip,
+  InlineImageTitleModal,
+} from './InlineImageTitleModal';
+import {
+  buildQuestionInlineImagesMap,
+  extractImageFileFromClipboardEvent,
+  formatInlineImageToken,
+  registerImplicitImage,
+  registerImplicitImagesMap,
+} from '../utils/inlineImages';
+import {
+  EditableTextElement,
+  insertTextAtEditableElement,
+} from '../utils/cursorInsert';
 
 interface ExamCreatorDraftPayload {
   title: string;
@@ -129,7 +145,10 @@ function sanitizeQuestionByActiveType(q: Question): Question {
     points: q.points,
     question: q.question,
     imageUrl: q.imageUrl,
+    imageCaption: q.imageCaption?.trim() || undefined,
     explanation: q.explanation,
+    explanationImageUrl: q.explanationImageUrl?.trim() || undefined,
+    explanationImageCaption: q.explanationImageCaption?.trim() || undefined,
     topic: q.topic,
     difficulty: q.difficulty,
     caseSensitive: q.caseSensitive,
@@ -155,16 +174,26 @@ function sanitizeQuestionByActiveType(q: Question): Question {
     cleaned.matchingRightItems = q.matchingRightItems;
     cleaned.matchingCorrectPairs = q.matchingCorrectPairs;
   } else if (q.type === 'grouped') {
-    cleaned.subQuestions = (q.subQuestions || []).map((sub) =>
-      sub.type === 'text_input'
-        ? {
-            ...sub,
-            acceptedAnswers: parseAcceptedShortAnswers((sub.acceptedAnswers || []).join('; ')),
-          }
-        : sub
-    );
+    cleaned.subQuestions = (q.subQuestions || []).map((sub) => {
+      const normalizedSub: Question =
+        sub.type === 'text_input'
+          ? {
+              ...sub,
+              acceptedAnswers: parseAcceptedShortAnswers((sub.acceptedAnswers || []).join('; ')),
+            }
+          : { ...sub };
+      const subMap = buildQuestionInlineImagesMap(normalizedSub);
+      return {
+        ...normalizedSub,
+        imageCaption: normalizedSub.imageCaption?.trim() || undefined,
+        explanationImageUrl: normalizedSub.explanationImageUrl?.trim() || undefined,
+        explanationImageCaption: normalizedSub.explanationImageCaption?.trim() || undefined,
+        inlineImages: subMap,
+      };
+    });
   }
 
+  cleaned.inlineImages = buildQuestionInlineImagesMap(cleaned);
   return cleaned;
 }
 
@@ -430,8 +459,20 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
   });
 
   const [previewMap, setPreviewMap] = useState<{ [qId: string]: boolean }>({});
+  const isPreviewVisible = (qId: string) => previewMap[qId] !== false;
   const [isFullPreviewOpen, setIsFullPreviewOpen] = useState(false);
   const questionCardRefs = React.useRef<{ [qId: string]: HTMLDivElement | null }>({});
+  const fieldTextareaRefs = React.useRef<{ [key: string]: EditableTextElement | null }>({});
+  const [cursorImageModal, setCursorImageModal] = useState<{
+    isOpen: boolean;
+    qIdx: number;
+    subIdx?: number;
+    field: 'question' | 'sampleAnswer' | 'explanation' | 'subQuestion' | 'subExplanation';
+    initialImageSrc: string;
+    targetEl: EditableTextElement | null;
+    range: { start: number; end: number } | null;
+    targetLabel: string;
+  } | null>(null);
   const [jsonText, setJsonText] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successNotice, setSuccessNotice] = useState('');
@@ -439,7 +480,7 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
   const [rawText, setRawText] = useState(restoredDraft?.rawText ?? '');
 
   const handleTogglePreview = (id: string) => {
-    setPreviewMap((prev) => ({ ...prev, [id]: !prev[id] }));
+    setPreviewMap((prev) => ({ ...prev, [id]: !(prev[id] !== false) }));
   };
 
   const handleInsertSnippet = (qIndex: number, snippet: string) => {
@@ -603,37 +644,144 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
     });
   };
 
-  const handleFileUploadQuestionImage = async (qIndex: number, file: File) => {
-    if (!file) return;
+  useEffect(() => {
+    questions.forEach((q) => {
+      registerImplicitImagesMap(q.inlineImages);
+      (q.subQuestions || []).forEach((sub) => registerImplicitImagesMap(sub.inlineImages));
+    });
+  }, [questions]);
+
+  const appendInlineImageToQuestion = (qIndex: number, imgId: string, imgSrc: string) => {
+    setQuestions((prev) => {
+      const next = [...prev];
+      const cur = next[qIndex];
+      if (!cur) return prev;
+      next[qIndex] = {
+        ...cur,
+        inlineImages: { ...(cur.inlineImages || {}), [imgId]: imgSrc },
+      };
+      return next;
+    });
+  };
+
+  const openCursorImageModalForField = (
+    qIdx: number,
+    field: 'question' | 'sampleAnswer' | 'explanation' | 'subQuestion' | 'subExplanation',
+    targetLabel: string,
+    subIdx?: number,
+    initialImageSrc: string = ''
+  ) => {
+    const key = subIdx !== undefined ? `${qIdx}_${subIdx}_${field}` : `${qIdx}_${field}`;
+    const targetEl = fieldTextareaRefs.current[key] || null;
+    const range = targetEl
+      ? {
+          start:
+            typeof targetEl.selectionStart === 'number'
+              ? targetEl.selectionStart
+              : targetEl.value.length,
+          end:
+            typeof targetEl.selectionEnd === 'number'
+              ? targetEl.selectionEnd
+              : targetEl.value.length,
+        }
+      : null;
+    setCursorImageModal({
+      isOpen: true,
+      qIdx,
+      subIdx,
+      field,
+      initialImageSrc,
+      targetEl,
+      range,
+      targetLabel,
+    });
+  };
+
+  const handleTextareaPasteImage = async (
+    e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>,
+    qIdx: number,
+    field: 'question' | 'sampleAnswer' | 'explanation' | 'subQuestion' | 'subExplanation',
+    targetLabel: string,
+    subIdx?: number
+  ) => {
+    const pastedFile = extractImageFileFromClipboardEvent(e);
+    if (!pastedFile) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    const range = {
+      start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
+      end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
+    };
     try {
-      const compressed = await processImageFile(file);
-      handleUpdateQuestion(qIndex, { imageUrl: compressed });
+      const compressed = await processImageFile(pastedFile, 1200, 0.85);
+      setCursorImageModal({
+        isOpen: true,
+        qIdx,
+        subIdx,
+        field,
+        initialImageSrc: compressed,
+        targetEl: el,
+        range,
+        targetLabel,
+      });
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Không thể tải ảnh đề bài lên!');
+      setErrorMessage(err?.message || 'Không thể xử lý ảnh vừa dán.');
     }
   };
 
-  const handleFileUploadOptionImage = async (qIndex: number, optIndex: number, file: File) => {
-    if (!file) return;
-    try {
-      const compressed = await processImageFile(file);
-      handleUpdateOptionImage(qIndex, optIndex, compressed);
-    } catch (err: any) {
-      setErrorMessage(err?.message || 'Không thể tải ảnh phương án lên!');
-    }
-  };
+  const handleConfirmCursorImageModal = (imageSrc: string, title: string) => {
+    if (!cursorImageModal) return;
+    const { qIdx, subIdx, field, targetEl, range } = cursorImageModal;
+    const imgId = registerImplicitImage(imageSrc);
+    const token = formatInlineImageToken(imgId, title);
+    appendInlineImageToQuestion(qIdx, imgId, imageSrc);
 
-  // Subquestions image handlers
-  const handleFileUploadSubQuestionImage = async (qIdx: number, subIdx: number, file: File) => {
-    if (!file) return;
-    try {
-      const compressed = await processImageFile(file);
-      const nextSubs = [...(questions[qIdx].subQuestions || [])];
-      nextSubs[subIdx] = { ...nextSubs[subIdx], imageUrl: compressed };
-      handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
-    } catch (err: any) {
-      setErrorMessage(err?.message || 'Không thể tải ảnh câu con lên!');
+    if (subIdx !== undefined) {
+      setQuestions((prev) => {
+        const next = [...prev];
+        const q = next[qIdx];
+        if (!q?.subQuestions?.[subIdx]) return prev;
+        const subs = [...q.subQuestions];
+        subs[subIdx] = {
+          ...subs[subIdx],
+          inlineImages: { ...(subs[subIdx].inlineImages || {}), [imgId]: imageSrc },
+        };
+        next[qIdx] = { ...q, subQuestions: subs };
+        return next;
+      });
     }
+
+    if (targetEl && insertTextAtEditableElement(targetEl, token, range)) {
+      setCursorImageModal(null);
+      return;
+    }
+
+    setQuestions((prev) => {
+      const next = [...prev];
+      const q = next[qIdx];
+      if (!q) return prev;
+      if (field === 'question') {
+        next[qIdx] = { ...q, question: q.question ? `${q.question}\n${token}` : token };
+      } else if (field === 'sampleAnswer') {
+        next[qIdx] = { ...q, sampleAnswer: q.sampleAnswer ? `${q.sampleAnswer}\n${token}` : token };
+      } else if (field === 'explanation') {
+        next[qIdx] = { ...q, explanation: q.explanation ? `${q.explanation}\n${token}` : token };
+      } else if (subIdx !== undefined && q.subQuestions?.[subIdx]) {
+        const subs = [...q.subQuestions];
+        const sub = subs[subIdx];
+        if (field === 'subQuestion') {
+          subs[subIdx] = { ...sub, question: sub.question ? `${sub.question}\n${token}` : token };
+        } else if (field === 'subExplanation') {
+          subs[subIdx] = {
+            ...sub,
+            explanation: sub.explanation ? `${sub.explanation}\n${token}` : token,
+          };
+        }
+        next[qIdx] = { ...q, subQuestions: subs };
+      }
+      return next;
+    });
+    setCursorImageModal(null);
   };
 
   const handleUpdateSubOptionImage = (qIdx: number, subIdx: number, optIdx: number, url: string) => {
@@ -647,16 +795,6 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
     sub.optionImages = imgs;
     nextSubs[subIdx] = sub;
     handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
-  };
-
-  const handleFileUploadSubOptionImage = async (qIdx: number, subIdx: number, optIdx: number, file: File) => {
-    if (!file) return;
-    try {
-      const compressed = await processImageFile(file);
-      handleUpdateSubOptionImage(qIdx, subIdx, optIdx, compressed);
-    } catch (err: any) {
-      setErrorMessage(err?.message || 'Không thể tải ảnh phương án câu con lên!');
-    }
   };
 
   // True/False helpers
@@ -2278,14 +2416,14 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                     type="button"
                     onClick={() => handleTogglePreview(q.id)}
                     className={`px-2.5 py-1 text-xs rounded-md border flex items-center gap-1 transition-colors cursor-pointer ${
-                      previewMap[q.id]
+                      isPreviewVisible(q.id)
                         ? 'bg-blue-600 text-white border-blue-600'
                         : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                     }`}
-                    title="Xem trước kết quả hiển thị (gồm đáp án & lời giải)"
+                    title="Xem trước kết quả hiển thị (gồm toàn bộ đáp án & lời giải)"
                   >
-                    {previewMap[q.id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    <span>{previewMap[q.id] ? 'Tắt xem trước' : 'Xem trước'}</span>
+                    {isPreviewVisible(q.id) ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{isPreviewVisible(q.id) ? 'Ẩn xem trước' : 'Xem trước'}</span>
                   </button>
 
                   <input
@@ -2310,106 +2448,94 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
               <MathToolbar
                 getContainerEl={() => questionCardRefs.current[q.id] || null}
                 onInsert={(snippet) => handleInsertSnippet(qIdx, snippet)}
-                onInsertImage={(url) => handleUpdateQuestion(qIdx, { imageUrl: url })}
+                onInsertInlineImage={(imgId, imgSrc) => appendInlineImageToQuestion(qIdx, imgId, imgSrc)}
               />
 
               {/* Question Statement */}
               <div className="mb-4">
-                <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
                   <label className="block text-xs font-semibold text-slate-700">
-                    {q.type === 'grouped' ? 'Đoạn văn bối cảnh chung / Dữ kiện dùng chung:' : 'Nội dung câu hỏi (hỗ trợ công thức $x^2$, bảng biến thiên):'}
+                    {q.type === 'grouped'
+                      ? 'Đoạn văn bối cảnh chung / Dữ kiện dùng chung (có thể Ctrl+V hoặc chèn ảnh tại vị trí con trỏ):'
+                      : 'Nội dung câu hỏi (hỗ trợ $x^2$, bảng biến thiên, Ctrl+V dán ảnh hoặc chèn ảnh tại vị trí con trỏ):'}
                   </label>
-                  <CopyContentButton compact getText={() => q.question} />
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() =>
+                        openCursorImageModalForField(qIdx, 'question', `Nội dung Câu ${qIdx + 1}`)
+                      }
+                      className="px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <ImageIcon className="w-3 h-3" />
+                      <span>Chèn ảnh tại con trỏ</span>
+                    </button>
+                    <CopyContentButton compact getText={() => q.question} />
+                  </div>
                 </div>
                 <textarea
+                  ref={(el) => {
+                    fieldTextareaRefs.current[`${qIdx}_question`] = el;
+                  }}
                   rows={q.type === 'grouped' ? 4 : 2}
                   value={q.question}
                   onChange={(e) => handleUpdateQuestion(qIdx, { question: e.target.value })}
-                  placeholder="Nhập nội dung đề bài..."
+                  onPaste={(e) =>
+                    void handleTextareaPasteImage(e, qIdx, 'question', `Nội dung Câu ${qIdx + 1}`)
+                  }
+                  placeholder="Nhập nội dung đề bài... (đặt con trỏ ở bất kỳ vị trí nào rồi bấm 'Chèn ảnh tại con trỏ' hoặc Ctrl+V để chèn ảnh)"
                   className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 font-mono"
+                />
+                <InlineImageStrip
+                  content={q.question}
+                  inlineImages={q.inlineImages}
+                  label="Ảnh chèn trong nội dung câu hỏi"
+                  onUpdateContent={(nextText) => handleUpdateQuestion(qIdx, { question: nextText })}
                 />
               </div>
 
-              {/* Image URL / File Upload & Preview */}
-              <div className="mb-4 p-3 bg-slate-50 rounded-lg border border-slate-200">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                    <ImageIcon className="w-3.5 h-3.5 text-purple-600" />
-                    <span>Hình ảnh / Đồ thị câu hỏi (Tùy chọn):</span>
-                  </label>
-                  {q.imageUrl && (
-                    <button
-                      type="button"
-                      onClick={() => handleUpdateQuestion(qIdx, { imageUrl: '' })}
-                      className="text-[11px] text-rose-600 hover:underline cursor-pointer flex items-center gap-1 font-medium"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      <span>Xóa ảnh</span>
-                    </button>
-                  )}
-                </div>
-
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <input
-                    type="text"
-                    value={q.imageUrl || ''}
-                    onChange={(e) => handleUpdateQuestion(qIdx, { imageUrl: e.target.value })}
-                    placeholder="Dán link ảnh (https://...) hoặc tải tệp ảnh từ máy tính bên phải..."
-                    className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-600"
-                  />
-                  <label className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer shrink-0 transition-colors">
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>Tải ảnh từ tệp</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) handleFileUploadQuestionImage(qIdx, file);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                </div>
-
-                {q.imageUrl && (
-                  <div className="mt-3 p-2 bg-white rounded-lg border border-slate-200 flex flex-col items-center">
-                    <div className="text-[11px] text-slate-500 mb-1 flex items-center gap-1">
-                      <Eye className="w-3 h-3 text-purple-600" />
-                      <span>Xem trước hình ảnh đề bài:</span>
-                    </div>
-                    <img
-                      src={q.imageUrl}
-                      alt="Xem trước hình"
-                      className="max-h-56 rounded-lg border border-slate-200 inline-block shadow-2xs object-contain"
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                )}
+              {/* Attached Image Box (Implicit address, Title-only) */}
+              <div className="mb-4">
+                <AttachedImageBox
+                  imageUrl={q.imageUrl}
+                  caption={q.imageCaption || ''}
+                  label="Hình ảnh / Đồ thị đính kèm đề bài (Tùy chọn)"
+                  onChangeImage={(nextUrl) => handleUpdateQuestion(qIdx, { imageUrl: nextUrl })}
+                  onChangeCaption={(nextCap) => handleUpdateQuestion(qIdx, { imageCaption: nextCap })}
+                  onError={setErrorMessage}
+                />
               </div>
 
-              {/* Live Preview */}
-              {previewMap[q.id] && (
+              {/* Live Preview (Always reflects ALL parts of the question) */}
+              {isPreviewVisible(q.id) && (
                 <div className="mb-4 p-4 bg-blue-50/50 border border-blue-200 rounded-xl">
-                  <div className="text-xs font-bold text-blue-800 uppercase tracking-wide mb-2 flex items-center justify-between">
+                  <div className="text-xs font-bold text-blue-800 uppercase tracking-wide mb-2 flex items-center justify-between flex-wrap gap-1">
                     <span className="flex items-center gap-1">
                       <Eye className="w-3.5 h-3.5" />
-                      Xem trước hiển thị:
+                      Xem trước đầy đủ câu hỏi #{qIdx + 1}:
                     </span>
                     <span className="text-[11px] font-normal text-blue-600">
-                      Công thức toán & căn thức tự động khớp
+                      Hiển thị trực tiếp công thức toán, hình ảnh, đáp án & lời giải
                     </span>
                   </div>
                   <div className="p-3 bg-white rounded-lg border border-blue-100 space-y-3">
-                    <RichContentRenderer content={q.question || 'Chưa nhập nội dung.'} imageUrl={q.imageUrl} />
-                    
-                    {/* Preview options for single_choice */}
-                    {q.type === 'single_choice' && q.options && (
+                    <RichContentRenderer
+                      content={q.question || 'Chưa nhập nội dung.'}
+                      imageUrl={q.imageUrl}
+                      imageCaption={q.imageCaption}
+                      inlineImages={q.inlineImages}
+                    />
+
+                    {/* Preview options for single_choice / multiple_choice */}
+                    {(q.type === 'single_choice' || q.type === 'multiple_choice') && q.options && (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-slate-100">
                         {q.options.map((opt, optIdx) => {
                           const letter = String.fromCharCode(65 + optIdx);
-                          const isCorrect = q.correctAnswer === optIdx;
+                          const isCorrect =
+                            q.type === 'multiple_choice'
+                              ? (q.correctAnswers || []).includes(optIdx)
+                              : q.correctAnswer === optIdx;
                           const optImg = q.optionImages?.[optIdx];
 
                           return (
@@ -2431,7 +2557,9 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                                 {letter}
                               </span>
                               <div className="flex-1">
-                                {opt && <RichContentRenderer content={opt} />}
+                                {opt && (
+                                  <RichContentRenderer content={opt} inlineImages={q.inlineImages} />
+                                )}
                                 {optImg && (
                                   <div className="mt-1">
                                     <img
@@ -2456,12 +2584,26 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                           ⚖ {formatTrueFalseScoringRule(q)}
                         </div>
                         {q.tfItems.map((it, itIdx) => (
-                          <div key={it.id} className="p-2 rounded-lg border border-slate-200 bg-slate-50/70 text-xs flex items-center justify-between gap-2">
+                          <div
+                            key={it.id}
+                            className="p-2 rounded-lg border border-slate-200 bg-slate-50/70 text-xs flex items-center justify-between gap-2"
+                          >
                             <div className="flex items-start gap-1.5 flex-1">
-                              <span className="font-bold text-slate-700">{String.fromCharCode(97 + itIdx)})</span>
-                              <RichContentRenderer content={it.statement || 'Chưa nhập ý'} />
+                              <span className="font-bold text-slate-700">
+                                {String.fromCharCode(97 + itIdx)})
+                              </span>
+                              <RichContentRenderer
+                                content={it.statement || 'Chưa nhập ý'}
+                                inlineImages={q.inlineImages}
+                              />
                             </div>
-                            <span className={`px-2 py-0.5 rounded font-bold text-[11px] ${it.isCorrect ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                            <span
+                              className={`px-2 py-0.5 rounded font-bold text-[11px] ${
+                                it.isCorrect
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-rose-100 text-rose-800'
+                              }`}
+                            >
                               {it.isCorrect ? 'ĐÚNG' : 'SAI'}
                             </span>
                           </div>
@@ -2491,6 +2633,105 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                       </div>
                     )}
 
+                    {/* Preview for grouped subQuestions */}
+                    {q.type === 'grouped' && (q.subQuestions || []).length > 0 && (
+                      <div className="pt-2 border-t border-slate-100 space-y-2.5">
+                        <div className="text-[11px] font-bold text-purple-900 uppercase">
+                          Các câu con trong chùm ({q.subQuestions!.length} câu):
+                        </div>
+                        {q.subQuestions!.map((sub, sIdx) => {
+                          const combinedMap = {
+                            ...(q.inlineImages || {}),
+                            ...(sub.inlineImages || {}),
+                          };
+                          return (
+                            <div
+                              key={sub.id || sIdx}
+                              className="p-2.5 rounded-lg bg-purple-50/40 border border-purple-200 space-y-2 text-xs"
+                            >
+                              <div className="font-bold text-purple-950">
+                                Câu {qIdx + 1}.{sIdx + 1} ({sub.points || 0.5} điểm):
+                              </div>
+                              <RichContentRenderer
+                                content={sub.question || 'Chưa nhập nội dung câu con.'}
+                                imageUrl={sub.imageUrl}
+                                imageCaption={sub.imageCaption}
+                                inlineImages={combinedMap}
+                              />
+                              {(sub.type || 'single_choice') === 'single_choice' && sub.options && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                  {sub.options.map((sOpt, soIdx) => {
+                                    const sLetter = String.fromCharCode(65 + soIdx);
+                                    const isCorr = sub.correctAnswer === soIdx;
+                                    const sOptImg = sub.optionImages?.[soIdx];
+                                    return (
+                                      <div
+                                        key={soIdx}
+                                        className={`p-2 rounded border flex items-start gap-1.5 ${
+                                          isCorr
+                                            ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-medium'
+                                            : 'bg-white border-slate-200 text-slate-800'
+                                        }`}
+                                      >
+                                        <span
+                                          className={`w-4 h-4 rounded text-[10px] font-bold flex items-center justify-center shrink-0 ${
+                                            isCorr
+                                              ? 'bg-emerald-600 text-white'
+                                              : 'bg-slate-100 text-slate-700'
+                                          }`}
+                                        >
+                                          {sLetter}
+                                        </span>
+                                        <div className="flex-1 min-w-0">
+                                          {sOpt && (
+                                            <RichContentRenderer
+                                              content={sOpt}
+                                              inlineImages={combinedMap}
+                                            />
+                                          )}
+                                          {sOptImg && (
+                                            <img
+                                              src={sOptImg}
+                                              alt={`Phương án ${sLetter}`}
+                                              className="max-h-20 rounded border border-slate-200 object-contain mt-1"
+                                              referrerPolicy="no-referrer"
+                                            />
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {sub.type === 'text_input' && (
+                                <div>
+                                  <span className="font-semibold text-slate-600">Đáp án đúng: </span>
+                                  <span className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                    {formatAcceptedShortAnswersList(sub.acceptedAnswers) ||
+                                      'Chưa thiết lập'}
+                                  </span>
+                                </div>
+                              )}
+                              {((sub.explanation && sub.explanation.trim()) ||
+                                sub.explanationImageUrl) && (
+                                <div className="p-2 bg-blue-50/70 border border-blue-200 rounded-md">
+                                  <div className="font-bold text-blue-900 uppercase text-[10px] mb-1">
+                                    Lời giải câu con:
+                                  </div>
+                                  <RichContentRenderer
+                                    content={sub.explanation || ''}
+                                    imageUrl={sub.explanationImageUrl}
+                                    imageCaption={sub.explanationImageCaption}
+                                    inlineImages={combinedMap}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     {/* Preview for essay */}
                     {q.type === 'essay' && (
                       <div className="pt-2 border-t border-slate-100 space-y-2 text-xs">
@@ -2502,35 +2743,45 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                             <div className="font-bold text-emerald-900 uppercase text-[10px] mb-1">
                               Đáp án tham khảo / Thang chấm:
                             </div>
-                            <RichContentRenderer content={q.sampleAnswer} />
+                            <RichContentRenderer
+                              content={q.sampleAnswer}
+                              inlineImages={q.inlineImages}
+                            />
                           </div>
                         )}
                       </div>
                     )}
 
                     {/* Preview solution/explanation */}
-                    {q.explanation && q.explanation.trim() && (
+                    {((q.explanation && q.explanation.trim()) || q.explanationImageUrl) && (
                       <div className="p-2.5 bg-blue-50/70 border border-blue-200 rounded-lg text-xs">
                         <div className="font-bold text-blue-900 uppercase text-[10px] mb-1">
                           Lời giải chi tiết:
                         </div>
-                        <RichContentRenderer content={q.explanation} />
+                        <RichContentRenderer
+                          content={q.explanation || ''}
+                          imageUrl={q.explanationImageUrl}
+                          imageCaption={q.explanationImageCaption}
+                          inlineImages={q.inlineImages}
+                        />
                       </div>
                     )}
                   </div>
                 </div>
               )}
 
-              {/* --- DẠNG 1: Single choice Options Editor --- */}
-              {q.type === 'single_choice' && (
+              {/* --- DẠNG 1: Single choice / Multiple choice Options Editor --- */}
+              {(q.type === 'single_choice' || q.type === 'multiple_choice') && (
                 <div className="space-y-3 mb-4">
                   <div className="flex items-center justify-between">
                     <div>
                       <label className="text-xs font-semibold text-slate-700">
-                        Các phương án lựa chọn (Click nút chữ cái để chọn đáp án đúng):
+                        {q.type === 'multiple_choice'
+                          ? 'Các phương án lựa chọn (Click chữ cái để bật/tắt các đáp án đúng):'
+                          : 'Các phương án lựa chọn (Click nút chữ cái để chọn đáp án đúng):'}
                       </label>
                       <p className="text-[11px] text-slate-500">
-                        Giáo viên có thể nhập chữ/công thức toán hoặc đính kèm ảnh phương án để thay thế.
+                        Giáo viên có thể nhập chữ/công thức toán hoặc đính kèm ảnh phương án (địa chỉ ảnh được lưu ngầm).
                       </p>
                     </div>
                     <button
@@ -2545,16 +2796,30 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
 
                   {(q.options || []).map((opt, optIdx) => {
                     const letter = String.fromCharCode(65 + optIdx);
-                    const isCorrect = q.correctAnswer === optIdx;
+                    const isCorrect =
+                      q.type === 'multiple_choice'
+                        ? (q.correctAnswers || []).includes(optIdx)
+                        : q.correctAnswer === optIdx;
                     const optImg = q.optionImages?.[optIdx];
-                    const isImageEditing = activeOptImgEdit?.qIdx === qIdx && activeOptImgEdit?.optIdx === optIdx;
+                    const isImageEditing =
+                      activeOptImgEdit?.qIdx === qIdx && activeOptImgEdit?.optIdx === optIdx;
 
                     return (
                       <div key={optIdx} className="p-2.5 rounded-lg border border-slate-200 bg-white space-y-2">
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => handleUpdateQuestion(qIdx, { correctAnswer: optIdx })}
+                            onClick={() => {
+                              if (q.type === 'multiple_choice') {
+                                const cur = q.correctAnswers || [];
+                                const nextArr = cur.includes(optIdx)
+                                  ? cur.filter((x) => x !== optIdx)
+                                  : [...cur, optIdx].sort((a, b) => a - b);
+                                handleUpdateQuestion(qIdx, { correctAnswers: nextArr });
+                              } else {
+                                handleUpdateQuestion(qIdx, { correctAnswer: optIdx });
+                              }
+                            }}
                             className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center shrink-0 border transition-colors cursor-pointer ${
                               isCorrect
                                 ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs ring-2 ring-emerald-300'
@@ -2569,7 +2834,7 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                             type="text"
                             value={opt}
                             onChange={(e) => handleUpdateOption(qIdx, optIdx, e.target.value)}
-                            placeholder={`Phương án ${letter} (nhập công thức, chữ hoặc dùng ảnh bên phải)...`}
+                            placeholder={`Phương án ${letter} (nhập công thức, chữ hoặc thêm ảnh bên phải)...`}
                             className={`flex-1 px-3 py-1.5 text-xs bg-white border rounded-lg focus:outline-none ${
                               isCorrect
                                 ? 'border-emerald-400 ring-1 ring-emerald-300'
@@ -2577,7 +2842,7 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                             }`}
                           />
 
-                          {/* Image Attachment Button */}
+                          {/* Image Attachment Toggle Button */}
                           <button
                             type="button"
                             onClick={() => {
@@ -2594,7 +2859,7 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                                 ? 'bg-slate-800 text-white border-slate-800'
                                 : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
                             }`}
-                            title="Tải ảnh hoặc dán URL ảnh phương án"
+                            title="Tải ảnh hoặc dán ảnh phương án"
                           >
                             <ImageIcon className="w-3.5 h-3.5" />
                             <span>{optImg ? 'Có ảnh' : 'Thêm ảnh'}</span>
@@ -2612,53 +2877,17 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                           )}
                         </div>
 
-                        {/* Image Attachment Drawer / Box */}
+                        {/* Clean Implicit Image Attachment Drawer */}
                         {(isImageEditing || optImg) && (
-                          <div className="pt-2 pl-9 pr-2 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs bg-purple-50/30 p-2.5 rounded-md">
-                            <div className="flex-1 space-y-1.5">
-                              <div className="flex items-center gap-2">
-                                <span className="font-semibold text-slate-700">URL ảnh:</span>
-                                <input
-                                  type="text"
-                                  value={optImg || ''}
-                                  onChange={(e) => handleUpdateOptionImage(qIdx, optIdx, e.target.value)}
-                                  placeholder="Dán link ảnh (https://...) hoặc tải từ máy bên cạnh..."
-                                  className="flex-1 px-2.5 py-1 text-xs bg-white border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-purple-600"
-                                />
-                                <label className="px-2.5 py-1 bg-white hover:bg-purple-50 text-purple-700 border border-purple-300 rounded text-xs font-semibold flex items-center gap-1 cursor-pointer shrink-0">
-                                  <Upload className="w-3 h-3" />
-                                  <span>Chọn tệp</span>
-                                  <input
-                                    type="file"
-                                    accept="image/*"
-                                    className="hidden"
-                                    onChange={(e) => {
-                                      const file = e.target.files?.[0];
-                                      if (file) handleFileUploadOptionImage(qIdx, optIdx, file);
-                                    }}
-                                  />
-                                </label>
-                              </div>
-                            </div>
-
-                            {optImg && (
-                              <div className="flex items-center gap-2 shrink-0">
-                                <img
-                                  src={optImg}
-                                  alt={`Phương án ${letter}`}
-                                  className="h-14 w-auto max-w-[120px] rounded border border-slate-300 object-contain bg-white shadow-2xs"
-                                  referrerPolicy="no-referrer"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => handleUpdateOptionImage(qIdx, optIdx, '')}
-                                  className="p-1 text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
-                                  title="Xóa ảnh phương án"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </div>
-                            )}
+                          <div className="pt-1 pl-9 pr-1">
+                            <AttachedImageBox
+                              compact
+                              showCaption={false}
+                              imageUrl={optImg}
+                              label={`Ảnh minh họa phương án ${letter}`}
+                              onChangeImage={(nextUrl) => handleUpdateOptionImage(qIdx, optIdx, nextUrl)}
+                              onError={setErrorMessage}
+                            />
                           </div>
                         )}
                       </div>
@@ -3004,78 +3233,81 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                       </div>
 
                       {/* Sub question statement text */}
-                      <input
-                        type="text"
-                        value={subQ.question}
-                        onChange={(e) => {
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <label className="text-[11px] font-semibold text-slate-700">
+                            Nội dung câu con (hỗ trợ $công thức$ và chèn ảnh tại vị trí con trỏ):
+                          </label>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() =>
+                              openCursorImageModalForField(
+                                qIdx,
+                                'subQuestion',
+                                `Câu con ${qIdx + 1}.${sIdx + 1}`,
+                                sIdx
+                              )
+                            }
+                            className="px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <ImageIcon className="w-3 h-3" />
+                            <span>Chèn ảnh tại con trỏ</span>
+                          </button>
+                        </div>
+                        <textarea
+                          ref={(el) => {
+                            fieldTextareaRefs.current[`${qIdx}_${sIdx}_subQuestion`] = el;
+                          }}
+                          rows={2}
+                          value={subQ.question}
+                          onChange={(e) => {
+                            const nextSubs = [...(q.subQuestions || [])];
+                            nextSubs[sIdx] = { ...nextSubs[sIdx], question: e.target.value };
+                            handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                          }}
+                          onPaste={(e) =>
+                            void handleTextareaPasteImage(
+                              e,
+                              qIdx,
+                              'subQuestion',
+                              `Câu con ${qIdx + 1}.${sIdx + 1}`,
+                              sIdx
+                            )
+                          }
+                          placeholder="Nội dung câu hỏi con..."
+                          className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-600 font-mono"
+                        />
+                        <InlineImageStrip
+                          content={subQ.question}
+                          inlineImages={{ ...(q.inlineImages || {}), ...(subQ.inlineImages || {}) }}
+                          label={`Ảnh chèn trong câu con ${qIdx + 1}.${sIdx + 1}`}
+                          onUpdateContent={(nextText) => {
+                            const nextSubs = [...(q.subQuestions || [])];
+                            nextSubs[sIdx] = { ...nextSubs[sIdx], question: nextText };
+                            handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                          }}
+                        />
+                      </div>
+
+                      {/* Sub question prompt image upload (implicit URL, title-only) */}
+                      <AttachedImageBox
+                        compact
+                        imageUrl={subQ.imageUrl}
+                        caption={subQ.imageCaption || ''}
+                        label={`Ảnh đề bài câu con ${qIdx + 1}.${sIdx + 1} (Tùy chọn)`}
+                        onChangeImage={(nextUrl) => {
                           const nextSubs = [...(q.subQuestions || [])];
-                          nextSubs[sIdx].question = e.target.value;
+                          nextSubs[sIdx] = { ...nextSubs[sIdx], imageUrl: nextUrl };
                           handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
                         }}
-                        placeholder="Nội dung câu hỏi con..."
-                        className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-600"
+                        onChangeCaption={(nextCap) => {
+                          const nextSubs = [...(q.subQuestions || [])];
+                          nextSubs[sIdx] = { ...nextSubs[sIdx], imageCaption: nextCap };
+                          handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                        }}
+                        onError={setErrorMessage}
                       />
-
-                      {/* Sub question prompt image upload */}
-                      <div className="p-2.5 bg-purple-50/50 rounded-lg border border-purple-100 space-y-1.5">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[11px] font-semibold text-purple-900 flex items-center gap-1">
-                            <ImageIcon className="w-3 h-3 text-purple-600" />
-                            <span>Ảnh đề bài câu con (Tùy chọn):</span>
-                          </label>
-                          {subQ.imageUrl && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const nextSubs = [...(q.subQuestions || [])];
-                                nextSubs[sIdx] = { ...nextSubs[sIdx], imageUrl: '' };
-                                handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
-                              }}
-                              className="text-[10px] text-rose-600 hover:underline cursor-pointer flex items-center gap-0.5"
-                            >
-                              <Trash2 className="w-2.5 h-2.5" />
-                              <span>Xóa ảnh</span>
-                            </button>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            value={subQ.imageUrl || ''}
-                            onChange={(e) => {
-                              const nextSubs = [...(q.subQuestions || [])];
-                              nextSubs[sIdx] = { ...nextSubs[sIdx], imageUrl: e.target.value };
-                              handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
-                            }}
-                            placeholder="Dán link ảnh hoặc tải tệp..."
-                            className="flex-1 px-2 py-1 text-xs bg-white border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-purple-600"
-                          />
-                          <label className="px-2 py-1 bg-white hover:bg-purple-100 text-purple-700 border border-purple-200 rounded text-xs font-semibold flex items-center gap-1 cursor-pointer shrink-0">
-                            <Upload className="w-3 h-3" />
-                            <span>Tải tệp</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) handleFileUploadSubQuestionImage(qIdx, sIdx, file);
-                                e.target.value = '';
-                              }}
-                            />
-                          </label>
-                        </div>
-                        {subQ.imageUrl && (
-                          <div className="pt-1 text-center">
-                            <img
-                              src={subQ.imageUrl}
-                              alt={`Hình câu con ${sIdx + 1}`}
-                              className="max-h-36 rounded border border-purple-200 inline-block shadow-2xs object-contain bg-white"
-                              referrerPolicy="no-referrer"
-                            />
-                          </div>
-                        )}
-                      </div>
 
                       {/* Sub question format selector: Single choice vs Short text input */}
                       <div className="flex items-center gap-2 pt-1">
@@ -3184,7 +3416,7 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                                         nextSubs[sIdx].options![sOptIdx] = e.target.value;
                                         handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
                                       }}
-                                      placeholder={`Nội dung ý ${sLetter} (chữ, công thức hoặc dùng ảnh)...`}
+                                      placeholder={`Nội dung ý ${sLetter} (chữ, công thức hoặc thêm ảnh)...`}
                                       className="flex-1 px-2.5 py-1 text-xs bg-white border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-purple-600"
                                     />
 
@@ -3205,7 +3437,7 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                                           ? 'bg-slate-800 text-white border-slate-800'
                                           : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
                                       }`}
-                                      title="Tải ảnh hoặc dán URL ảnh cho đáp án này"
+                                      title="Tải ảnh hoặc dán ảnh cho đáp án này"
                                     >
                                       <ImageIcon className="w-3 h-3" />
                                       <span>{subOptImg ? 'Có ảnh' : 'Ảnh'}</span>
@@ -3235,51 +3467,19 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                                     )}
                                   </div>
 
-                                  {/* Drawer for sub option image */}
+                                  {/* Implicit Image Box for sub option */}
                                   {(isSubImgEditing || subOptImg) && (
-                                    <div className="pt-1.5 pl-7 pr-1 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs bg-purple-50/60 p-2 rounded">
-                                      <div className="flex-1 flex items-center gap-1.5">
-                                        <input
-                                          type="text"
-                                          value={subOptImg || ''}
-                                          onChange={(e) => handleUpdateSubOptionImage(qIdx, sIdx, sOptIdx, e.target.value)}
-                                          placeholder="Dán link ảnh đáp án hoặc chọn tệp..."
-                                          className="flex-1 px-2 py-0.5 text-xs bg-white border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-purple-600"
-                                        />
-                                        <label className="px-2 py-0.5 bg-white hover:bg-purple-100 text-purple-700 border border-purple-300 rounded text-xs font-semibold flex items-center gap-1 cursor-pointer shrink-0">
-                                          <Upload className="w-3 h-3" />
-                                          <span>Tải tệp</span>
-                                          <input
-                                            type="file"
-                                            accept="image/*"
-                                            className="hidden"
-                                            onChange={(e) => {
-                                              const file = e.target.files?.[0];
-                                              if (file) handleFileUploadSubOptionImage(qIdx, sIdx, sOptIdx, file);
-                                              e.target.value = '';
-                                            }}
-                                          />
-                                        </label>
-                                      </div>
-
-                                      {subOptImg && (
-                                        <div className="flex items-center gap-2 shrink-0">
-                                          <img
-                                            src={subOptImg}
-                                            alt={`Ảnh đáp án ${sLetter}`}
-                                            className="h-10 w-auto max-w-[80px] rounded border border-purple-200 object-contain bg-white shadow-2xs"
-                                            referrerPolicy="no-referrer"
-                                          />
-                                          <button
-                                            type="button"
-                                            onClick={() => handleUpdateSubOptionImage(qIdx, sIdx, sOptIdx, '')}
-                                            className="p-1 text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
-                                            title="Xóa ảnh đáp án"
-                                          >
-                                            <X className="w-3.5 h-3.5" />
-                                          </button>
-                                        </div>
-                                      )}
+                                    <div className="pt-1 pl-7 pr-1">
+                                      <AttachedImageBox
+                                        compact
+                                        showCaption={false}
+                                        imageUrl={subOptImg}
+                                        label={`Ảnh đáp án ${sLetter}`}
+                                        onChangeImage={(nextUrl) =>
+                                          handleUpdateSubOptionImage(qIdx, sIdx, sOptIdx, nextUrl)
+                                        }
+                                        onError={setErrorMessage}
+                                      />
                                     </div>
                                   )}
                                 </div>
@@ -3327,6 +3527,81 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                           </p>
                         </div>
                       )}
+
+                      {/* Sub-question Detailed Explanation + Images */}
+                      <div className="p-2.5 bg-blue-50/40 rounded-lg border border-blue-200 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <label className="text-[11px] font-bold text-blue-900">
+                            Lời giải chi tiết câu con {qIdx + 1}.{sIdx + 1} (Tùy chọn):
+                          </label>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() =>
+                              openCursorImageModalForField(
+                                qIdx,
+                                'subExplanation',
+                                `Lời giải câu con ${qIdx + 1}.${sIdx + 1}`,
+                                sIdx
+                              )
+                            }
+                            className="px-2 py-0.5 bg-white hover:bg-purple-50 text-purple-700 border border-purple-200 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <ImageIcon className="w-3 h-3" />
+                            <span>Chèn ảnh tại con trỏ</span>
+                          </button>
+                        </div>
+                        <textarea
+                          ref={(el) => {
+                            fieldTextareaRefs.current[`${qIdx}_${sIdx}_subExplanation`] = el;
+                          }}
+                          rows={2}
+                          value={subQ.explanation || ''}
+                          onChange={(e) => {
+                            const nextSubs = [...(q.subQuestions || [])];
+                            nextSubs[sIdx] = { ...nextSubs[sIdx], explanation: e.target.value };
+                            handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                          }}
+                          onPaste={(e) =>
+                            void handleTextareaPasteImage(
+                              e,
+                              qIdx,
+                              'subExplanation',
+                              `Lời giải câu con ${qIdx + 1}.${sIdx + 1}`,
+                              sIdx
+                            )
+                          }
+                          placeholder="Nhập lời giải câu con (Ctrl+V hoặc chèn ảnh tại vị trí con trỏ)..."
+                          className="w-full px-2.5 py-1.5 text-xs bg-white border border-blue-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-600 font-mono"
+                        />
+                        <InlineImageStrip
+                          content={subQ.explanation || ''}
+                          inlineImages={{ ...(q.inlineImages || {}), ...(subQ.inlineImages || {}) }}
+                          label="Ảnh chèn trong lời giải câu con"
+                          onUpdateContent={(nextText) => {
+                            const nextSubs = [...(q.subQuestions || [])];
+                            nextSubs[sIdx] = { ...nextSubs[sIdx], explanation: nextText };
+                            handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                          }}
+                        />
+                        <AttachedImageBox
+                          compact
+                          imageUrl={subQ.explanationImageUrl}
+                          caption={subQ.explanationImageCaption || ''}
+                          label="Ảnh minh họa đính kèm lời giải câu con (Tùy chọn)"
+                          onChangeImage={(nextUrl) => {
+                            const nextSubs = [...(q.subQuestions || [])];
+                            nextSubs[sIdx] = { ...nextSubs[sIdx], explanationImageUrl: nextUrl };
+                            handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                          }}
+                          onChangeCaption={(nextCap) => {
+                            const nextSubs = [...(q.subQuestions || [])];
+                            nextSubs[sIdx] = { ...nextSubs[sIdx], explanationImageCaption: nextCap };
+                            handleUpdateQuestion(qIdx, { subQuestions: nextSubs });
+                          }}
+                          onError={setErrorMessage}
+                        />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -3345,38 +3620,149 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                     </span>
                   </div>
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
                       <label className="block text-xs font-semibold text-slate-700">
-                        Đáp án tham khảo / Biểu điểm gợi ý (Tùy chọn — dùng công thức trên thanh công cụ tại vị trí con trỏ):
+                        Đáp án tham khảo / Biểu điểm gợi ý (Tùy chọn — hỗ trợ chèn công thức & ảnh tại con trỏ):
                       </label>
-                      <CopyContentButton compact getText={() => q.sampleAnswer || ''} />
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() =>
+                            openCursorImageModalForField(
+                              qIdx,
+                              'sampleAnswer',
+                              `Đáp án tham khảo Câu ${qIdx + 1}`
+                            )
+                          }
+                          className="px-2 py-0.5 bg-white hover:bg-purple-50 text-purple-700 border border-purple-200 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <ImageIcon className="w-3 h-3" />
+                          <span>Chèn ảnh tại con trỏ</span>
+                        </button>
+                        <CopyContentButton compact getText={() => q.sampleAnswer || ''} />
+                      </div>
                     </div>
                     <textarea
+                      ref={(el) => {
+                        fieldTextareaRefs.current[`${qIdx}_sampleAnswer`] = el;
+                      }}
                       rows={3}
                       value={q.sampleAnswer || ''}
                       onChange={(e) => handleUpdateQuestion(qIdx, { sampleAnswer: e.target.value })}
+                      onPaste={(e) =>
+                        void handleTextareaPasteImage(
+                          e,
+                          qIdx,
+                          'sampleAnswer',
+                          `Đáp án tham khảo Câu ${qIdx + 1}`
+                        )
+                      }
                       placeholder="Nhập bài giải mẫu hoặc các ý cần đạt để học sinh đối chiếu sau khi thi..."
                       className="w-full px-3 py-2 text-xs font-mono bg-white border border-cyan-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-600"
                     />
+                    <InlineImageStrip
+                      content={q.sampleAnswer || ''}
+                      inlineImages={q.inlineImages}
+                      label="Ảnh chèn trong đáp án tham khảo"
+                      onUpdateContent={(nextText) =>
+                        handleUpdateQuestion(qIdx, { sampleAnswer: nextText })
+                      }
+                    />
+                    {q.sampleAnswer && q.sampleAnswer.trim() && (
+                      <div className="mt-2 p-2.5 bg-white border border-cyan-200 rounded-lg text-xs">
+                        <div className="text-[10px] font-bold text-cyan-800 uppercase mb-1 flex items-center gap-1">
+                          <Eye className="w-3 h-3" />
+                          <span>Xem trước đáp án tham khảo:</span>
+                        </div>
+                        <RichContentRenderer
+                          content={q.sampleAnswer}
+                          inlineImages={q.inlineImages}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
 
-              {/* Explanation Input */}
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <label className="block text-xs font-semibold text-slate-700">
-                    Lời giải thích chi tiết:
+              {/* Explanation Input + Cursor-Inserted Images + Attached Solution Image + Live Preview */}
+              <div className="p-3.5 bg-blue-50/40 border border-blue-200/80 rounded-xl space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="block text-xs font-bold text-blue-950">
+                    Lời giải thích chi tiết (hỗ trợ công thức toán, Ctrl+V dán ảnh hoặc chèn ảnh tại vị trí con trỏ):
                   </label>
-                  <CopyContentButton compact getText={() => q.explanation || ''} />
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() =>
+                        openCursorImageModalForField(
+                          qIdx,
+                          'explanation',
+                          `Lời giải chi tiết Câu ${qIdx + 1}`
+                        )
+                      }
+                      className="px-2.5 py-1 bg-white hover:bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer shadow-2xs"
+                    >
+                      <ImageIcon className="w-3 h-3" />
+                      <span>Chèn ảnh tại con trỏ</span>
+                    </button>
+                    <CopyContentButton compact getText={() => q.explanation || ''} />
+                  </div>
                 </div>
                 <textarea
-                  rows={2}
+                  ref={(el) => {
+                    fieldTextareaRefs.current[`${qIdx}_explanation`] = el;
+                  }}
+                  rows={3}
                   value={q.explanation}
                   onChange={(e) => handleUpdateQuestion(qIdx, { explanation: e.target.value })}
-                  placeholder="Nhập lời giải hoặc căn cứ đối chiếu..."
-                  className="w-full px-3 py-2 text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  onPaste={(e) =>
+                    void handleTextareaPasteImage(
+                      e,
+                      qIdx,
+                      'explanation',
+                      `Lời giải chi tiết Câu ${qIdx + 1}`
+                    )
+                  }
+                  placeholder="Nhập lời giải chi tiết... (đặt con trỏ tại bất kỳ đâu rồi bấm 'Chèn ảnh tại con trỏ' hoặc Ctrl+V để chèn ảnh minh họa)"
+                  className="w-full px-3 py-2 text-xs text-slate-800 bg-white border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono"
                 />
+                <InlineImageStrip
+                  content={q.explanation}
+                  inlineImages={q.inlineImages}
+                  label="Ảnh chèn trong lời giải chi tiết"
+                  onUpdateContent={(nextText) =>
+                    handleUpdateQuestion(qIdx, { explanation: nextText })
+                  }
+                />
+                <AttachedImageBox
+                  compact
+                  imageUrl={q.explanationImageUrl}
+                  caption={q.explanationImageCaption || ''}
+                  label="Ảnh minh họa đính kèm lời giải chi tiết (Tùy chọn)"
+                  onChangeImage={(nextUrl) =>
+                    handleUpdateQuestion(qIdx, { explanationImageUrl: nextUrl })
+                  }
+                  onChangeCaption={(nextCap) =>
+                    handleUpdateQuestion(qIdx, { explanationImageCaption: nextCap })
+                  }
+                  onError={setErrorMessage}
+                />
+                {((q.explanation && q.explanation.trim()) || q.explanationImageUrl) && (
+                  <div className="p-2.5 bg-white border border-blue-200 rounded-lg text-xs">
+                    <div className="text-[10px] font-bold text-blue-800 uppercase mb-1 flex items-center gap-1">
+                      <Eye className="w-3 h-3" />
+                      <span>Xem trước lời giải chi tiết:</span>
+                    </div>
+                    <RichContentRenderer
+                      content={q.explanation || ''}
+                      imageUrl={q.explanationImageUrl}
+                      imageCaption={q.explanationImageCaption}
+                      inlineImages={q.inlineImages}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -3561,6 +3947,15 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
           );
           setTimeout(() => setSuccessNotice(''), 4000);
         }}
+      />
+
+      {/* Cursor-Aware Image Title Modal for Prompt / Explanation / SubQuestions */}
+      <InlineImageTitleModal
+        isOpen={Boolean(cursorImageModal?.isOpen)}
+        initialImageSrc={cursorImageModal?.initialImageSrc || ''}
+        targetLabel={cursorImageModal?.targetLabel}
+        onConfirm={handleConfirmCursorImageModal}
+        onClose={() => setCursorImageModal(null)}
       />
     </div>
   );

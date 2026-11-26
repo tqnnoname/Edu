@@ -6,6 +6,7 @@ import {
   CourseAttachment,
   LessonBlock,
   LessonBlockType,
+  LessonSection,
   Exam,
   UserRole,
   Question,
@@ -54,8 +55,13 @@ import {
   EyeOff,
   Calendar,
   Paperclip,
-  Link2,
   ExternalLink,
+  FolderTree,
+  GitBranch,
+  IndentDecrease,
+  IndentIncrease,
+  RotateCcw,
+  RefreshCw,
 } from 'lucide-react';
 import {
   saveCourse,
@@ -78,17 +84,42 @@ import {
   getVisibleClassrooms,
   isItemScheduleOpen,
   formatVietnameseDateTime,
+  scanAllRecoverableCourses,
+  restoreRecoveredCourses,
+  importAllDataFromJson,
+  ensureCourseHydrated,
+  migrateCourseToV2Subcollections,
+  migrateAllLegacyCourses,
+  type FullCourseRecoveryReport,
 } from '../utils/storage';
+import { isCourseLegacyOrBloated } from '../utils/firebase';
+import { uploadImageOrKeepFallback, uploadCourseFileToUrl } from '../utils/courseMedia';
 import { matchChapterAndLessonBySlug } from '../utils/urlRouter';
 import { processImageFile } from '../utils/imageUpload';
 import { insertTextAtEditableElement } from '../utils/cursorInsert';
+import {
+  buildOrderedSectionNodes,
+  getSectionBreadcrumb,
+  groupBlocksBySections,
+} from '../utils/courseSections';
+import {
+  buildBlockInlineImagesMap,
+  buildQuestionInlineImagesMap,
+  collectUsedInlineImages,
+  extractImageFileFromClipboardEvent,
+  formatInlineImageToken,
+  registerImplicitImage,
+  registerImplicitImagesMap,
+} from '../utils/inlineImages';
 import { downloadCourseAsScorm12Zip } from '../utils/scormExport';
 import { RichContentRenderer } from './RichContentRenderer';
 import { MathToolbar } from './MathToolbar';
+import { InlineImageStrip, InlineImageTitleModal, AttachedImageBox } from './InlineImageTitleModal';
 import { ConfirmModal } from './ConfirmModal';
 import { CopyContentButton } from './CopyContentButton';
 import { MatchingQuestionView } from './MatchingQuestionView';
 import { MatchingQuestionEditor } from './MatchingQuestionEditor';
+import { CourseContentTree } from './CourseContentTree';
 import { createDefaultMatchingData } from '../utils/matching';
 import {
   gradeQuestion,
@@ -125,7 +156,8 @@ function getCourseAttachmentBadge(att: CourseAttachment): {
 } {
   const nameLower = (att.name || '').toLowerCase();
   const mimeLower = (att.mimeType || '').toLowerCase();
-  if (att.url && !att.dataUrl) {
+  const isServerHosted = Boolean(att.url && att.url.startsWith('/api/files/'));
+  if (att.url && !att.dataUrl && !isServerHosted) {
     if (nameLower.endsWith('.pdf')) {
       return { ext: 'PDF', label: 'Link PDF', colorClass: 'bg-rose-100 text-rose-800 border-rose-200' };
     }
@@ -191,17 +223,6 @@ function decodeBase64DataUrlText(dataUrl?: string): string {
   } catch {
     return '';
   }
-}
-
-function extractInlineMarkdownImages(markdown: string): { fullMatch: string; alt: string; src: string }[] {
-  if (!markdown) return [];
-  const results: { fullMatch: string; alt: string; src: string }[] = [];
-  const regex = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  let m: RegExpExecArray | null;
-  while ((m = regex.exec(markdown)) !== null) {
-    results.push({ fullMatch: m[0], alt: m[1] || 'Hình minh họa', src: m[2] });
-  }
-  return results;
 }
 
 import type { UnsavedNavigationGuard } from './UnsavedChangesModal';
@@ -285,6 +306,47 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     Boolean(isTeacher && course && (isCreatorOfItem(course, currentUser) || isMasterAdminUser(currentUser)));
   const canManageCurrent = canManageCourse(currentCourse);
 
+  // Lazy-load course subcollections (chapters/lessons/blocks) when selecting a v2 metadata-only course
+  const [isHydratingCourse, setIsHydratingCourse] = useState(false);
+  const hydratingCourseIdRef = useRef<string | null>(null);
+  const [isMigratingCourse, setIsMigratingCourse] = useState(false);
+
+  const legacyCourseCount = useMemo(
+    () =>
+      visibleCourses.filter((c) => canManageCourse(c) && isCourseLegacyOrBloated(c)).length,
+    [visibleCourses, currentUser, userRole]
+  );
+
+  useEffect(() => {
+    if (!currentCourse?.id) return;
+    if (currentCourse.schemaVersion !== 2 || currentCourse.detailsLoaded !== false) {
+      if (hydratingCourseIdRef.current === currentCourse.id) {
+        hydratingCourseIdRef.current = null;
+        setIsHydratingCourse(false);
+      }
+      return;
+    }
+    if (hydratingCourseIdRef.current === currentCourse.id) return;
+    hydratingCourseIdRef.current = currentCourse.id;
+    setIsHydratingCourse(true);
+    let cancelled = false;
+    void ensureCourseHydrated(currentCourse.id, currentCourse)
+      .then((hydrated) => {
+        if (!cancelled && hydrated) {
+          onRefreshCourses();
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsHydratingCourse(false);
+          hydratingCourseIdRef.current = null;
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentCourse?.id, currentCourse?.schemaVersion, currentCourse?.detailsLoaded, onRefreshCourses]);
+
   // Live schedule tick for course open/close boundaries
   const [scheduleNowTick, setScheduleNowTick] = useState(() => Date.now());
   useEffect(() => {
@@ -320,7 +382,15 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   // Interactive Question State inside lesson
   const [checkpointAnswers, setCheckpointAnswers] = useState<{ [blockId: string]: any }>({});
   const [checkpointResults, setCheckpointResults] = useState<{
-    [blockId: string]: { isCorrect: boolean; earned: number; max: number; explanation: string };
+    [blockId: string]: {
+      isCorrect: boolean;
+      earned: number;
+      max: number;
+      explanation: string;
+      explanationImageUrl?: string;
+      explanationImageCaption?: string;
+      inlineImages?: Record<string, string>;
+    };
   }>({});
 
   // Feedback toast
@@ -347,6 +417,104 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   const [coursePreviewShowAnswers, setCoursePreviewShowAnswers] = useState(false);
   const [previewLessonId, setPreviewLessonId] = useState<string>('');
 
+  // Course Recovery Modal State
+  const [isRecoveryModalOpen, setIsRecoveryModalOpen] = useState(false);
+  const [isScanningRecovery, setIsScanningRecovery] = useState(false);
+  const [isRestoringCourses, setIsRestoringCourses] = useState(false);
+  const [recoveryReport, setRecoveryReport] = useState<FullCourseRecoveryReport | null>(null);
+  const [selectedRecoveryIds, setSelectedRecoveryIds] = useState<Set<string>>(new Set());
+  const [recoveryFeedback, setRecoveryFeedback] = useState<string | null>(null);
+  const recoveryJsonInputRef = useRef<HTMLInputElement | null>(null);
+  const autoRecoveryCheckedRef = useRef(false);
+
+  const runRecoveryScan = async (autoRestoreLiveCloud: boolean = false) => {
+    setIsScanningRecovery(true);
+    setRecoveryFeedback(null);
+    try {
+      const report = await scanAllRecoverableCourses();
+      setRecoveryReport(report);
+      const nonPresetEntries = report.entries;
+      setSelectedRecoveryIds(
+        new Set(
+          nonPresetEntries
+            .filter((e) => !e.course.id.startsWith('course_e2e_'))
+            .map((e) => e.course.id)
+        )
+      );
+      if (autoRestoreLiveCloud) {
+        // Automatically restore any non-E2E courses that were falsely hidden/tombstoned while still having live/archived copies
+        const existingIds = new Set(courses.map((c) => c.id));
+        const missingRecoverable = nonPresetEntries
+          .filter(
+            (e) =>
+              !existingIds.has(e.course.id) &&
+              !e.course.id.startsWith('course_e2e_') &&
+              (e.source === 'cloud' || (e.source === 'indexeddb' && !e.isTombstoned))
+          )
+          .map((e) => e.course);
+        if (missingRecoverable.length > 0) {
+          const res = await restoreRecoveredCourses(
+            missingRecoverable,
+            missingRecoverable.map((c) => c.id)
+          );
+          if (res.ok && res.restoredCount > 0) {
+            onRefreshCourses();
+            setToastMessage(`✓ Đã tự động khôi phục ${res.restoredCount} khóa học!`);
+            setTimeout(() => setToastMessage(null), 5000);
+          }
+        }
+      }
+    } finally {
+      setIsScanningRecovery(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isTeacher || autoRecoveryCheckedRef.current) return;
+    if (visibleCourses.length === 0) {
+      autoRecoveryCheckedRef.current = true;
+      void runRecoveryScan(true);
+    }
+  }, [isTeacher, visibleCourses.length]);
+
+  const handleOpenRecoveryModal = () => {
+    setIsRecoveryModalOpen(true);
+    void runRecoveryScan(false);
+  };
+
+  const handleRestoreSelected = async () => {
+    if (!recoveryReport) return;
+    const toRestore = recoveryReport.entries
+      .filter((e) => selectedRecoveryIds.has(e.course.id))
+      .map((e) => e.course);
+    if (toRestore.length === 0 && recoveryReport.tombstonedCourseIds.length === 0) {
+      setRecoveryFeedback('Vui lòng chọn ít nhất một khóa học để khôi phục.');
+      return;
+    }
+    setIsRestoringCourses(true);
+    setRecoveryFeedback(null);
+    try {
+      const unblockIds =
+        toRestore.length > 0
+          ? toRestore.map((c) => c.id)
+          : recoveryReport.orphanReferencedCourseIds;
+      const res = await restoreRecoveredCourses(toRestore, unblockIds);
+      onRefreshCourses();
+      if (res.ok) {
+        setRecoveryFeedback(
+          toRestore.length > 0
+            ? `✓ Đã khôi phục thành công ${res.restoredCount} khóa học và đồng bộ lên Cloud!`
+            : '✓ Đã gỡ bỏ các ID khóa học bị chặn trong bộ nhớ đồng bộ.'
+        );
+        await runRecoveryScan(false);
+      } else {
+        setRecoveryFeedback(`Đã khôi phục về máy, nhưng đồng bộ Cloud báo lỗi: ${res.error}`);
+      }
+    } finally {
+      setIsRestoringCourses(false);
+    }
+  };
+
   // --- Modals for Creator Management ---
   const [isCourseModalOpen, setIsCourseModalOpen] = useState(false);
   const [editingCourse, setEditingCourse] = useState<Partial<MicroCourse> | null>(null);
@@ -357,6 +525,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     id?: string;
     title: string;
     description: string;
+    inlineImages?: Record<string, string>;
     order: number;
     chapterExamId?: string;
   } | null>(null);
@@ -369,12 +538,29 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   const [lessonFileName, setLessonFileName] = useState('');
   const [lessonModalError, setLessonModalError] = useState<string | null>(null);
 
+  // Course view mode ('player' vs teacher 'tree' outline/idea editor)
+  const [courseViewMode, setCourseViewMode] = useState<'player' | 'tree'>('player');
+
   // Block Add/Edit Modal State
   const blockModalBodyRef = useRef<HTMLDivElement>(null);
   const theoryTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const cpQuestionRef = useRef<HTMLTextAreaElement>(null);
+  const cpExplanationRef = useRef<HTMLTextAreaElement>(null);
+  const courseDescRef = useRef<HTMLTextAreaElement>(null);
+  const chapterDescRef = useRef<HTMLTextAreaElement>(null);
+  const lessonSummaryRef = useRef<HTMLTextAreaElement>(null);
+  const lastSelectionSnapshotRef = useRef<{
+    el: HTMLTextAreaElement | null;
+    range: { start: number; end: number } | null;
+  }>({ el: null, range: null });
+
   const [isBlockModalOpen, setIsBlockModalOpen] = useState(false);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const [insertAtIndex, setInsertAtIndex] = useState<number | null>(null);
+  const [blockTargetChapterId, setBlockTargetChapterId] = useState<string | null>(null);
+  const [blockTargetLessonId, setBlockTargetLessonId] = useState<string | null>(null);
+  const [blockSectionId, setBlockSectionId] = useState<string>('');
+  const [quickNewSectionTitle, setQuickNewSectionTitle] = useState<string>('');
   const [blockModalError, setBlockModalError] = useState<string | null>(null);
 
   const [blockType, setBlockType] = useState<LessonBlockType>('theory');
@@ -385,9 +571,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   >('formula');
   const [blockImageUrl, setBlockImageUrl] = useState('');
   const [blockCaption, setBlockCaption] = useState('');
-  const [showTheoryImageUrlBar, setShowTheoryImageUrlBar] = useState(false);
-  const [theoryImageUrl, setTheoryImageUrl] = useState('');
-  const [theoryImageCaption, setTheoryImageCaption] = useState('');
+  const [blockInlineImages, setBlockInlineImages] = useState<Record<string, string>>({});
   const [blockAttachments, setBlockAttachments] = useState<CourseAttachment[]>([]);
   const [blockFileUrl, setBlockFileUrl] = useState('');
   const [blockFileName, setBlockFileName] = useState('');
@@ -395,10 +579,11 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
   // Checkpoint question editor state
   const [cpType, setCpType] = useState<
-    'single_choice' | 'multiple_choice' | 'true_false' | 'text_input' | 'matching'
+    'single_choice' | 'multiple_choice' | 'true_false' | 'text_input' | 'matching' | 'essay'
   >('single_choice');
   const [cpQuestion, setCpQuestion] = useState('');
   const [cpQuestionImageUrl, setCpQuestionImageUrl] = useState('');
+  const [cpQuestionImageCaption, setCpQuestionImageCaption] = useState('');
   const [cpOptions, setCpOptions] = useState<string[]>(['', '', '', '']);
   const [cpCorrectSingle, setCpCorrectSingle] = useState(0);
   const [cpCorrectMulti, setCpCorrectMulti] = useState<number[]>([0]);
@@ -409,6 +594,20 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     { id: 'tf_4', statement: '', isCorrect: false },
   ]);
   const [cpAcceptedAnswersText, setCpAcceptedAnswersText] = useState('');
+  const [cpSampleAnswer, setCpSampleAnswer] = useState('');
+  const cpEssaySampleRef = useRef<HTMLTextAreaElement>(null);
+  const essayPlayerRefs = useRef<{ [blockId: string]: HTMLTextAreaElement | null }>({});
+  const [essayPreviewByBlock, setEssayPreviewByBlock] = useState<{ [blockId: string]: boolean }>({});
+  const [checkpointInlineImages, setCheckpointInlineImages] = useState<{
+    [blockId: string]: Record<string, string>;
+  }>({});
+  const [checkpointPasteModal, setCheckpointPasteModal] = useState<{
+    blockId: string;
+    imageSrc: string;
+    defaultTitle: string;
+    el: HTMLTextAreaElement | null;
+    range: { start: number; end: number } | null;
+  } | null>(null);
   const [cpMatchingData, setCpMatchingData] = useState<{
     matchingLeftLabelStyle: MatchingLabelStyle;
     matchingRightLabelStyle: MatchingLabelStyle;
@@ -418,6 +617,41 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   }>(() => createDefaultMatchingData('cp_m'));
   const [cpPoints, setCpPoints] = useState<number>(1.0);
   const [cpExplanation, setCpExplanation] = useState('');
+  const [cpExplanationImageUrl, setCpExplanationImageUrl] = useState('');
+  const [cpExplanationImageCaption, setCpExplanationImageCaption] = useState('');
+  const [cpInlineImages, setCpInlineImages] = useState<Record<string, string>>({});
+
+  type CourseCursorTarget =
+    | 'blockContent'
+    | 'cpQuestion'
+    | 'cpSampleAnswer'
+    | 'cpExplanation'
+    | 'courseDesc'
+    | 'chapterDesc'
+    | 'lessonSummary';
+
+  const [courseCursorModal, setCourseCursorModal] = useState<{
+    imageSrc: string;
+    defaultTitle: string;
+    target: CourseCursorTarget;
+    el: HTMLTextAreaElement | null;
+    range: { start: number; end: number } | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!currentCourse) return;
+    registerImplicitImagesMap(currentCourse.inlineImages);
+    (currentCourse.chapters || []).forEach((ch) => {
+      registerImplicitImagesMap(ch.inlineImages);
+      (ch.lessons || []).forEach((les) => {
+        registerImplicitImagesMap(les.inlineImages);
+        (les.blocks || []).forEach((blk) => {
+          registerImplicitImagesMap(blk.inlineImages);
+          registerImplicitImagesMap(blk.question?.inlineImages);
+        });
+      });
+    });
+  }, [currentCourse]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -482,6 +716,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       return;
     }
 
+    if (currentCourse.schemaVersion === 2 && currentCourse.detailsLoaded === false) {
+      return;
+    }
+
     const courseUserKey = `${currentCourse.id}::${currentUserId}`;
     const isSameCourseAndUser = lastSyncedCourseUserRef.current === courseUserKey;
     lastSyncedCourseUserRef.current = courseUserKey;
@@ -494,23 +732,57 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
     // Khôi phục đáp án và kết quả các câu hỏi tương tác đã lưu
     const restoredAnswers: { [blockId: string]: any } = {};
+    const restoredInlineImages: { [blockId: string]: Record<string, string> } = {};
     const restoredResults: {
-      [blockId: string]: { isCorrect: boolean; earned: number; max: number; explanation: string };
+      [blockId: string]: {
+        isCorrect: boolean;
+        earned: number;
+        max: number;
+        explanation: string;
+        explanationImageUrl?: string;
+        explanationImageCaption?: string;
+        inlineImages?: Record<string, string>;
+      };
     } = {};
 
     allLessons.forEach(({ lesson }) => {
+      (lesson.sections || []).forEach((sec) => registerImplicitImagesMap(sec.inlineImages));
       (lesson.blocks || []).forEach((blk) => {
         if (blk.type === 'question' && blk.question) {
           const saved = synced.interactiveAnswers?.[blk.id];
           if (saved) {
             restoredAnswers[blk.id] = saved.selectedAnswer;
-            const graded = gradeQuestion(blk.question, saved.selectedAnswer);
-            restoredResults[blk.id] = {
-              isCorrect: saved.isCorrect === true && graded.isFullyCorrect,
-              earned: graded.earnedPoints,
-              max: graded.maxPoints,
-              explanation: blk.question.explanation || 'Xem lại lý thuyết ở trên.',
-            };
+            if (saved.inlineImages) {
+              registerImplicitImagesMap(saved.inlineImages);
+              restoredInlineImages[blk.id] = saved.inlineImages;
+            }
+            if (blk.question.type === 'essay') {
+              const hasText =
+                typeof saved.selectedAnswer === 'string' &&
+                saved.selectedAnswer.trim().length > 0;
+              const maxPts = blk.question.points || 1.0;
+              const passed = saved.isCorrect === true && hasText;
+              restoredResults[blk.id] = {
+                isCorrect: passed,
+                earned: passed ? maxPts : 0,
+                max: maxPts,
+                explanation: blk.question.explanation || 'Xem lại lý thuyết ở trên.',
+                explanationImageUrl: blk.question.explanationImageUrl,
+                explanationImageCaption: blk.question.explanationImageCaption,
+                inlineImages: blk.question.inlineImages,
+              };
+            } else {
+              const graded = gradeQuestion(blk.question, saved.selectedAnswer);
+              restoredResults[blk.id] = {
+                isCorrect: saved.isCorrect === true && graded.isFullyCorrect,
+                earned: graded.earnedPoints,
+                max: graded.maxPoints,
+                explanation: blk.question.explanation || 'Xem lại lý thuyết ở trên.',
+                explanationImageUrl: blk.question.explanationImageUrl,
+                explanationImageCaption: blk.question.explanationImageCaption,
+                inlineImages: blk.question.inlineImages,
+              };
+            }
           }
         }
       });
@@ -519,9 +791,11 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     if (isSameCourseAndUser) {
       // Giữ nguyên đáp án/nội dung đang chọn dở khi component re-render hoặc cập nhật URL trong cùng khóa
       setCheckpointAnswers((prev) => ({ ...restoredAnswers, ...prev }));
+      setCheckpointInlineImages((prev) => ({ ...restoredInlineImages, ...prev }));
       setCheckpointResults((prev) => ({ ...restoredResults, ...prev }));
     } else {
       setCheckpointAnswers(restoredAnswers);
+      setCheckpointInlineImages(restoredInlineImages);
       setCheckpointResults(restoredResults);
     }
 
@@ -886,6 +1160,53 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   const handleGradeCheckpoint = (block: LessonBlock) => {
     if (!block.question || !currentCourse) return;
     const userAns = checkpointAnswers[block.id];
+
+    if (block.question.type === 'essay') {
+      const essayText = typeof userAns === 'string' ? userAns.trim() : '';
+      if (!essayText) {
+        showToast('Vui lòng nhập nội dung bài làm tự luận trước khi nộp!');
+        return;
+      }
+      const maxPts = block.question.points || 1.0;
+      setCheckpointResults((prev) => ({
+        ...prev,
+        [block.id]: {
+          isCorrect: true,
+          earned: maxPts,
+          max: maxPts,
+          explanation: block.question?.explanation || 'Đã ghi nhận bài làm tự luận của bạn.',
+          explanationImageUrl: block.question?.explanationImageUrl,
+          explanationImageCaption: block.question?.explanationImageCaption,
+          inlineImages: block.question?.inlineImages,
+        },
+      }));
+
+      const usedEssayInline = collectUsedInlineImages(
+        [essayText],
+        checkpointInlineImages[block.id]
+      );
+      const updatedProgress = recordInteractiveAnswer(
+        currentCourse.id,
+        currentUserId,
+        block.id,
+        essayText,
+        true,
+        activeLessonItem?.id,
+        activeChapterItem?.id,
+        usedEssayInline
+      );
+      setProgress(updatedProgress);
+
+      if (activeLessonItem && updatedProgress.completedLessonIds.includes(activeLessonItem.id)) {
+        showToast(
+          `✓ Đã nộp bài tự luận! Bạn đã hoàn thành bài "${activeLessonItem.title}" và mở khóa bài tiếp theo.`
+        );
+      } else {
+        showToast('✓ Đã lưu & nộp bài tự luận! Block tiếp theo đã được mở khóa.');
+      }
+      return;
+    }
+
     const result = gradeQuestion(block.question, userAns);
     const isPassed = result.isFullyCorrect;
 
@@ -896,6 +1217,9 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         earned: result.earnedPoints,
         max: result.maxPoints,
         explanation: block.question?.explanation || 'Xem lại lý thuyết ở trên.',
+        explanationImageUrl: block.question?.explanationImageUrl,
+        explanationImageCaption: block.question?.explanationImageCaption,
+        inlineImages: block.question?.inlineImages,
       },
     }));
 
@@ -927,36 +1251,128 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     }
   };
 
-  // Helper upload image via file input
-  const handleUploadImage = async (
-    file: File,
-    onResult: (dataUrl: string) => void
+  const captureTextareaRange = (el: HTMLTextAreaElement | null) => {
+    if (!el) {
+      lastSelectionSnapshotRef.current = { el: null, range: null };
+      return null;
+    }
+    const start = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
+    const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+    const range = { start, end };
+    lastSelectionSnapshotRef.current = { el, range };
+    return range;
+  };
+
+  const insertImplicitTokenAtTarget = (
+    target: CourseCursorTarget,
+    imgId: string,
+    imgSrc: string,
+    title: string,
+    el?: HTMLTextAreaElement | null,
+    range?: { start: number; end: number } | null
   ) => {
+    registerImplicitImage(imgSrc, imgId);
+    const token = formatInlineImageToken(imgId, title);
+    const isCp = target === 'cpQuestion' || target === 'cpSampleAnswer' || target === 'cpExplanation';
+
+    if (isCp) {
+      setCpInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+    } else if (target === 'blockContent') {
+      setBlockInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+    } else if (target === 'courseDesc') {
+      setEditingCourse((prev) =>
+        prev ? { ...prev, inlineImages: { ...(prev.inlineImages || {}), [imgId]: imgSrc } } : prev
+      );
+    } else if (target === 'chapterDesc') {
+      setEditingChapter((prev) =>
+        prev ? { ...prev, inlineImages: { ...(prev.inlineImages || {}), [imgId]: imgSrc } } : prev
+      );
+    } else if (target === 'lessonSummary') {
+      setEditingLesson((prev) =>
+        prev ? { ...prev, inlineImages: { ...(prev.inlineImages || {}), [imgId]: imgSrc } } : prev
+      );
+    }
+
+    const fallbackAppend = (prev: string) => {
+      const trimmed = (prev || '').replace(/\s+$/, '');
+      return trimmed ? `${trimmed}\n${token}` : token;
+    };
+
+    if (el && insertTextAtEditableElement(el, token, range)) {
+      setBlockModalError(null);
+      return;
+    }
+
+    if (target === 'blockContent') setBlockContent(fallbackAppend);
+    else if (target === 'cpQuestion') setCpQuestion(fallbackAppend);
+    else if (target === 'cpSampleAnswer') setCpSampleAnswer(fallbackAppend);
+    else if (target === 'cpExplanation') setCpExplanation(fallbackAppend);
+    else if (target === 'courseDesc') {
+      setEditingCourse((prev) =>
+        prev ? { ...prev, description: fallbackAppend(prev.description || '') } : prev
+      );
+    } else if (target === 'chapterDesc') {
+      setEditingChapter((prev) =>
+        prev ? { ...prev, description: fallbackAppend(prev.description || '') } : prev
+      );
+    } else if (target === 'lessonSummary') {
+      setEditingLesson((prev) =>
+        prev ? { ...prev, summary: fallbackAppend(prev.summary || '') } : prev
+      );
+    }
+    setBlockModalError(null);
+  };
+
+  const handleOpenCursorImageUpload = async (
+    file: File | undefined,
+    target: CourseCursorTarget,
+    el: HTMLTextAreaElement | null
+  ) => {
+    if (!file) return;
+    const savedRange =
+      lastSelectionSnapshotRef.current.el === el && lastSelectionSnapshotRef.current.range
+        ? lastSelectionSnapshotRef.current.range
+        : captureTextareaRange(el);
     try {
       const compressed = await processImageFile(file, 1200, 0.85);
-      onResult(compressed);
+      const uploadedUrl = await uploadImageOrKeepFallback(compressed, file.name);
+      setCourseCursorModal({
+        imageSrc: uploadedUrl,
+        defaultTitle: file.name.replace(/\.[^.]+$/, '') || 'Hình minh họa',
+        target,
+        el,
+        range: savedRange,
+      });
     } catch (err: any) {
       setBlockModalError(err?.message || 'Không thể tải tệp ảnh lên.');
     }
   };
 
-  // Helper insert image markdown directly at cursor position in theory/callout textarea
-  const insertInlineImageIntoTheory = (src: string, captionText?: string) => {
-    const cleanSrc = src.trim();
-    if (!cleanSrc) return;
-    const alt = (captionText || 'Hình minh họa').replace(/[\[\]]/g, '').trim() || 'Hình minh họa';
-    const snippet = `\n![${alt}](${cleanSrc})\n`;
-    const inserted = insertTextAtEditableElement(theoryTextareaRef.current, snippet);
-    if (!inserted) {
-      setBlockContent((prev) => {
-        const trimmed = prev.replace(/\s+$/, '');
-        return trimmed ? `${trimmed}\n\n![${alt}](${cleanSrc})\n` : `![${alt}](${cleanSrc})`;
+  const handleTextareaPasteImage = async (
+    e: React.ClipboardEvent<HTMLTextAreaElement>,
+    target: CourseCursorTarget
+  ) => {
+    const file = extractImageFileFromClipboardEvent(e.nativeEvent);
+    if (!file) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    const range = captureTextareaRange(el);
+    try {
+      const compressed = await processImageFile(file, 1200, 0.85);
+      const uploadedUrl = await uploadImageOrKeepFallback(compressed, file.name);
+      setCourseCursorModal({
+        imageSrc: uploadedUrl,
+        defaultTitle: 'Ảnh minh họa',
+        target,
+        el,
+        range,
       });
+    } catch (err: any) {
+      setBlockModalError(err?.message || 'Không thể xử lý ảnh từ clipboard.');
     }
-    setBlockModalError(null);
   };
 
-  // Helper upload multi-format files into course lesson or file block (respecting Firestore 1MB cap)
+  // Upload multi-format course files to server URL (/api/files/...) so Firestore docs never hold Base64 blobs
   const handleUploadCourseFiles = async (
     files: FileList | null,
     existingAttachments: CourseAttachment[],
@@ -966,30 +1382,52 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     if (!files || files.length === 0) return;
     onError('');
     const added: CourseAttachment[] = [];
-    const currentEstimatedSize = currentCourse ? JSON.stringify(currentCourse).length : 0;
-    let runningBytes = currentEstimatedSize;
 
     for (const file of Array.from(files)) {
-      if (file.size > MAX_COURSE_SINGLE_FILE_BYTES) {
+      if (file.size > 25 * 1024 * 1024) {
         onError(
-          `Tệp "${file.name}" (${formatCourseFileSize(file.size)}) vượt quá giới hạn 700 KB/tệp khi lưu trực tiếp. Vui lòng nén nhẹ tệp hoặc dùng tùy chọn "Dán link tài liệu ngoài (Google Drive / OneDrive)".`
+          `Tệp "${file.name}" (${formatCourseFileSize(file.size)}) vượt quá giới hạn tối đa 25 MB/tệp.`
         );
         continue;
       }
       try {
-        let dataUrl = '';
+        let uploadedUrl = '';
         if (file.type.startsWith('image/')) {
-          dataUrl = await processImageFile(file, 1400, 0.85);
+          const compressed = await processImageFile(file, 1400, 0.85);
+          const candidateUrl = await uploadImageOrKeepFallback(compressed, file.name);
+          if (!candidateUrl.startsWith('data:')) {
+            uploadedUrl = candidateUrl;
+          }
         } else {
-          dataUrl = await readCourseFileAsDataUrl(file);
+          const res = await uploadCourseFileToUrl(file);
+          if (res.ok && res.url) {
+            uploadedUrl = res.url;
+          }
         }
-        if (runningBytes + dataUrl.length > MAX_COURSE_DOC_TOTAL_CHARS) {
+
+        if (uploadedUrl) {
+          added.push({
+            id: `catt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            name: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            sizeBytes: file.size,
+            url: uploadedUrl,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: currentUser?.fullName || currentUser?.email,
+          });
+          continue;
+        }
+
+        // Offline fallback (small files only) if upload API is unreachable
+        if (file.size > MAX_COURSE_SINGLE_FILE_BYTES) {
           onError(
-            `Tổng dung lượng tệp nhúng trong khóa học sắp chạm ngưỡng 1 MB của Cloud Firestore. Vui lòng dùng "Dán link tài liệu ngoài (Google Drive / OneDrive)" cho các tệp bổ sung.`
+            `Không thể tải tệp "${file.name}" lên máy chủ. Vui lòng thử lại hoặc dùng tùy chọn "Dán link tài liệu ngoài".`
           );
-          break;
+          continue;
         }
-        runningBytes += dataUrl.length;
+        const dataUrl = file.type.startsWith('image/')
+          ? await processImageFile(file, 1400, 0.85)
+          : await readCourseFileAsDataUrl(file);
         added.push({
           id: `catt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           name: file.name,
@@ -1000,13 +1438,13 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
           uploadedBy: currentUser?.fullName || currentUser?.email,
         });
       } catch (err: any) {
-        onError(err?.message || `Không thể đọc tệp "${file.name}".`);
+        onError(err?.message || `Không thể tải tệp "${file.name}".`);
       }
     }
 
     if (added.length > 0) {
       onAdd([...existingAttachments, ...added]);
-      showToast(`✓ Đã thêm ${added.length} tệp tài liệu!`);
+      showToast(`✓ Đã thêm ${added.length} tệp tài liệu (lưu gọn dạng URL)!`);
     }
   };
 
@@ -1072,15 +1510,32 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       chosenClassName = cls.name;
     }
 
+    const courseInline = collectUsedInlineImages(
+      [editingCourse.description || ''],
+      editingCourse.inlineImages
+    );
+    const chapters = editingCourse.chapters || [];
+    const chapCount = chapters.length || (editingCourse.lessons?.length ? 1 : 0);
+    const lesCount =
+      chapters.length > 0
+        ? chapters.reduce((sum, ch) => sum + (ch.lessons?.length || 0), 0)
+        : editingCourse.lessons?.length || 0;
+
     const toSave: MicroCourse = {
       id: editingCourse.id || 'course_' + Date.now(),
       title: editingCourse.title.trim(),
       subject: editingCourse.subject || 'math',
       grade: editingCourse.grade || 'Lớp 12',
       description: editingCourse.description || '',
+      coverImageUrl: editingCourse.coverImageUrl?.trim() || undefined,
+      inlineImages: courseInline,
       instructor: editingCourse.instructor || currentUser?.fullName || 'Giáo viên phụ trách',
-      chapters: editingCourse.chapters || [],
+      chapters,
       lessons: editingCourse.lessons || [],
+      schemaVersion: 2,
+      chapterCount: chapCount,
+      lessonCount: lesCount,
+      detailsLoaded: true,
       finalExamId: editingCourse.finalExamId || undefined,
       finalExamTitle: allExams.find((e) => e.id === editingCourse.finalExamId)?.title,
       status: editingCourse.status || 'open',
@@ -1105,6 +1560,42 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     setCourseModalError(null);
     showToast('✓ Đã lưu thông tin khóa học & cấu hình SCORM!');
     return true;
+  };
+
+  const handleMigrateCurrentCourse = async () => {
+    if (!currentCourse || !canManageCurrent || isMigratingCourse) return;
+    setIsMigratingCourse(true);
+    try {
+      const res = await migrateCourseToV2Subcollections(currentCourse);
+      onRefreshCourses();
+      if (res.ok) {
+        showToast(
+          res.migratedMediaCount > 0
+            ? `✓ Đã tách subcollection & chuyển ${res.migratedMediaCount} ảnh/tệp Base64 sang URL!`
+            : '✓ Đã tối ưu & tách dữ liệu khóa học sang subcollection thành công!'
+        );
+      } else {
+        showToast(`Lỗi tối ưu khóa học: ${res.error || 'Vui lòng thử lại'}`);
+      }
+    } finally {
+      setIsMigratingCourse(false);
+    }
+  };
+
+  const handleMigrateAllCourses = async () => {
+    if (!isTeacher || isMigratingCourse) return;
+    setIsMigratingCourse(true);
+    try {
+      const res = await migrateAllLegacyCourses();
+      onRefreshCourses();
+      if (res.failed === 0) {
+        showToast(`✓ Đã tối ưu & tách subcollection cho ${res.migrated}/${res.total} khóa học!`);
+      } else {
+        showToast(`Đã tối ưu ${res.migrated}/${res.total} khóa học (${res.failed} lỗi).`);
+      }
+    } finally {
+      setIsMigratingCourse(false);
+    }
   };
 
   // Delete current course
@@ -1133,6 +1624,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     const existingChapters = currentCourse.chapters || [];
     let updatedChapters: CourseChapter[];
 
+    const chapterInline = collectUsedInlineImages(
+      [editingChapter.description.trim()],
+      editingChapter.inlineImages
+    );
     if (editingChapter.id) {
       updatedChapters = existingChapters.map((ch) =>
         ch.id === editingChapter.id
@@ -1140,6 +1635,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               ...ch,
               title: editingChapter.title.trim(),
               description: editingChapter.description.trim(),
+              inlineImages: chapterInline,
               order: editingChapter.order,
               chapterExamId: editingChapter.chapterExamId || undefined,
               chapterExamTitle: allExams.find((e) => e.id === editingChapter.chapterExamId)?.title,
@@ -1151,6 +1647,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         id: 'chap_' + Date.now(),
         title: editingChapter.title.trim(),
         description: editingChapter.description.trim(),
+        inlineImages: chapterInline,
         order: existingChapters.length + 1,
         lessons: [],
         chapterExamId: editingChapter.chapterExamId || undefined,
@@ -1198,6 +1695,11 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       (e) => e.id === editingLesson.practiceExamId
     )?.title;
 
+    const lessonInline = collectUsedInlineImages(
+      [editingLesson.summary || ''],
+      editingLesson.inlineImages
+    );
+
     if (editingLesson.id) {
       const sourceChapId = originalChapterIdForLesson || targetChapterIdForLesson;
       const isMovingChapter = sourceChapId !== targetChapterIdForLesson;
@@ -1212,6 +1714,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
           ...(existingLesson || { id: editingLesson.id, blocks: [] }),
           ...editingLesson,
           title: editingLesson.title!.trim(),
+          inlineImages: lessonInline,
           attachments: editingLesson.attachments || [],
           practiceExamId: editingLesson.practiceExamId || undefined,
           practiceExamTitle: updatedPracticeTitle,
@@ -1238,6 +1741,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 ...les,
                 ...editingLesson,
                 title: editingLesson.title!.trim(),
+                inlineImages: lessonInline,
                 attachments: editingLesson.attachments || [],
                 practiceExamId: editingLesson.practiceExamId || undefined,
                 practiceExamTitle: updatedPracticeTitle,
@@ -1254,6 +1758,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         title: editingLesson.title!.trim(),
         durationMinutes: editingLesson.durationMinutes || 25,
         summary: editingLesson.summary || '',
+        inlineImages: lessonInline,
         attachments: editingLesson.attachments || [],
         practiceExamId: editingLesson.practiceExamId || undefined,
         practiceExamTitle: updatedPracticeTitle,
@@ -1302,10 +1807,17 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   // Open Block Modal for Add (at index or end) or Edit
   const openCreateBlockModal = (
     preferredType: LessonBlockType = 'theory',
-    atIndex: number | null = null
+    atIndex: number | null = null,
+    defaultSectionId?: string,
+    overrideChapterId?: string,
+    overrideLessonId?: string
   ) => {
     setEditingBlockId(null);
     setInsertAtIndex(atIndex);
+    setBlockTargetChapterId(overrideChapterId || activeChapterItem?.id || null);
+    setBlockTargetLessonId(overrideLessonId || activeLessonItem?.id || null);
+    setBlockSectionId(defaultSectionId || '');
+    setQuickNewSectionTitle('');
     setBlockModalError(null);
     setBlockType(preferredType);
     setBlockTitle('');
@@ -1313,15 +1825,14 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     setBlockCalloutType('formula');
     setBlockImageUrl('');
     setBlockCaption('');
-    setShowTheoryImageUrlBar(false);
-    setTheoryImageUrl('');
-    setTheoryImageCaption('');
+    setBlockInlineImages({});
     setBlockAttachments([]);
     setBlockFileUrl('');
     setBlockFileName('');
     setCpType('single_choice');
     setCpQuestion('');
     setCpQuestionImageUrl('');
+    setCpQuestionImageCaption('');
     setCpOptions(['', '', '', '']);
     setCpCorrectSingle(0);
     setCpCorrectMulti([0]);
@@ -1332,15 +1843,29 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       { id: 'tf_' + Date.now() + '_4', statement: '', isCorrect: false },
     ]);
     setCpAcceptedAnswersText('');
+    setCpSampleAnswer('');
     setCpMatchingData(createDefaultMatchingData('cp_' + Date.now()));
     setCpPoints(1.0);
     setCpExplanation('');
+    setCpExplanationImageUrl('');
+    setCpExplanationImageCaption('');
+    setCpInlineImages({});
     setIsBlockModalOpen(true);
   };
 
-  const openEditBlockModal = (block: LessonBlock) => {
+  const openEditBlockModal = (
+    block: LessonBlock,
+    overrideChapterId?: string,
+    overrideLessonId?: string
+  ) => {
+    registerImplicitImagesMap(block.inlineImages);
+    registerImplicitImagesMap(block.question?.inlineImages);
     setEditingBlockId(block.id);
     setInsertAtIndex(null);
+    setBlockTargetChapterId(overrideChapterId || activeChapterItem?.id || null);
+    setBlockTargetLessonId(overrideLessonId || activeLessonItem?.id || null);
+    setBlockSectionId(block.sectionId || '');
+    setQuickNewSectionTitle('');
     setBlockModalError(null);
     setBlockType(block.type);
     setBlockTitle(block.title || '');
@@ -1348,12 +1873,15 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     setBlockCalloutType(block.calloutType || 'formula');
     setBlockImageUrl(block.imageUrl || '');
     setBlockCaption(block.caption || '');
-    setShowTheoryImageUrlBar(false);
-    setTheoryImageUrl('');
-    setTheoryImageCaption('');
+    setBlockInlineImages(block.inlineImages ? { ...block.inlineImages } : {});
     setBlockAttachments(block.attachments ? [...block.attachments] : []);
     setBlockFileUrl('');
     setBlockFileName('');
+    setCpSampleAnswer('');
+    setCpQuestionImageCaption('');
+    setCpExplanationImageUrl('');
+    setCpExplanationImageCaption('');
+    setCpInlineImages({});
 
     if (block.type === 'question' && block.question) {
       const q = block.question;
@@ -1365,12 +1893,17 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               | 'multiple_choice'
               | 'true_false'
               | 'text_input'
-              | 'matching')
+              | 'matching'
+              | 'essay')
       );
       setCpQuestion(q.question || '');
       setCpQuestionImageUrl(q.imageUrl || '');
+      setCpQuestionImageCaption(q.imageCaption || '');
       setCpPoints(q.points || 1.0);
       setCpExplanation(q.explanation || '');
+      setCpExplanationImageUrl(q.explanationImageUrl || '');
+      setCpExplanationImageCaption(q.explanationImageCaption || '');
+      setCpInlineImages(q.inlineImages ? { ...q.inlineImages } : {});
       setCpOptions(
         q.options && q.options.length > 0 ? [...q.options] : ['', '', '', '']
       );
@@ -1385,6 +1918,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
             ]
       );
       setCpAcceptedAnswersText(formatAcceptedShortAnswersList(q.acceptedAnswers));
+      setCpSampleAnswer(q.sampleAnswer || '');
       if (q.type === 'matching') {
         setCpMatchingData({
           matchingLeftLabelStyle: q.matchingLeftLabelStyle || 'number',
@@ -1402,7 +1936,12 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
   };
 
   const handleSaveBlock = (): boolean => {
-    if (!activeLessonItem || !currentCourse || !activeChapterItem || !canManageCurrent) return false;
+    const resolvedChapterId = blockTargetChapterId || activeChapterItem?.id;
+    const resolvedLessonId = blockTargetLessonId || activeLessonItem?.id;
+    const resolvedLesson = (currentCourse?.chapters || [])
+      .find((c) => c.id === resolvedChapterId)
+      ?.lessons.find((l) => l.id === resolvedLessonId);
+    if (!resolvedLesson || !currentCourse || !resolvedChapterId || !canManageCurrent) return false;
     setBlockModalError(null);
 
     let builtBlock: LessonBlock;
@@ -1418,6 +1957,13 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         title: blockTitle.trim() || undefined,
         contentMarkdown: blockContent.trim(),
         imageUrl: blockImageUrl.trim() || undefined,
+        inlineImages: buildBlockInlineImagesMap({
+          id: editingBlockId || 'blk_tmp',
+          type: 'theory',
+          contentMarkdown: blockContent.trim(),
+          imageUrl: blockImageUrl.trim() || undefined,
+          inlineImages: blockInlineImages,
+        }),
       };
     } else if (blockType === 'callout') {
       if (!blockContent.trim() && !blockImageUrl.trim()) {
@@ -1431,10 +1977,17 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         calloutType: blockCalloutType,
         contentMarkdown: blockContent.trim(),
         imageUrl: blockImageUrl.trim() || undefined,
+        inlineImages: buildBlockInlineImagesMap({
+          id: editingBlockId || 'blk_tmp',
+          type: 'callout',
+          contentMarkdown: blockContent.trim(),
+          imageUrl: blockImageUrl.trim() || undefined,
+          inlineImages: blockInlineImages,
+        }),
       };
     } else if (blockType === 'image') {
       if (!blockImageUrl.trim()) {
-        setBlockModalError('Vui lòng tải ảnh từ máy tính hoặc dán đường dẫn URL hình ảnh!');
+        setBlockModalError('Vui lòng tải hoặc dán ảnh minh họa!');
         return false;
       }
       builtBlock = {
@@ -1443,6 +1996,13 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         title: blockTitle.trim() || undefined,
         imageUrl: blockImageUrl.trim(),
         caption: blockCaption.trim() || undefined,
+        inlineImages: buildBlockInlineImagesMap({
+          id: editingBlockId || 'blk_tmp',
+          type: 'image',
+          caption: blockCaption.trim() || undefined,
+          imageUrl: blockImageUrl.trim(),
+          inlineImages: blockInlineImages,
+        }),
       };
     } else if (blockType === 'file') {
       if (blockAttachments.length === 0) {
@@ -1455,6 +2015,12 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         title: blockTitle.trim() || 'Tài liệu học tập đính kèm',
         contentMarkdown: blockContent.trim() || undefined,
         attachments: blockAttachments,
+        inlineImages: buildBlockInlineImagesMap({
+          id: editingBlockId || 'blk_tmp',
+          type: 'file',
+          contentMarkdown: blockContent.trim() || undefined,
+          inlineImages: blockInlineImages,
+        }),
       };
     } else {
       if (!cpQuestion.trim()) {
@@ -1467,7 +2033,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         points: Number(cpPoints) || 1.0,
         question: cpQuestion.trim(),
         imageUrl: cpQuestionImageUrl.trim() || undefined,
+        imageCaption: cpQuestionImageCaption.trim() || undefined,
         explanation: cpExplanation.trim() || 'Xem lại phần lý thuyết ngay phía trên.',
+        explanationImageUrl: cpExplanationImageUrl.trim() || undefined,
+        explanationImageCaption: cpExplanationImageCaption.trim() || undefined,
       };
 
       if (cpType === 'single_choice') {
@@ -1536,22 +2105,32 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
           acc[l.id] = cpMatchingData.matchingCorrectPairs[l.id];
           return acc;
         }, {});
+      } else if (cpType === 'essay') {
+        q.sampleAnswer = cpSampleAnswer.trim() || undefined;
       }
+
+      q.inlineImages = cpInlineImages;
+      q.inlineImages = buildQuestionInlineImagesMap(q);
 
       builtBlock = {
         id: editingBlockId || 'blk_' + Date.now(),
         type: 'question',
-        title: blockTitle.trim() || 'Câu hỏi tương tác giữa bài',
+        title: blockTitle.trim() || (cpType === 'essay' ? 'Bài tập tự luận / Soạn thảo' : 'Câu hỏi tương tác giữa bài'),
         question: q,
       };
     }
 
+    builtBlock = {
+      ...builtBlock,
+      sectionId: blockSectionId || undefined,
+    };
+
     const updatedChapters = (currentCourse.chapters || []).map((ch) => {
-      if (ch.id !== activeChapterItem.id) return ch;
+      if (ch.id !== resolvedChapterId) return ch;
       return {
         ...ch,
         lessons: ch.lessons.map((les) => {
-          if (les.id !== activeLessonItem.id) return les;
+          if (les.id !== resolvedLessonId) return les;
           const existingBlocks = [...(les.blocks || [])];
           if (editingBlockId) {
             return {
@@ -1580,6 +2159,8 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     setIsBlockModalOpen(false);
     setEditingBlockId(null);
     setInsertAtIndex(null);
+    setBlockTargetChapterId(null);
+    setBlockTargetLessonId(null);
     showToast(editingBlockId ? '✓ Đã cập nhật nội dung bài học!' : '✓ Đã chèn nội dung vào bài học!');
     return true;
   };
@@ -1620,18 +2201,30 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       setBlockCalloutType(d.blockCalloutType || 'formula');
       setBlockImageUrl(d.blockImageUrl || '');
       setBlockCaption(d.blockCaption || '');
+      if (d.blockInlineImages && typeof d.blockInlineImages === 'object') {
+        registerImplicitImagesMap(d.blockInlineImages);
+        setBlockInlineImages(d.blockInlineImages);
+      }
       if (Array.isArray(d.blockAttachments)) setBlockAttachments(d.blockAttachments);
       if (d.cpType) setCpType(d.cpType);
       setCpQuestion(d.cpQuestion || '');
       setCpQuestionImageUrl(d.cpQuestionImageUrl || '');
+      setCpQuestionImageCaption(d.cpQuestionImageCaption || '');
       if (Array.isArray(d.cpOptions)) setCpOptions(d.cpOptions);
       if (typeof d.cpCorrectSingle === 'number') setCpCorrectSingle(d.cpCorrectSingle);
       if (Array.isArray(d.cpCorrectMulti)) setCpCorrectMulti(d.cpCorrectMulti);
       if (Array.isArray(d.cpTfItems)) setCpTfItems(d.cpTfItems);
       if (typeof d.cpAcceptedAnswersText === 'string') setCpAcceptedAnswersText(d.cpAcceptedAnswersText);
+      if (typeof d.cpSampleAnswer === 'string') setCpSampleAnswer(d.cpSampleAnswer);
       if (d.cpMatchingData) setCpMatchingData(d.cpMatchingData);
       if (typeof d.cpPoints === 'number') setCpPoints(d.cpPoints);
       if (typeof d.cpExplanation === 'string') setCpExplanation(d.cpExplanation);
+      setCpExplanationImageUrl(d.cpExplanationImageUrl || '');
+      setCpExplanationImageCaption(d.cpExplanationImageCaption || '');
+      if (d.cpInlineImages && typeof d.cpInlineImages === 'object') {
+        registerImplicitImagesMap(d.cpInlineImages);
+        setCpInlineImages(d.cpInlineImages);
+      }
       setIsBlockModalOpen(true);
     } catch {
       // ignore parse errors
@@ -1651,7 +2244,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
             blockCaption.trim() ||
             blockAttachments.length > 0 ||
             cpQuestion.trim() ||
-            cpExplanation.trim()
+            cpQuestionImageUrl.trim() ||
+            cpSampleAnswer.trim() ||
+            cpExplanation.trim() ||
+            cpExplanationImageUrl.trim()
         );
         if (!hasAnyDraft) {
           sessionStorage.removeItem(courseBlockDraftKey);
@@ -1670,18 +2266,24 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
             blockCalloutType,
             blockImageUrl,
             blockCaption,
+            blockInlineImages,
             blockAttachments,
             cpType,
             cpQuestion,
             cpQuestionImageUrl,
+            cpQuestionImageCaption,
             cpOptions,
             cpCorrectSingle,
             cpCorrectMulti,
             cpTfItems,
             cpAcceptedAnswersText,
+            cpSampleAnswer,
             cpMatchingData,
             cpPoints,
             cpExplanation,
+            cpExplanationImageUrl,
+            cpExplanationImageCaption,
+            cpInlineImages,
           })
         );
       } catch {
@@ -1706,18 +2308,24 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
     blockCalloutType,
     blockImageUrl,
     blockCaption,
+    blockInlineImages,
     blockAttachments,
     cpType,
     cpQuestion,
     cpQuestionImageUrl,
+    cpQuestionImageCaption,
     cpOptions,
     cpCorrectSingle,
     cpCorrectMulti,
     cpTfItems,
     cpAcceptedAnswersText,
+    cpSampleAnswer,
     cpMatchingData,
     cpPoints,
     cpExplanation,
+    cpExplanationImageUrl,
+    cpExplanationImageCaption,
+    cpInlineImages,
   ]);
 
   const courseDirtyStateRef = useRef<{ isDirty: () => boolean; saveAndExit: () => boolean }>({
@@ -1927,6 +2535,15 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
               <button
                 type="button"
+                onClick={handleOpenRecoveryModal}
+                className="px-3.5 py-2.5 text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Quét & khôi phục khóa học từ Cloud Firestore hoặc bản sao lưu trình duyệt"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Khôi phục khóa học</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   setCourseModalError(null);
                   setEditingCourse({
@@ -1957,25 +2574,39 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
         {/* Course Selection Tabs */}
         {visibleCourses.length === 0 ? (
-          <div className="pt-6 text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-200 mt-4">
+          <div className="pt-6 text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-200 mt-4 px-4">
             <GraduationCap className="w-10 h-10 text-slate-300 mx-auto mb-2" />
             <h3 className="text-sm font-bold text-slate-800">
               Chưa có khóa học công khai hoặc khóa học nào của bạn
             </h3>
             <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
               {isTeacher
-                ? 'Hãy nhấn "Thêm khóa học mới" để bắt đầu soạn chương trình học với lý thuyết, hình ảnh, câu hỏi giữa bài và gói SCORM 1.2.'
+                ? 'Hãy nhấn "Thêm khóa học mới" để bắt đầu soạn chương trình học, hoặc nhấn "Kiểm tra & Khôi phục" nếu bạn từng có khóa học trên Cloud / bản sao lưu trình duyệt.'
                 : 'Khóa học riêng tư hoặc nội bộ lớp học chỉ hiển thị với người tạo và thành viên trong lớp.'}
             </p>
+            {isTeacher && (
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenRecoveryModal}
+                  className="px-4 py-2 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-xl inline-flex items-center gap-1.5 shadow-xs cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Kiểm tra &amp; Khôi phục dữ liệu khóa học</span>
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="pt-4 flex items-center gap-2 overflow-x-auto pb-1">
             {visibleCourses.map((c) => {
               const isSelected = c.id === currentCourse?.id;
-              const chapCount = c.chapters?.length || 0;
-              const lesCount = c.chapters
-                ? c.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
-                : c.lessons?.length || 0;
+              const chapCount =
+                c.chapters && c.chapters.length > 0 ? c.chapters.length : c.chapterCount ?? 0;
+              const lesCount =
+                c.chapters && c.chapters.length > 0
+                  ? c.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
+                  : c.lessonCount ?? c.lessons?.length ?? 0;
               const tabSched = isItemScheduleOpen(c, 'course');
 
               return (
@@ -2082,10 +2713,44 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                {canManageCurrent && (
+                  <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setCourseViewMode('player')}
+                      className={`px-3 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                        courseViewMode === 'player'
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <BookOpen className="w-3.5 h-3.5" />
+                      <span>Soạn &amp; Học bài</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCourseViewMode('tree')}
+                      className={`px-3 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                        courseViewMode === 'tree'
+                          ? 'bg-purple-700 text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <FolderTree className="w-3.5 h-3.5" />
+                      <span>Cây nội dung (Cha / Con)</span>
+                    </button>
+                  </div>
+                )}
+
                 {!isCourseBlockedBySchedule && (
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
+                      const ready =
+                        currentCourse.detailsLoaded === false
+                          ? (await ensureCourseHydrated(currentCourse.id, currentCourse)) || currentCourse
+                          : currentCourse;
+                      if (ready !== currentCourse) onRefreshCourses();
                       setCoursePreviewShowAnswers(false);
                       setCoursePreviewTab('full_syllabus');
                       setPreviewLessonId(activeLessonItem?.id || allLessons[0]?.lesson.id || '');
@@ -2103,7 +2768,13 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                   <>
                     <button
                       type="button"
-                      onClick={() => downloadCourseAsScorm12Zip(currentCourse)}
+                      onClick={async () => {
+                        const ready =
+                          currentCourse.detailsLoaded === false
+                            ? (await ensureCourseHydrated(currentCourse.id, currentCourse)) || currentCourse
+                            : currentCourse;
+                        downloadCourseAsScorm12Zip(ready);
+                      }}
                       className="px-3 py-1.5 text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 rounded-xl flex items-center gap-1.5 cursor-pointer"
                       title="Tải xuống gói chuẩn SCORM 1.2 (.zip) gồm imsmanifest.xml"
                     >
@@ -2134,6 +2805,41 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 )}
               </div>
             </div>
+
+            {canManageCurrent && isCourseLegacyOrBloated(currentCourse) && (
+              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs text-amber-900">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Khóa học đang dùng cấu trúc dữ liệu cũ hoặc còn ảnh/tệp Base64 nhúng trực tiếp</span>
+                  </div>
+                  <p className="text-[11px] text-amber-800 mt-0.5">
+                    Chuyển sang subcollection (chapters / lessons / blocks) và URL gọn nhẹ để tránh lỗi giới hạn 1 MB trên Cloud Firestore.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={isMigratingCourse}
+                    onClick={() => void handleMigrateCurrentCourse()}
+                    className="px-3 py-1.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-lg cursor-pointer flex items-center gap-1.5"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isMigratingCourse ? 'animate-spin' : ''}`} />
+                    <span>{isMigratingCourse ? 'Đang tách...' : 'Tối ưu khóa này'}</span>
+                  </button>
+                  {legacyCourseCount > 1 && (
+                    <button
+                      type="button"
+                      disabled={isMigratingCourse}
+                      onClick={() => void handleMigrateAllCourses()}
+                      className="px-3 py-1.5 text-xs font-bold bg-white hover:bg-amber-100 disabled:opacity-50 text-amber-900 border border-amber-300 rounded-lg cursor-pointer"
+                    >
+                      Tối ưu tất cả ({legacyCourseCount})
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Progress Card */}
             <div className="bg-gradient-to-r from-purple-50/70 via-emerald-50/50 to-blue-50/70 p-4 rounded-xl border border-purple-100">
@@ -2211,7 +2917,61 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         </div>
       )}
 
-      {currentCourse && !isCourseBlockedBySchedule && (
+      {currentCourse && currentCourse.schemaVersion === 2 && currentCourse.detailsLoaded === false && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center space-y-3 shadow-xs">
+          <RefreshCw
+            className={`w-7 h-7 text-purple-600 mx-auto ${isHydratingCourse ? 'animate-spin' : ''}`}
+          />
+          <div className="text-sm font-bold text-slate-800">
+            Đang tải nội dung chương &amp; bài học của khóa học...
+          </div>
+          <p className="text-xs text-slate-500">
+            Dữ liệu chi tiết đang được nạp theo yêu cầu từ Cloud Firestore subcollection để tiết kiệm băng thông.
+          </p>
+        </div>
+      )}
+
+      {currentCourse &&
+        currentCourse.detailsLoaded !== false &&
+        !isCourseBlockedBySchedule &&
+        canManageCurrent &&
+        courseViewMode === 'tree' && (
+        <CourseContentTree
+          course={currentCourse}
+          onUpdateCourse={(updatedCourse, msg) => {
+            saveCourse(updatedCourse);
+            onRefreshCourses();
+            if (msg) showToast(msg);
+          }}
+          onOpenLessonInPlayer={(chapId, lesId, blkId) => {
+            setCourseViewMode('player');
+            setActiveChapterId(chapId);
+            setActiveLessonId(lesId);
+            if (blkId) {
+              const targetLes = (currentCourse.chapters || [])
+                .find((c) => c.id === chapId)
+                ?.lessons.find((l) => l.id === lesId);
+              const idx = (targetLes?.blocks || []).findIndex((b) => b.id === blkId);
+              if (idx >= 0) setActiveBlockIndex(idx);
+            }
+          }}
+          onOpenCreateBlockModal={(chapId, lesId, preferredType, secId) => {
+            setActiveChapterId(chapId);
+            setActiveLessonId(lesId);
+            openCreateBlockModal(preferredType, null, secId, chapId, lesId);
+          }}
+          onOpenEditBlockModal={(chapId, lesId, block) => {
+            setActiveChapterId(chapId);
+            setActiveLessonId(lesId);
+            openEditBlockModal(block, chapId, lesId);
+          }}
+        />
+      )}
+
+      {currentCourse &&
+        currentCourse.detailsLoaded !== false &&
+        !isCourseBlockedBySchedule &&
+        (!canManageCurrent || courseViewMode === 'player') && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* LEFT COLUMN: CHAPTERS & LESSONS ACCORDION */}
           <div className="lg:col-span-4 space-y-4">
@@ -2313,6 +3073,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                   id: chap.id,
                                   title: chap.title,
                                   description: chap.description || '',
+                                  inlineImages: chap.inlineImages,
                                   order: chap.order,
                                   chapterExamId: chap.chapterExamId,
                                 });
@@ -2630,10 +3391,97 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
                 {/* Lesson Summary */}
                 {activeLessonItem.summary && (
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 leading-relaxed italic">
-                    <strong>Mục tiêu bài học:</strong> {activeLessonItem.summary}
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 leading-relaxed space-y-1">
+                    <strong className="text-slate-800 block">Mục tiêu bài học:</strong>
+                    <RichContentRenderer
+                      content={activeLessonItem.summary}
+                      inlineImages={activeLessonItem.inlineImages}
+                    />
                   </div>
                 )}
+
+                {/* Sub-section Outline (Phân mục trong bài học) */}
+                {(activeLessonItem.sections || []).length > 0 && (() => {
+                  const orderedSecs = buildOrderedSectionNodes(activeLessonItem.sections);
+                  return (
+                    <div className="p-3.5 rounded-xl bg-indigo-50/50 border border-indigo-200 space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
+                          <GitBranch className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Cấu trúc phân mục trong bài học ({orderedSecs.length} mục):</span>
+                        </div>
+                        {canManageCurrent && (
+                          <button
+                            type="button"
+                            onClick={() => setCourseViewMode('tree')}
+                            className="text-[11px] font-bold text-indigo-700 hover:underline cursor-pointer"
+                          >
+                            Điều chỉnh trên Cây nội dung →
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        {orderedSecs.map((node) => {
+                          const sec = node.section;
+                          const secBlockIndices = activeLessonBlocks
+                            .map((b, i) => (b.sectionId === sec.id ? i : -1))
+                            .filter((i) => i >= 0);
+                          const firstBlkIdx = secBlockIndices[0] ?? -1;
+                          const isLockedSec =
+                            !canManageCurrent && firstBlkIdx >= 0 && firstBlkIdx > maxUnlockedBlockIndex;
+                          const doneInSec = secBlockIndices.filter((i) =>
+                            isBlockCompletedForProgress(activeLessonBlocks[i], progress)
+                          ).length;
+                          const isActiveSec =
+                            activeBlockItem?.sectionId === sec.id &&
+                            (!canManageCurrent ? true : false);
+
+                          return (
+                            <div
+                              key={sec.id}
+                              style={{ paddingLeft: `${node.depth * 18 + 10}px` }}
+                              onClick={() => {
+                                if (firstBlkIdx >= 0 && !isLockedSec) {
+                                  handleSelectBlock(firstBlkIdx);
+                                }
+                              }}
+                              className={`py-1.5 pr-2.5 rounded-lg border text-xs flex items-center justify-between gap-2 transition-colors ${
+                                firstBlkIdx >= 0 && !isLockedSec ? 'cursor-pointer' : ''
+                              } ${
+                                isActiveSec
+                                  ? 'bg-indigo-600 text-white border-indigo-600'
+                                  : isLockedSec
+                                  ? 'bg-white/60 text-slate-400 border-indigo-100'
+                                  : 'bg-white hover:bg-indigo-50 text-slate-800 border-indigo-100'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className={`font-mono font-bold text-[11px] shrink-0 ${isActiveSec ? 'text-indigo-100' : 'text-indigo-700'}`}>
+                                  {node.numberPath}
+                                </span>
+                                <span className="font-semibold truncate">{sec.title}</span>
+                                {sec.summary && (
+                                  <span className={`hidden sm:inline text-[11px] truncate max-w-[220px] ${isActiveSec ? 'text-indigo-100' : 'text-slate-500'}`}>
+                                    — {sec.summary}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0 font-mono text-[10px]">
+                                {secBlockIndices.length > 0 ? (
+                                  <span className={isActiveSec ? 'text-indigo-100' : 'text-slate-500'}>
+                                    {doneInSec}/{secBlockIndices.length} phần
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 italic font-sans">Chưa có khối</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Student Sequential Block Stepper Bar */}
                 {!canManageCurrent && activeLessonBlocks.length > 0 && (
@@ -2769,6 +3617,18 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                               : 'bg-white border-slate-200'
                           }`}
                         >
+                          {/* Section breadcrumb pill if assigned */}
+                          {block.sectionId && activeLessonItem.sections && activeLessonItem.sections.length > 0 && (() => {
+                            const secBread = getSectionBreadcrumb(activeLessonItem.sections, block.sectionId);
+                            if (!secBread) return null;
+                            return (
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-indigo-50 border border-indigo-200 text-[11px] font-bold text-indigo-800">
+                                <GitBranch className="w-3 h-3 text-indigo-600 shrink-0" />
+                                <span>Phân mục: {secBread}</span>
+                              </div>
+                            );
+                          })()}
+
                           {/* Creator action header on every block */}
                           {canManageCurrent && (
                             <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200/70 text-[11px]">
@@ -2838,6 +3698,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                 <RichContentRenderer
                                   content={block.contentMarkdown || ''}
                                   imageUrl={block.imageUrl}
+                                  inlineImages={block.inlineImages}
                                 />
                               </div>
                             </div>
@@ -2854,6 +3715,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                 <RichContentRenderer
                                   content={block.contentMarkdown || ''}
                                   imageUrl={block.imageUrl}
+                                  inlineImages={block.inlineImages}
                                 />
                               </div>
                             </div>
@@ -2876,7 +3738,12 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                 />
                               )}
                               {block.caption && (
-                                <p className="text-xs text-slate-600 italic">{block.caption}</p>
+                                <div className="text-xs text-slate-600 italic">
+                                  <RichContentRenderer
+                                    content={block.caption}
+                                    inlineImages={block.inlineImages}
+                                  />
+                                </div>
                               )}
                             </div>
                           )}
@@ -2895,7 +3762,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                               </div>
                               {block.contentMarkdown && (
                                 <div className="text-xs sm:text-sm text-slate-700 leading-relaxed">
-                                  <RichContentRenderer content={block.contentMarkdown} />
+                                  <RichContentRenderer
+                                    content={block.contentMarkdown}
+                                    inlineImages={block.inlineImages}
+                                  />
                                 </div>
                               )}
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -2984,7 +3854,12 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                   </div>
 
                                   <div className="text-sm font-semibold text-slate-900 leading-relaxed">
-                                    <RichContentRenderer content={q.question} imageUrl={q.imageUrl} />
+                                    <RichContentRenderer
+                                      content={q.question}
+                                      imageUrl={q.imageUrl}
+                                      imageCaption={q.imageCaption}
+                                      inlineImages={q.inlineImages}
+                                    />
                                   </div>
 
                                   {/* Single choice */}
@@ -3019,7 +3894,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                               {letter}
                                             </span>
                                             <div className="flex-1">
-                                              <RichContentRenderer content={opt} />
+                                              <RichContentRenderer content={opt} inlineImages={q.inlineImages} />
                                             </div>
                                           </div>
                                         );
@@ -3068,7 +3943,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                               {isSelected ? '✓' : letter}
                                             </span>
                                             <div className="flex-1">
-                                              <RichContentRenderer content={opt} />
+                                              <RichContentRenderer content={opt} inlineImages={q.inlineImages} />
                                             </div>
                                           </div>
                                         );
@@ -3097,7 +3972,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                               <span className="font-bold text-slate-700 shrink-0">
                                                 {letter})
                                               </span>
-                                              <RichContentRenderer content={item.statement} />
+                                              <RichContentRenderer content={item.statement} inlineImages={q.inlineImages} />
                                             </div>
                                             <div className="flex items-center gap-1.5 shrink-0">
                                               <button
@@ -3187,14 +4062,155 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                     />
                                   )}
 
-                                  <div className="flex items-center justify-between pt-1">
+                                  {/* Essay / Online Composition */}
+                                  {q.type === 'essay' && (
+                                    <div className="p-3.5 sm:p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <div>
+                                          <label className="block text-xs font-bold text-slate-800">
+                                            Soạn thảo bài làm tự luận trực tuyến:
+                                          </label>
+                                          <p className="text-[11px] text-slate-500 mt-0.5">
+                                            Hỗ trợ văn bản, công thức Toán $...$, căn thức, phân số, tích phân và bảng biến thiên.
+                                          </p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <CopyContentButton
+                                            compact
+                                            getText={() => (typeof userChoice === 'string' ? userChoice : '')}
+                                            title="Sao chép toàn bộ nội dung bài làm tự luận"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setEssayPreviewByBlock((prev) => ({
+                                                ...prev,
+                                                [block.id]: !(prev[block.id] ?? true),
+                                              }))
+                                            }
+                                            className="px-2.5 py-1 text-xs font-semibold text-purple-700 bg-white border border-purple-200 hover:bg-purple-50 rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                          >
+                                            <Eye className="w-3.5 h-3.5" />
+                                            <span>
+                                              {(essayPreviewByBlock[block.id] ?? true)
+                                                ? 'Ẩn xem trước'
+                                                : 'Hiện xem trước'}
+                                            </span>
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      <MathToolbar
+                                        targetRef={{
+                                          get current() {
+                                            return essayPlayerRefs.current[block.id] || null;
+                                          },
+                                        }}
+                                        onInsert={(snippet) => {
+                                          const targetEl = essayPlayerRefs.current[block.id];
+                                          if (!insertTextAtEditableElement(targetEl, snippet)) {
+                                            const cur = typeof userChoice === 'string' ? userChoice : '';
+                                            const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
+                                            setCheckpointAnswers((prev) => ({
+                                              ...prev,
+                                              [block.id]: cur ? (isBlock ? `${cur}\n${snippet}` : `${cur} ${snippet}`) : snippet,
+                                            }));
+                                          }
+                                        }}
+                                        onInsertInlineImage={(imgId, imgSrc, title) => {
+                                          registerImplicitImage(imgSrc, imgId);
+                                          setCheckpointInlineImages((prev) => ({
+                                            ...prev,
+                                            [block.id]: { ...(prev[block.id] || {}), [imgId]: imgSrc },
+                                          }));
+                                          const token = formatInlineImageToken(imgId, title);
+                                          const targetEl = essayPlayerRefs.current[block.id];
+                                          if (!insertTextAtEditableElement(targetEl, token)) {
+                                            const cur = typeof userChoice === 'string' ? userChoice : '';
+                                            setCheckpointAnswers((prev) => ({
+                                              ...prev,
+                                              [block.id]: cur ? `${cur}\n${token}` : token,
+                                            }));
+                                          }
+                                        }}
+                                      />
+
+                                      <textarea
+                                        ref={(el) => {
+                                          essayPlayerRefs.current[block.id] = el;
+                                        }}
+                                        rows={6}
+                                        value={typeof userChoice === 'string' ? userChoice : ''}
+                                        onChange={(e) =>
+                                          setCheckpointAnswers((prev) => ({
+                                            ...prev,
+                                            [block.id]: e.target.value,
+                                          }))
+                                        }
+                                        onPaste={(e) => {
+                                          const file = extractImageFileFromClipboardEvent(e.nativeEvent);
+                                          if (!file) return;
+                                          e.preventDefault();
+                                          const el = e.currentTarget;
+                                          const range = {
+                                            start: el.selectionStart ?? el.value.length,
+                                            end: el.selectionEnd ?? el.value.length,
+                                          };
+                                          void processImageFile(file, 1200, 0.85)
+                                            .then((compressed) => uploadImageOrKeepFallback(compressed, file.name))
+                                            .then((uploadedUrl) => {
+                                              setCheckpointPasteModal({
+                                                blockId: block.id,
+                                                imageSrc: uploadedUrl,
+                                                defaultTitle: 'Hình bài làm',
+                                                el,
+                                                range,
+                                              });
+                                            })
+                                            .catch(() => {});
+                                        }}
+                                        placeholder="Nhập bài làm tự luận của bạn tại đây (có thể dùng nút Chèn ảnh hoặc Ctrl+V dán ảnh ngay tại con trỏ)..."
+                                        className="w-full p-3 text-xs sm:text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-600 font-mono leading-relaxed select-text"
+                                      />
+
+                                      <InlineImageStrip
+                                        content={typeof userChoice === 'string' ? userChoice : ''}
+                                        inlineImages={checkpointInlineImages[block.id]}
+                                        label="Ảnh đã chèn trong bài làm tự luận"
+                                        onUpdateContent={(next) =>
+                                          setCheckpointAnswers((prev) => ({
+                                            ...prev,
+                                            [block.id]: next,
+                                          }))
+                                        }
+                                      />
+
+                                      {(essayPreviewByBlock[block.id] ?? true) &&
+                                        typeof userChoice === 'string' &&
+                                        userChoice.trim() && (
+                                          <div className="p-3 bg-white border border-purple-200 rounded-xl space-y-1.5 select-text">
+                                            <div className="text-[11px] font-bold uppercase tracking-wider text-purple-700">
+                                              Xem trước bài làm (KaTeX &amp; ảnh):
+                                            </div>
+                                            <div className="text-xs sm:text-sm text-slate-900 leading-relaxed">
+                                              <RichContentRenderer
+                                                content={userChoice}
+                                                inlineImages={checkpointInlineImages[block.id]}
+                                              />
+                                            </div>
+                                          </div>
+                                        )}
+                                    </div>
+                                  )}
+
+                                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                                     <button
                                       type="button"
                                       onClick={() => handleGradeCheckpoint(block)}
-                                      className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer"
+                                      className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                                     >
                                       <Send className="w-3.5 h-3.5" />
-                                      <span>Kiểm tra đáp án</span>
+                                      <span>{q.type === 'essay' ? 'Lưu & Nộp bài tự luận' : 'Kiểm tra đáp án'}</span>
                                     </button>
 
                                     {evalResult && (
@@ -3205,7 +4221,11 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                             : 'bg-rose-100 text-rose-800 border-rose-300'
                                         }`}
                                       >
-                                        {evalResult.isCorrect
+                                        {q.type === 'essay'
+                                          ? evalResult.isCorrect
+                                            ? '✓ Đã nộp bài tự luận'
+                                            : 'Chưa nộp bài tự luận'
+                                          : evalResult.isCorrect
                                           ? `✓ Chính xác (${evalResult.earned}/${evalResult.max}đ)`
                                           : `✗ Chưa đúng (${evalResult.earned}/${evalResult.max}đ)`}
                                       </span>
@@ -3213,13 +4233,33 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                   </div>
 
                                   {evalResult && (
-                                    <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-xs space-y-1.5">
+                                    <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-xs space-y-2">
+                                      {q.type === 'essay' && q.sampleAnswer && (
+                                        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 space-y-1">
+                                          <div className="font-bold text-emerald-900">
+                                            Đáp án tham khảo / Gợi ý trình bày:
+                                          </div>
+                                          <div className="text-slate-800 leading-relaxed">
+                                            <RichContentRenderer
+                                              content={q.sampleAnswer}
+                                              inlineImages={q.inlineImages}
+                                            />
+                                          </div>
+                                        </div>
+                                      )}
                                       <div className="font-bold text-purple-900 flex items-center gap-1">
                                         <Sparkles className="w-3.5 h-3.5 text-purple-700" />
                                         <span>Lời giải & Hướng dẫn phương pháp:</span>
                                       </div>
                                       <div className="text-slate-800 leading-relaxed">
-                                        <RichContentRenderer content={evalResult.explanation} />
+                                        <RichContentRenderer
+                                          content={evalResult.explanation}
+                                          imageUrl={evalResult.explanationImageUrl || q.explanationImageUrl}
+                                          imageCaption={
+                                            evalResult.explanationImageCaption || q.explanationImageCaption
+                                          }
+                                          inlineImages={evalResult.inlineImages || q.inlineImages}
+                                        />
                                       </div>
                                     </div>
                                   )}
@@ -3246,7 +4286,9 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                 <Lock className="w-3 h-3" />
                                 <span>
                                   {block.type === 'question'
-                                    ? 'Trả lời đúng 100% và bấm Kiểm tra đáp án để hoàn thành block'
+                                    ? block.question?.type === 'essay'
+                                      ? 'Soạn bài tự luận và bấm Lưu & Nộp bài để hoàn thành block'
+                                      : 'Trả lời đúng 100% và bấm Kiểm tra đáp án để hoàn thành block'
                                     : 'Cuộn xuống cuối nội dung block để hoàn thành'}
                                 </span>
                               </span>
@@ -3681,17 +4723,119 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Mô tả khóa học:</label>
+              <div className="space-y-2">
+                <AttachedImageBox
+                  compact
+                  label="Ảnh bìa khóa học (tùy chọn, tự lưu dạng URL gọn nhẹ):"
+                  imageUrl={editingCourse.coverImageUrl || ''}
+                  showCaption={false}
+                  onChangeImage={(url) =>
+                    setEditingCourse((prev) => (prev ? { ...prev, coverImageUrl: url } : prev))
+                  }
+                />
+                <input
+                  type="text"
+                  value={editingCourse.coverImageUrl || ''}
+                  onChange={(e) =>
+                    setEditingCourse({ ...editingCourse, coverImageUrl: e.target.value })
+                  }
+                  placeholder="Hoặc dán đường dẫn ảnh bìa (https://... hoặc /api/files/...)"
+                  className="w-full px-3 py-1.5 border border-slate-200 rounded-lg font-mono text-[11px]"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-bold text-slate-700">Mô tả khóa học:</label>
+                  <label
+                    onMouseDown={() => captureTextareaRange(courseDescRef.current)}
+                    className="px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer text-[11px]"
+                  >
+                    <Upload className="w-3 h-3" />
+                    <span>Chèn ảnh tại con trỏ</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        void handleOpenCursorImageUpload(
+                          e.target.files?.[0],
+                          'courseDesc',
+                          courseDescRef.current
+                        );
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+                <MathToolbar
+                  targetRef={courseDescRef}
+                  onInsert={(latex) => {
+                    if (!insertTextAtEditableElement(courseDescRef.current, latex)) {
+                      setEditingCourse((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              description: prev.description ? `${prev.description} ${latex}` : latex,
+                            }
+                          : prev
+                      );
+                    }
+                  }}
+                  onInsertInlineImage={(imgId, imgSrc, title) =>
+                    insertImplicitTokenAtTarget(
+                      'courseDesc',
+                      imgId,
+                      imgSrc,
+                      title,
+                      courseDescRef.current,
+                      lastSelectionSnapshotRef.current.el === courseDescRef.current
+                        ? lastSelectionSnapshotRef.current.range
+                        : null
+                    )
+                  }
+                />
                 <textarea
-                  rows={2}
+                  ref={courseDescRef}
+                  rows={3}
                   value={editingCourse.description || ''}
                   onChange={(e) =>
                     setEditingCourse({ ...editingCourse, description: e.target.value })
                   }
-                  placeholder="Mục tiêu, đối tượng học sinh và lộ trình..."
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  onPaste={(e) => void handleTextareaPasteImage(e, 'courseDesc')}
+                  placeholder="Mục tiêu, đối tượng học sinh và lộ trình (hỗ trợ KaTeX, bảng, Ctrl+V dán ảnh tại con trỏ)..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono text-xs"
                 />
+                <InlineImageStrip
+                  content={editingCourse.description || ''}
+                  inlineImages={editingCourse.inlineImages}
+                  label="Ảnh trong mô tả khóa học"
+                  onUpdateContent={(next) =>
+                    setEditingCourse((prev) => (prev ? { ...prev, description: next } : prev))
+                  }
+                />
+                <div className="p-2.5 bg-blue-50/50 border border-blue-200 rounded-xl space-y-1">
+                  <div className="text-[10px] font-bold uppercase text-blue-800">
+                    Xem trước tiêu đề &amp; mô tả khóa học:
+                  </div>
+                  <div className="p-2.5 bg-white rounded-lg border border-blue-100 space-y-1">
+                    <div className="font-bold text-sm text-slate-900">
+                      {editingCourse.title?.trim() || (
+                        <span className="text-slate-400 italic font-normal">(Chưa nhập tên khóa học)</span>
+                      )}
+                    </div>
+                    {editingCourse.description?.trim() ? (
+                      <div className="text-xs text-slate-700">
+                        <RichContentRenderer
+                          content={editingCourse.description}
+                          inlineImages={editingCourse.inlineImages}
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400 italic">(Chưa có mô tả)</div>
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -3863,17 +5007,98 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Mô tả ngắn gọn:</label>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-bold text-slate-700">Mô tả ngắn gọn:</label>
+                  <label
+                    onMouseDown={() => captureTextareaRange(chapterDescRef.current)}
+                    className="px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer text-[11px]"
+                  >
+                    <Upload className="w-3 h-3" />
+                    <span>Chèn ảnh tại con trỏ</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        void handleOpenCursorImageUpload(
+                          e.target.files?.[0],
+                          'chapterDesc',
+                          chapterDescRef.current
+                        );
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+                <MathToolbar
+                  targetRef={chapterDescRef}
+                  onInsert={(latex) => {
+                    if (!insertTextAtEditableElement(chapterDescRef.current, latex)) {
+                      setEditingChapter((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              description: prev.description ? `${prev.description} ${latex}` : latex,
+                            }
+                          : prev
+                      );
+                    }
+                  }}
+                  onInsertInlineImage={(imgId, imgSrc, title) =>
+                    insertImplicitTokenAtTarget(
+                      'chapterDesc',
+                      imgId,
+                      imgSrc,
+                      title,
+                      chapterDescRef.current,
+                      lastSelectionSnapshotRef.current.el === chapterDescRef.current
+                        ? lastSelectionSnapshotRef.current.range
+                        : null
+                    )
+                  }
+                />
                 <textarea
-                  rows={2}
+                  ref={chapterDescRef}
+                  rows={3}
                   value={editingChapter.description}
                   onChange={(e) =>
                     setEditingChapter({ ...editingChapter, description: e.target.value })
                   }
-                  placeholder="Tóm tắt trọng tâm chương..."
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  onPaste={(e) => void handleTextareaPasteImage(e, 'chapterDesc')}
+                  placeholder="Tóm tắt trọng tâm chương (hỗ trợ KaTeX, Ctrl+V dán ảnh tại con trỏ)..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono text-xs"
                 />
+                <InlineImageStrip
+                  content={editingChapter.description}
+                  inlineImages={editingChapter.inlineImages}
+                  label="Ảnh trong mô tả chương"
+                  onUpdateContent={(next) =>
+                    setEditingChapter((prev) => (prev ? { ...prev, description: next } : prev))
+                  }
+                />
+                <div className="p-2.5 bg-blue-50/50 border border-blue-200 rounded-xl space-y-1">
+                  <div className="text-[10px] font-bold uppercase text-blue-800">
+                    Xem trước tiêu đề &amp; mô tả chương:
+                  </div>
+                  <div className="p-2.5 bg-white rounded-lg border border-blue-100 space-y-1">
+                    <div className="font-bold text-sm text-slate-900">
+                      {editingChapter.title.trim() || (
+                        <span className="text-slate-400 italic font-normal">(Chưa nhập tên chương)</span>
+                      )}
+                    </div>
+                    {editingChapter.description.trim() ? (
+                      <div className="text-xs text-slate-700">
+                        <RichContentRenderer
+                          content={editingChapter.description}
+                          inlineImages={editingChapter.inlineImages}
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400 italic">(Chưa có mô tả chương)</div>
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -3985,22 +5210,285 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 />
               </div>
 
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-1">
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="font-bold text-slate-700 block">
                     Tóm lược bài học / Mục tiêu:
                   </label>
-                  <CopyContentButton compact getText={() => editingLesson.summary || ''} />
+                  <div className="flex items-center gap-1.5">
+                    <label
+                      onMouseDown={() => captureTextareaRange(lessonSummaryRef.current)}
+                      className="px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer text-[11px]"
+                    >
+                      <Upload className="w-3 h-3" />
+                      <span>Chèn ảnh tại con trỏ</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          void handleOpenCursorImageUpload(
+                            e.target.files?.[0],
+                            'lessonSummary',
+                            lessonSummaryRef.current
+                          );
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                    <CopyContentButton compact getText={() => editingLesson.summary || ''} />
+                  </div>
                 </div>
+                <MathToolbar
+                  targetRef={lessonSummaryRef}
+                  onInsert={(latex) => {
+                    if (!insertTextAtEditableElement(lessonSummaryRef.current, latex)) {
+                      setEditingLesson((prev) =>
+                        prev
+                          ? { ...prev, summary: prev.summary ? `${prev.summary} ${latex}` : latex }
+                          : prev
+                      );
+                    }
+                  }}
+                  onInsertInlineImage={(imgId, imgSrc, title) =>
+                    insertImplicitTokenAtTarget(
+                      'lessonSummary',
+                      imgId,
+                      imgSrc,
+                      title,
+                      lessonSummaryRef.current,
+                      lastSelectionSnapshotRef.current.el === lessonSummaryRef.current
+                        ? lastSelectionSnapshotRef.current.range
+                        : null
+                    )
+                  }
+                />
                 <textarea
-                  rows={2}
+                  ref={lessonSummaryRef}
+                  rows={3}
                   value={editingLesson.summary || ''}
                   onChange={(e) =>
                     setEditingLesson({ ...editingLesson, summary: e.target.value })
                   }
-                  placeholder="Những kiến thức cần nắm sau khi học xong bài này..."
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  onPaste={(e) => void handleTextareaPasteImage(e, 'lessonSummary')}
+                  placeholder="Những kiến thức cần nắm sau khi học xong bài này (hỗ trợ KaTeX, Ctrl+V dán ảnh tại con trỏ)..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono text-xs"
                 />
+                <InlineImageStrip
+                  content={editingLesson.summary || ''}
+                  inlineImages={editingLesson.inlineImages}
+                  label="Ảnh trong mục tiêu bài học"
+                  onUpdateContent={(next) =>
+                    setEditingLesson((prev) => (prev ? { ...prev, summary: next } : prev))
+                  }
+                />
+                <div className="p-2.5 bg-blue-50/50 border border-blue-200 rounded-xl space-y-1">
+                  <div className="text-[10px] font-bold uppercase text-blue-800">
+                    Xem trước tiêu đề &amp; mục tiêu bài học:
+                  </div>
+                  <div className="p-2.5 bg-white rounded-lg border border-blue-100 space-y-1">
+                    <div className="font-bold text-sm text-slate-900">
+                      {editingLesson.title?.trim() || (
+                        <span className="text-slate-400 italic font-normal">(Chưa nhập tiêu đề bài học)</span>
+                      )}
+                    </div>
+                    {editingLesson.summary?.trim() ? (
+                      <div className="text-xs text-slate-700">
+                        <RichContentRenderer
+                          content={editingLesson.summary}
+                          inlineImages={editingLesson.inlineImages}
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400 italic">(Chưa có tóm lược bài học)</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sub-sections manager inside Lesson Modal */}
+              <div className="p-3.5 rounded-xl bg-indigo-50/40 border border-indigo-200 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-bold text-indigo-950 flex items-center gap-1.5">
+                    <GitBranch className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Phân mục nhỏ trong bài học ({(editingLesson.sections || []).length} mục):</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const curSecs = editingLesson.sections || [];
+                      const rootCount = curSecs.filter((s) => !s.parentSectionId).length;
+                      const newSec: LessonSection = {
+                        id: `sec_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+                        title: `Phân mục ${rootCount + 1}`,
+                        summary: '',
+                        order: rootCount + 1,
+                      };
+                      setEditingLesson((prev) =>
+                        prev ? { ...prev, sections: [...curSecs, newSec] } : prev
+                      );
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Thêm phân mục</span>
+                  </button>
+                </div>
+
+                {(editingLesson.sections || []).length === 0 ? (
+                  <p className="text-[11px] text-slate-500 italic">
+                    Chia nhỏ bài học thành các mục (ví dụ: I. Khái niệm, 1.1. Định nghĩa, II. Ví dụ...) để theo dõi dễ hơn.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {buildOrderedSectionNodes(editingLesson.sections).map((node, nIdx, arr) => {
+                      const sec = node.section;
+                      const secs = editingLesson.sections || [];
+                      const siblings = arr.filter((x) => (x.parentId || '') === (node.parentId || ''));
+                      const sibPos = siblings.findIndex((x) => x.section.id === sec.id);
+                      return (
+                        <div
+                          key={sec.id}
+                          style={{ marginLeft: `${Math.min(3, node.depth) * 16}px` }}
+                          className="p-2 rounded-lg bg-white border border-indigo-200 space-y-1.5"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono font-bold text-[11px] text-indigo-700 shrink-0">
+                              {node.numberPath}
+                            </span>
+                            <input
+                              type="text"
+                              value={sec.title}
+                              onChange={(e) =>
+                                setEditingLesson((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        sections: (prev.sections || []).map((s) =>
+                                          s.id === sec.id ? { ...s, title: e.target.value } : s
+                                        ),
+                                      }
+                                    : prev
+                                )
+                              }
+                              placeholder="Tên phân mục..."
+                              className="flex-1 px-2 py-1 border border-slate-200 rounded text-xs font-semibold"
+                            />
+                            {sec.parentSectionId && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const parentSec = secs.find((s) => s.id === sec.parentSectionId);
+                                  const nextParent = parentSec?.parentSectionId || undefined;
+                                  setEditingLesson((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          sections: (prev.sections || []).map((s) =>
+                                            s.id === sec.id
+                                              ? { ...s, parentSectionId: nextParent }
+                                              : s
+                                          ),
+                                        }
+                                      : prev
+                                  );
+                                }}
+                                className="p-1 text-slate-600 hover:bg-slate-100 rounded cursor-pointer"
+                                title="Đưa ra cấp cha"
+                              >
+                                <IndentDecrease className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {sibPos > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const prevSib = siblings[sibPos - 1];
+                                  setEditingLesson((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          sections: (prev.sections || []).map((s) =>
+                                            s.id === sec.id
+                                              ? { ...s, parentSectionId: prevSib.section.id }
+                                              : s
+                                          ),
+                                        }
+                                      : prev
+                                  );
+                                }}
+                                className="p-1 text-slate-600 hover:bg-slate-100 rounded cursor-pointer"
+                                title="Lồng vào làm con mục phía trên"
+                              >
+                                <IndentIncrease className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newChild: LessonSection = {
+                                  id: `sec_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+                                  title: 'Mục con mới',
+                                  summary: '',
+                                  parentSectionId: sec.id,
+                                  order: secs.filter((s) => s.parentSectionId === sec.id).length + 1,
+                                };
+                                setEditingLesson((prev) =>
+                                  prev ? { ...prev, sections: [...secs, newChild] } : prev
+                                );
+                              }}
+                              className="p-1 text-indigo-700 hover:bg-indigo-50 rounded cursor-pointer"
+                              title="Thêm mục con"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingLesson((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        sections: (prev.sections || [])
+                                          .filter((s) => s.id !== sec.id)
+                                          .map((s) =>
+                                            s.parentSectionId === sec.id
+                                              ? { ...s, parentSectionId: sec.parentSectionId }
+                                              : s
+                                          ),
+                                      }
+                                    : prev
+                                );
+                              }}
+                              className="p-1 text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
+                              title="Xóa phân mục"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <input
+                            type="text"
+                            value={sec.summary || ''}
+                            onChange={(e) =>
+                              setEditingLesson((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      sections: (prev.sections || []).map((s) =>
+                                        s.id === sec.id ? { ...s, summary: e.target.value } : s
+                                      ),
+                                    }
+                                  : prev
+                              )
+                            }
+                            placeholder="Ý tưởng / ghi chú ngắn cho phân mục này (tùy chọn)..."
+                            className="w-full px-2 py-1 border border-slate-100 rounded text-[11px] bg-slate-50"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -4229,11 +5717,85 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 />
               </div>
 
+              {(() => {
+                const targetChapId = blockTargetChapterId || activeChapterItem?.id;
+                const targetLesId = blockTargetLessonId || activeLessonItem?.id;
+                const targetLes =
+                  (currentCourse?.chapters || [])
+                    .find((c) => c.id === targetChapId)
+                    ?.lessons.find((l) => l.id === targetLesId) || activeLessonItem;
+                const sectionNodes = buildOrderedSectionNodes(targetLes?.sections);
+                return (
+                  <div className="p-2.5 rounded-xl bg-indigo-50/40 border border-indigo-200 space-y-2">
+                    <label className="font-bold text-indigo-950 block">
+                      Thuộc phân mục trong bài học (Tùy chọn):
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={blockSectionId}
+                        onChange={(e) => setBlockSectionId(e.target.value)}
+                        className="flex-1 min-w-[200px] px-3 py-1.5 border border-indigo-200 rounded-lg bg-white font-semibold"
+                      >
+                        <option value="">-- Trực tiếp trong bài (không gán phân mục) --</option>
+                        {sectionNodes.map((n) => (
+                          <option key={n.section.id} value={n.section.id}>
+                            {'\u00A0'.repeat(n.depth * 3)}
+                            {n.numberPath} {n.section.title}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={quickNewSectionTitle}
+                          onChange={(e) => setQuickNewSectionTitle(e.target.value)}
+                          placeholder="Tên phân mục mới..."
+                          className="w-36 px-2.5 py-1.5 border border-indigo-200 rounded-lg bg-white text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const clean = quickNewSectionTitle.trim();
+                            if (!clean || !currentCourse || !targetChapId || !targetLesId) return;
+                            const existingSecs = targetLes?.sections || [];
+                            const newSec: LessonSection = {
+                              id: `sec_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+                              title: clean,
+                              order: existingSecs.filter((s) => !s.parentSectionId).length + 1,
+                            };
+                            const nextChaps = (currentCourse.chapters || []).map((c) =>
+                              c.id === targetChapId
+                                ? {
+                                    ...c,
+                                    lessons: c.lessons.map((l) =>
+                                      l.id === targetLesId
+                                        ? { ...l, sections: [...existingSecs, newSec] }
+                                        : l
+                                    ),
+                                  }
+                                : c
+                            );
+                            saveCourse({ ...currentCourse, chapters: nextChaps });
+                            onRefreshCourses();
+                            setBlockSectionId(newSec.id);
+                            setQuickNewSectionTitle('');
+                            showToast(`✓ Đã tạo phân mục "${clean}"`);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs cursor-pointer whitespace-nowrap"
+                        >
+                          + Tạo mục
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Form for Theory & Callout (includes inline cursor image insertion!) */}
               {(blockType === 'theory' || blockType === 'callout') && (
-                <div className="space-y-2.5">
+                <div className="space-y-3">
                   {blockType === 'callout' && (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-slate-700">Kiểu hộp:</span>
                       {(['formula', 'tip', 'warning', 'info'] as const).map((ct) => (
                         <button
@@ -4260,12 +5822,13 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="font-bold text-slate-700">
-                      Nội dung (Hỗ trợ KaTeX Math $\LaTeX$ & Chèn ảnh giữa lý thuyết):
+                      Nội dung (Hỗ trợ KaTeX $\LaTeX$ &amp; Chèn ảnh tại con trỏ — chỉ cần đặt tiêu đề ảnh):
                     </label>
                     <div className="flex items-center gap-2 flex-wrap">
                       <label
+                        onMouseDown={() => captureTextareaRange(theoryTextareaRef.current)}
                         className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer"
-                        title="Đặt con trỏ vào dòng lý thuyết muốn chèn rồi chọn ảnh"
+                        title="Đặt con trỏ vào vị trí bất kỳ trong nội dung rồi chọn ảnh"
                       >
                         <Upload className="w-3.5 h-3.5" />
                         <span>Chèn ảnh tại con trỏ</span>
@@ -4274,226 +5837,156 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                           accept="image/*"
                           className="hidden"
                           onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            if (f) {
-                              handleUploadImage(f, (url) => {
-                                insertInlineImageIntoTheory(url);
-                                showToast('✓ Đã chèn ảnh vào ngay vị trí con trỏ trong lý thuyết!');
-                              });
-                            }
+                            void handleOpenCursorImageUpload(
+                              e.target.files?.[0],
+                              'blockContent',
+                              theoryTextareaRef.current
+                            );
                             e.target.value = '';
                           }}
                         />
                       </label>
-                      <button
-                        type="button"
-                        onClick={() => setShowTheoryImageUrlBar((v) => !v)}
-                        className={`px-2.5 py-1 rounded-lg border font-bold flex items-center gap-1 cursor-pointer ${
-                          showTheoryImageUrlBar
-                            ? 'bg-slate-900 text-white border-slate-900'
-                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                        }`}
-                      >
-                        <Link2 className="w-3.5 h-3.5" />
-                        <span>URL ảnh</span>
-                      </button>
                       <CopyContentButton compact getText={() => blockContent} />
-                      <MathToolbar
-                        containerRef={blockModalBodyRef}
-                        onInsert={(latex) => {
-                          if (!insertTextAtEditableElement(theoryTextareaRef.current, latex)) {
-                            setBlockContent((prev) => {
-                              const isBlock = latex.trim().startsWith('|') || latex.includes('\n');
-                              return prev ? (isBlock ? `${prev}\n${latex}` : `${prev} ${latex}`) : latex;
-                            });
-                          }
-                        }}
-                      />
                     </div>
                   </div>
 
-                  {showTheoryImageUrlBar && (
-                    <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-200 grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
-                      <input
-                        type="text"
-                        value={theoryImageUrl}
-                        onChange={(e) => setTheoryImageUrl(e.target.value)}
-                        placeholder="Dán URL hình ảnh (https://...)..."
-                        className="sm:col-span-6 px-2.5 py-1.5 bg-white border border-blue-200 rounded-lg text-xs font-mono"
-                      />
-                      <input
-                        type="text"
-                        value={theoryImageCaption}
-                        onChange={(e) => setTheoryImageCaption(e.target.value)}
-                        placeholder="Chú thích ảnh (tùy chọn)..."
-                        className="sm:col-span-4 px-2.5 py-1.5 bg-white border border-blue-200 rounded-lg text-xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!theoryImageUrl.trim()) return;
-                          insertInlineImageIntoTheory(theoryImageUrl, theoryImageCaption);
-                          setTheoryImageUrl('');
-                          setTheoryImageCaption('');
-                          setShowTheoryImageUrlBar(false);
-                          showToast('✓ Đã chèn URL ảnh vào vị trí con trỏ!');
-                        }}
-                        className="sm:col-span-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-xs cursor-pointer"
-                      >
-                        Chèn ảnh
-                      </button>
-                    </div>
-                  )}
+                  <MathToolbar
+                    containerRef={blockModalBodyRef}
+                    targetRef={theoryTextareaRef}
+                    onInsert={(latex) => {
+                      if (!insertTextAtEditableElement(theoryTextareaRef.current, latex)) {
+                        setBlockContent((prev) => {
+                          const isBlock = latex.trim().startsWith('|') || latex.includes('\n');
+                          return prev ? (isBlock ? `${prev}\n${latex}` : `${prev} ${latex}`) : latex;
+                        });
+                      }
+                    }}
+                    onInsertInlineImage={(imgId, imgSrc, title) =>
+                      insertImplicitTokenAtTarget(
+                        'blockContent',
+                        imgId,
+                        imgSrc,
+                        title,
+                        theoryTextareaRef.current,
+                        lastSelectionSnapshotRef.current.el === theoryTextareaRef.current
+                          ? lastSelectionSnapshotRef.current.range
+                          : null
+                      )
+                    }
+                  />
 
                   <textarea
                     ref={theoryTextareaRef}
                     rows={7}
                     value={blockContent}
                     onChange={(e) => setBlockContent(e.target.value)}
-                    placeholder="Nhập nội dung lý thuyết, Markdown, công thức $y = \sqrt{x^2+1}$... Đặt con trỏ vào dòng bất kỳ và bấm 'Chèn ảnh tại con trỏ' để chèn ảnh xen giữa các đoạn."
+                    onPaste={(e) => void handleTextareaPasteImage(e, 'blockContent')}
+                    placeholder="Nhập nội dung lý thuyết, Markdown, công thức $y = \sqrt{x^2+1}$... Đặt con trỏ vào vị trí bất kỳ và bấm 'Chèn ảnh tại con trỏ' hoặc Ctrl+V dán ảnh trực tiếp."
                     className="w-full p-3 border border-slate-200 rounded-xl font-mono text-sm leading-relaxed"
                   />
 
-                  {(() => {
-                    const inlineImgs = extractInlineMarkdownImages(blockContent);
-                    if (inlineImgs.length === 0) return null;
-                    return (
-                      <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                        <div className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
-                          <span>Ảnh đã chèn xen giữa lý thuyết ({inlineImgs.length} ảnh):</span>
-                          <span className="text-[10px] font-normal text-slate-500">
-                            Có thể di chuyển dòng `![...]` hoặc bấm Gỡ để xóa nhanh
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {inlineImgs.map((im, idx) => (
-                            <div
-                              key={`${im.alt}_${idx}`}
-                              className="p-1.5 bg-white border border-slate-200 rounded-lg flex items-center gap-2 max-w-[230px]"
-                            >
-                              <img
-                                src={im.src}
-                                alt={im.alt}
-                                className="w-10 h-10 object-cover rounded border border-slate-100 shrink-0"
-                                referrerPolicy="no-referrer"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="text-[10px] font-bold text-slate-800 truncate">
-                                  #{idx + 1}: {im.alt}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setBlockContent((prev) =>
-                                      prev.replace(im.fullMatch, '').replace(/\n{3,}/g, '\n\n').trim()
-                                    )
-                                  }
-                                  className="text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
-                                >
-                                  Gỡ ảnh này
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
+                  <InlineImageStrip
+                    content={blockContent}
+                    inlineImages={blockInlineImages}
+                    label="Ảnh đã chèn tại con trỏ (sửa tiêu đề hoặc gỡ nhanh)"
+                    onUpdateContent={(next) => setBlockContent(next)}
+                  />
 
-                  {blockContent.trim() && (
-                    <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-xl">
-                      <div className="text-[11px] font-bold text-blue-800 uppercase mb-1.5">
-                        Xem trước công thức & nội dung (Hiển thị trực tiếp):
-                      </div>
-                      <div className="p-2.5 bg-white rounded-lg border border-blue-100 text-sm">
-                        <RichContentRenderer content={blockContent} imageUrl={blockImageUrl || undefined} />
-                      </div>
-                    </div>
-                  )}
+                  <AttachedImageBox
+                    label="Ảnh minh họa bổ sung bên dưới khối nội dung (không bắt buộc)"
+                    imageUrl={blockImageUrl}
+                    showCaption={false}
+                    onChangeImage={(url) => setBlockImageUrl(url)}
+                  />
 
-                  {blockImageUrl && (
-                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-3">
-                      <img
-                        src={blockImageUrl}
-                        alt="Preview"
-                        className="h-16 w-24 object-cover rounded-lg border border-slate-200 bg-white"
-                      />
-                      <span className="text-[11px] text-slate-600 flex-1 truncate">
-                        Ảnh minh họa đính kèm bên dưới lý thuyết
+                  {/* Comprehensive Live Preview for Theory / Callout */}
+                  <div
+                    className={`p-3.5 rounded-xl border space-y-2 ${
+                      blockType === 'callout'
+                        ? blockCalloutType === 'warning'
+                          ? 'bg-amber-50/70 border-amber-200'
+                          : blockCalloutType === 'tip'
+                          ? 'bg-emerald-50/70 border-emerald-200'
+                          : 'bg-blue-50/60 border-blue-200'
+                        : 'bg-blue-50/50 border-blue-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-blue-900 uppercase">
+                        Xem trước đầy đủ khối nội dung (Hiển thị trực tiếp):
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => setBlockImageUrl('')}
-                        className="px-2 py-1 text-rose-600 hover:bg-rose-50 rounded font-bold cursor-pointer"
-                      >
-                        Gỡ ảnh
-                      </button>
+                      {blockType === 'callout' && (
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-white border border-purple-200 text-purple-800">
+                          {blockCalloutType === 'formula'
+                            ? 'Công thức'
+                            : blockCalloutType === 'tip'
+                            ? 'Mẹo nhanh'
+                            : blockCalloutType === 'warning'
+                            ? 'Lưu ý'
+                            : 'Thông tin'}
+                        </span>
+                      )}
                     </div>
-                  )}
+                    <div className="p-3 bg-white rounded-lg border border-blue-100 space-y-2 text-sm">
+                      {(blockTitle.trim() || blockType === 'callout') && (
+                        <div className="font-bold text-slate-900">
+                          {blockTitle.trim() || 'Ghi nhớ trọng tâm'}
+                        </div>
+                      )}
+                      {blockContent.trim() || blockImageUrl.trim() ? (
+                        <RichContentRenderer
+                          content={blockContent}
+                          imageUrl={blockImageUrl || undefined}
+                          inlineImages={blockInlineImages}
+                        />
+                      ) : (
+                        <div className="text-xs text-slate-400 italic">
+                          (Chưa có nội dung — nhập chữ, công thức hoặc chèn ảnh để xem trước ngay)
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 
               {/* Form for Dedicated Image Block */}
               {blockType === 'image' && (
                 <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="font-bold text-slate-700">
-                      Tải ảnh từ máy tính hoặc dán URL ảnh:
-                    </label>
-                    <label className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold flex items-center gap-1.5 cursor-pointer">
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>Chọn ảnh từ máy</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) handleUploadImage(f, (url) => setBlockImageUrl(url));
-                          e.target.value = '';
-                        }}
-                      />
-                    </label>
-                  </div>
-
-                  <input
-                    type="text"
-                    value={blockImageUrl}
-                    onChange={(e) => setBlockImageUrl(e.target.value)}
-                    placeholder="https://... hoặc tải ảnh trực tiếp bằng nút bên trên"
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono text-xs"
+                  <AttachedImageBox
+                    label="Hình ảnh minh họa của khối"
+                    imageUrl={blockImageUrl}
+                    caption={blockCaption}
+                    showCaption={true}
+                    onChangeImage={(url) => setBlockImageUrl(url)}
+                    onChangeCaption={(cap) => setBlockCaption(cap)}
                   />
 
-                  <div>
-                    <label className="font-bold text-slate-700 block mb-1">
-                      Chú thích ảnh (Caption):
-                    </label>
-                    <input
-                      type="text"
-                      value={blockCaption}
-                      onChange={(e) => setBlockCaption(e.target.value)}
-                      placeholder="Nhập chú thích ảnh..."
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs"
-                    />
-                  </div>
-
-                  {blockImageUrl && (
-                    <div className="p-3 bg-white rounded-xl border border-slate-200 text-center space-y-1.5">
-                      <div className="text-[11px] font-bold text-blue-800 uppercase text-left">
-                        Xem trước hình ảnh hiển thị:
-                      </div>
-                      <img
-                        src={blockImageUrl}
-                        alt={blockCaption || 'Preview'}
-                        className="max-h-56 mx-auto rounded-lg object-contain border border-slate-100"
-                      />
-                      {blockCaption.trim() && (
-                        <div className="text-xs italic text-slate-600">
-                          <RichContentRenderer content={blockCaption} />
-                        </div>
-                      )}
+                  <div className="p-3 bg-white rounded-xl border border-blue-200 space-y-2">
+                    <div className="text-[11px] font-bold text-blue-800 uppercase">
+                      Xem trước đầy đủ khối hình ảnh:
                     </div>
-                  )}
+                    {blockTitle.trim() && (
+                      <div className="text-sm font-bold text-slate-900">{blockTitle.trim()}</div>
+                    )}
+                    {blockImageUrl ? (
+                      <div className="text-center space-y-1.5">
+                        <img
+                          src={blockImageUrl}
+                          alt={blockCaption || blockTitle || 'Preview'}
+                          className="max-h-56 mx-auto rounded-lg object-contain border border-slate-100"
+                        />
+                        {blockCaption.trim() && (
+                          <div className="text-xs italic text-slate-600">
+                            <RichContentRenderer content={blockCaption} inlineImages={blockInlineImages} />
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400 italic py-3 text-center">
+                        (Chưa chọn hình ảnh — tải lên hoặc dán Ctrl+V để xem trước)
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -4506,7 +5999,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                         Tải lên nhiều định dạng tệp tài liệu (PDF, Word, PPT, Excel, ZIP, Audio, Video...)
                       </div>
                       <div className="text-[11px] text-indigo-700 mt-0.5">
-                        Hỗ trợ tải trực tiếp từ máy (&le; 700 KB/tệp) hoặc dán đường dẫn Google Drive / OneDrive cho tệp lớn.
+                        Tải tệp trực tiếp lên máy chủ (tối đa 25 MB/tệp, tự động lưu URL gọn nhẹ) hoặc dán đường dẫn Google Drive / OneDrive.
                       </div>
                     </div>
                     <label className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold flex items-center gap-1.5 cursor-pointer shrink-0">
@@ -4618,6 +6111,42 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                       })}
                     </div>
                   )}
+
+                  {/* Comprehensive Live Preview for File Block */}
+                  <div className="p-3 bg-white rounded-xl border border-indigo-200 space-y-2">
+                    <div className="text-[11px] font-bold text-indigo-800 uppercase">
+                      Xem trước đầy đủ khối tài liệu (Học sinh nhìn thấy):
+                    </div>
+                    <div className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                      <Paperclip className="w-4 h-4 text-indigo-600" />
+                      <span>{blockTitle.trim() || 'Tài liệu học tập đính kèm'}</span>
+                    </div>
+                    {blockContent.trim() && (
+                      <div className="text-xs text-slate-700">
+                        <RichContentRenderer content={blockContent} inlineImages={blockInlineImages} />
+                      </div>
+                    )}
+                    {blockAttachments.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {blockAttachments.map((att) => {
+                          const badge = getCourseAttachmentBadge(att);
+                          return (
+                            <span
+                              key={att.id}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 inline-flex items-center gap-1.5"
+                            >
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${badge.colorClass}`}>
+                                {badge.ext}
+                              </span>
+                              <span>{att.name}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400 italic">(Chưa có tệp nào)</div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -4638,7 +6167,8 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                         <option value="multiple_choice">Chọn nhiều đáp án đúng</option>
                         <option value="true_false">Mệnh đề Đúng / Sai</option>
                         <option value="text_input">Trả lời ngắn (Điền số / từ)</option>
-                        <option value="matching">Ghép đôi hai cột (Tự chọn nhãn & ý nhiễu)</option>
+                        <option value="matching">Ghép đôi hai cột (Tự chọn nhãn &amp; ý nhiễu)</option>
+                        <option value="essay">Tự luận / Soạn thảo văn bản &amp; Công thức</option>
                       </select>
                     </div>
                     <div>
@@ -4654,75 +6184,87 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                     </div>
                   </div>
 
-                  <div>
-                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                      <label className="font-bold text-slate-700">Nội dung câu hỏi (KaTeX):</label>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="font-bold text-slate-700">Nội dung câu hỏi (KaTeX &amp; Chèn ảnh tại con trỏ):</label>
                       <div className="flex items-center gap-2">
-                        <CopyContentButton compact getText={() => cpQuestion} />
-                        <label className="px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer">
+                        <label
+                          onMouseDown={() => captureTextareaRange(cpQuestionRef.current)}
+                          className="px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer"
+                          title="Chèn ảnh vào ngay vị trí con trỏ trong đề bài"
+                        >
                           <Upload className="w-3 h-3" />
-                          <span>Đính kèm ảnh cho câu hỏi</span>
+                          <span>Chèn ảnh tại con trỏ</span>
                           <input
                             type="file"
                             accept="image/*"
                             className="hidden"
                             onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) handleUploadImage(f, (url) => setCpQuestionImageUrl(url));
+                              void handleOpenCursorImageUpload(
+                                e.target.files?.[0],
+                                'cpQuestion',
+                                cpQuestionRef.current
+                              );
                               e.target.value = '';
                             }}
                           />
                         </label>
+                        <CopyContentButton compact getText={() => cpQuestion} />
                       </div>
                     </div>
                     <MathToolbar
                       containerRef={blockModalBodyRef}
-                      onInsert={(latex) =>
-                        setCpQuestion((prev) => {
-                          const isBlock = latex.trim().startsWith('|') || latex.includes('\n');
-                          return prev ? (isBlock ? `${prev}\n${latex}` : `${prev} ${latex}`) : latex;
-                        })
+                      targetRef={cpQuestionRef}
+                      onInsert={(latex) => {
+                        if (!insertTextAtEditableElement(cpQuestionRef.current, latex)) {
+                          setCpQuestion((prev) => {
+                            const isBlock = latex.trim().startsWith('|') || latex.includes('\n');
+                            return prev ? (isBlock ? `${prev}\n${latex}` : `${prev} ${latex}`) : latex;
+                          });
+                        }
+                      }}
+                      onInsertInlineImage={(imgId, imgSrc, title) =>
+                        insertImplicitTokenAtTarget(
+                          'cpQuestion',
+                          imgId,
+                          imgSrc,
+                          title,
+                          cpQuestionRef.current,
+                          lastSelectionSnapshotRef.current.el === cpQuestionRef.current
+                            ? lastSelectionSnapshotRef.current.range
+                            : null
+                        )
                       }
                     />
                     <textarea
+                      ref={cpQuestionRef}
                       rows={3}
                       value={cpQuestion}
                       onChange={(e) => setCpQuestion(e.target.value)}
-                      placeholder="Nhập đề bài tương tác giữa bài..."
+                      onPaste={(e) => void handleTextareaPasteImage(e, 'cpQuestion')}
+                      placeholder="Nhập đề bài tương tác giữa bài (hỗ trợ KaTeX, Ctrl+V dán ảnh tại con trỏ)..."
                       className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-sm font-mono"
                     />
-                    {cpQuestion.trim() && (
-                      <div className="mt-2 p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg text-sm">
-                        <div className="text-[11px] font-bold text-blue-800 uppercase mb-1">
-                          Xem trước câu hỏi (KaTeX):
-                        </div>
-                        <div className="p-2 bg-white rounded border border-blue-100">
-                          <RichContentRenderer content={cpQuestion} />
-                        </div>
-                      </div>
-                    )}
-                    {cpQuestionImageUrl && (
-                      <div className="mt-2 flex items-center gap-3 p-2 bg-white rounded-lg border border-slate-200">
-                        <img
-                          src={cpQuestionImageUrl}
-                          alt="Question"
-                          className="h-14 w-20 object-cover rounded"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setCpQuestionImageUrl('')}
-                          className="text-rose-600 font-bold ml-auto cursor-pointer"
-                        >
-                          Xóa ảnh
-                        </button>
-                      </div>
-                    )}
+                    <InlineImageStrip
+                      content={cpQuestion}
+                      inlineImages={cpInlineImages}
+                      label="Ảnh đã chèn trong đề bài"
+                      onUpdateContent={(next) => setCpQuestion(next)}
+                    />
+                    <AttachedImageBox
+                      label="Ảnh đính kèm chung của câu hỏi (không bắt buộc)"
+                      imageUrl={cpQuestionImageUrl}
+                      caption={cpQuestionImageCaption}
+                      showCaption={true}
+                      onChangeImage={(url) => setCpQuestionImageUrl(url)}
+                      onChangeCaption={(cap) => setCpQuestionImageCaption(cap)}
+                    />
                   </div>
 
                   {(cpType === 'single_choice' || cpType === 'multiple_choice') && (
                     <div className="space-y-2">
                       <label className="font-bold text-slate-700 block">
-                        Các phương án & chọn đáp án đúng{' '}
+                        Các phương án &amp; chọn đáp án đúng{' '}
                         {cpType === 'multiple_choice' ? '(nhấp chọn nhiều chữ cái)' : '(nhấp chọn 1 chữ cái)'}:
                       </label>
                       {cpOptions.map((opt, oIdx) => {
@@ -4835,8 +6377,8 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                   )}
 
                   {cpType === 'text_input' && (
-                    <div>
-                      <label className="font-bold text-slate-700 block mb-1">
+                    <div className="space-y-1.5">
+                      <label className="font-bold text-slate-700 block">
                         Các đáp án được chấp nhận (số thập phân dùng dấu phẩy &quot;,&quot;, ngăn cách bởi dấu chấm phẩy &quot;;&quot;):
                       </label>
                       <input
@@ -4878,20 +6420,311 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                     />
                   )}
 
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <label className="font-bold text-slate-700 block">
-                        Lời giải chi tiết sau khi trả lời:
-                      </label>
-                      <CopyContentButton compact getText={() => cpExplanation} />
+                  {cpType === 'essay' && (
+                    <div className="p-3 bg-white border border-purple-200 rounded-xl space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="font-bold text-slate-700">
+                          Đáp án tham khảo / Gợi ý trình bày tự luận (không bắt buộc):
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          <label
+                            onMouseDown={() => captureTextareaRange(cpEssaySampleRef.current)}
+                            className="px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer text-[11px]"
+                          >
+                            <Upload className="w-3 h-3" />
+                            <span>Chèn ảnh tại con trỏ</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                void handleOpenCursorImageUpload(
+                                  e.target.files?.[0],
+                                  'cpSampleAnswer',
+                                  cpEssaySampleRef.current
+                                );
+                                e.target.value = '';
+                              }}
+                            />
+                          </label>
+                          <CopyContentButton compact getText={() => cpSampleAnswer} />
+                        </div>
+                      </div>
+                      <MathToolbar
+                        containerRef={blockModalBodyRef}
+                        targetRef={cpEssaySampleRef}
+                        onInsert={(snippet) => {
+                          if (!insertTextAtEditableElement(cpEssaySampleRef.current, snippet)) {
+                            setCpSampleAnswer((prev) => {
+                              const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
+                              return prev ? (isBlock ? `${prev}\n${snippet}` : `${prev} ${snippet}`) : snippet;
+                            });
+                          }
+                        }}
+                        onInsertInlineImage={(imgId, imgSrc, title) =>
+                          insertImplicitTokenAtTarget(
+                            'cpSampleAnswer',
+                            imgId,
+                            imgSrc,
+                            title,
+                            cpEssaySampleRef.current,
+                            lastSelectionSnapshotRef.current.el === cpEssaySampleRef.current
+                              ? lastSelectionSnapshotRef.current.range
+                              : null
+                          )
+                        }
+                      />
+                      <textarea
+                        ref={cpEssaySampleRef}
+                        rows={4}
+                        value={cpSampleAnswer}
+                        onChange={(e) => setCpSampleAnswer(e.target.value)}
+                        onPaste={(e) => void handleTextareaPasteImage(e, 'cpSampleAnswer')}
+                        placeholder="Nhập đáp án mẫu / hướng dẫn giải chi tiết (hỗ trợ $...$, bảng biến thiên, Ctrl+V dán ảnh)..."
+                        className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs"
+                      />
+                      <InlineImageStrip
+                        content={cpSampleAnswer}
+                        inlineImages={cpInlineImages}
+                        label="Ảnh trong đáp án tham khảo"
+                        onUpdateContent={(next) => setCpSampleAnswer(next)}
+                      />
                     </div>
+                  )}
+
+                  {/* Detailed Explanation Editor with Cursor Image & Attachment */}
+                  <div className="p-3 bg-white border border-amber-200 rounded-xl space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="font-bold text-slate-700">
+                        Lời giải chi tiết sau khi trả lời (hỗ trợ KaTeX &amp; chèn ảnh tại con trỏ):
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <label
+                          onMouseDown={() => captureTextareaRange(cpExplanationRef.current)}
+                          className="px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold flex items-center gap-1 cursor-pointer text-[11px]"
+                        >
+                          <Upload className="w-3 h-3" />
+                          <span>Chèn ảnh tại con trỏ</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              void handleOpenCursorImageUpload(
+                                e.target.files?.[0],
+                                'cpExplanation',
+                                cpExplanationRef.current
+                              );
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
+                        <CopyContentButton compact getText={() => cpExplanation} />
+                      </div>
+                    </div>
+                    <MathToolbar
+                      containerRef={blockModalBodyRef}
+                      targetRef={cpExplanationRef}
+                      onInsert={(latex) => {
+                        if (!insertTextAtEditableElement(cpExplanationRef.current, latex)) {
+                          setCpExplanation((prev) => {
+                            const isBlock = latex.trim().startsWith('|') || latex.includes('\n');
+                            return prev ? (isBlock ? `${prev}\n${latex}` : `${prev} ${latex}`) : latex;
+                          });
+                        }
+                      }}
+                      onInsertInlineImage={(imgId, imgSrc, title) =>
+                        insertImplicitTokenAtTarget(
+                          'cpExplanation',
+                          imgId,
+                          imgSrc,
+                          title,
+                          cpExplanationRef.current,
+                          lastSelectionSnapshotRef.current.el === cpExplanationRef.current
+                            ? lastSelectionSnapshotRef.current.range
+                            : null
+                        )
+                      }
+                    />
                     <textarea
-                      rows={2}
+                      ref={cpExplanationRef}
+                      rows={3}
                       value={cpExplanation}
                       onChange={(e) => setCpExplanation(e.target.value)}
-                      placeholder="Giải thích vì sao chọn đáp án này..."
-                      className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs"
+                      onPaste={(e) => void handleTextareaPasteImage(e, 'cpExplanation')}
+                      placeholder="Giải thích vì sao chọn đáp án này (hỗ trợ KaTeX, bảng biến thiên, Ctrl+V dán ảnh tại con trỏ)..."
+                      className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs"
                     />
+                    <InlineImageStrip
+                      content={cpExplanation}
+                      inlineImages={cpInlineImages}
+                      label="Ảnh trong lời giải chi tiết"
+                      onUpdateContent={(next) => setCpExplanation(next)}
+                    />
+                    <AttachedImageBox
+                      label="Ảnh minh họa đính kèm lời giải chi tiết (không bắt buộc)"
+                      imageUrl={cpExplanationImageUrl}
+                      caption={cpExplanationImageCaption}
+                      showCaption={true}
+                      onChangeImage={(url) => setCpExplanationImageUrl(url)}
+                      onChangeCaption={(cap) => setCpExplanationImageCaption(cap)}
+                    />
+                  </div>
+
+                  {/* Comprehensive Live Preview for Interactive Checkpoint Question */}
+                  <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-blue-900 uppercase">
+                        Xem trước đầy đủ câu hỏi tương tác (Đề, Đáp án &amp; Lời giải):
+                      </span>
+                      <span className="text-[11px] font-mono font-bold text-purple-800 bg-white px-2 py-0.5 rounded border border-purple-200">
+                        {Number(cpPoints) || 1.0} điểm
+                      </span>
+                    </div>
+
+                    <div className="p-3 bg-white rounded-xl border border-blue-100 space-y-3 text-sm">
+                      <div className="font-semibold text-slate-900">
+                        {cpQuestion.trim() || cpQuestionImageUrl ? (
+                          <RichContentRenderer
+                            content={cpQuestion}
+                            imageUrl={cpQuestionImageUrl || undefined}
+                            imageCaption={cpQuestionImageCaption || undefined}
+                            inlineImages={cpInlineImages}
+                          />
+                        ) : (
+                          <span className="text-xs text-slate-400 italic">(Chưa nhập đề bài)</span>
+                        )}
+                      </div>
+
+                      {(cpType === 'single_choice' || cpType === 'multiple_choice') && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {cpOptions.map((opt, oIdx) => {
+                            const letter = String.fromCharCode(65 + oIdx);
+                            const isCorrectOpt =
+                              cpType === 'single_choice'
+                                ? cpCorrectSingle === oIdx
+                                : cpCorrectMulti.includes(oIdx);
+                            return (
+                              <div
+                                key={oIdx}
+                                className={`p-2 rounded-lg border text-xs flex items-start gap-2 ${
+                                  isCorrectOpt
+                                    ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-semibold'
+                                    : 'bg-slate-50 border-slate-200 text-slate-700'
+                                }`}
+                              >
+                                <span
+                                  className={`w-5 h-5 rounded flex items-center justify-center shrink-0 font-bold ${
+                                    isCorrectOpt
+                                      ? 'bg-emerald-600 text-white'
+                                      : 'bg-white border border-slate-300 text-slate-700'
+                                  }`}
+                                >
+                                  {letter}
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  {opt.trim() ? (
+                                    <RichContentRenderer content={opt} inlineImages={cpInlineImages} />
+                                  ) : (
+                                    <span className="text-slate-400 italic">(Trống)</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {cpType === 'true_false' && (
+                        <div className="space-y-1.5">
+                          {cpTfItems.map((it, idx) => (
+                            <div
+                              key={it.id}
+                              className="p-2 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between gap-2 text-xs"
+                            >
+                              <div className="flex items-start gap-1.5 flex-1">
+                                <span className="font-bold text-slate-700">
+                                  {String.fromCharCode(97 + idx)})
+                                </span>
+                                <div className="text-slate-800">
+                                  {it.statement.trim() ? (
+                                    <RichContentRenderer content={it.statement} inlineImages={cpInlineImages} />
+                                  ) : (
+                                    <span className="text-slate-400 italic">(Chưa nhập mệnh đề)</span>
+                                  )}
+                                </div>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded font-bold text-[11px] shrink-0 ${
+                                  it.isCorrect ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'
+                                }`}
+                              >
+                                {it.isCorrect ? 'Đúng' : 'Sai'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {cpType === 'text_input' && (
+                        <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-1.5">
+                          <div className="font-semibold text-slate-600">Đáp án ngắn được chấp nhận:</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {parseAcceptedShortAnswers(cpAcceptedAnswersText).length > 0 ? (
+                              parseAcceptedShortAnswers(cpAcceptedAnswersText).map((ans, aIdx) => (
+                                <span
+                                  key={aIdx}
+                                  className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono font-bold border border-emerald-200"
+                                >
+                                  {ans}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-slate-400 italic">(Chưa nhập đáp án ngắn)</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {cpType === 'matching' && (
+                        <MatchingQuestionView
+                          question={{
+                            id: editingBlockId || 'cp_match_preview',
+                            type: 'matching',
+                            points: Number(cpPoints) || 1.0,
+                            question: cpQuestion,
+                            explanation: cpExplanation,
+                            ...cpMatchingData,
+                          }}
+                          mode="preview"
+                          showSolutions={true}
+                          hidePrompt={true}
+                        />
+                      )}
+
+                      {cpType === 'essay' && (
+                        <div className="p-2.5 rounded-lg bg-emerald-50/70 border border-emerald-200 text-xs space-y-1">
+                          <div className="font-bold text-emerald-900">Đáp án tham khảo tự luận:</div>
+                          {cpSampleAnswer.trim() ? (
+                            <RichContentRenderer content={cpSampleAnswer} inlineImages={cpInlineImages} />
+                          ) : (
+                            <span className="text-slate-400 italic">(Chưa nhập đáp án tham khảo)</span>
+                          )}
+                        </div>
+                      )}
+
+                      {(cpExplanation.trim() || cpExplanationImageUrl.trim()) && (
+                        <div className="p-2.5 rounded-lg bg-amber-50/70 border border-amber-200 text-xs space-y-1">
+                          <div className="font-bold text-amber-900">Lời giải chi tiết:</div>
+                          <RichContentRenderer
+                            content={cpExplanation}
+                            imageUrl={cpExplanationImageUrl || undefined}
+                            imageCaption={cpExplanationImageCaption || undefined}
+                            inlineImages={cpInlineImages}
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -5003,17 +6836,12 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
               {(block.type === 'theory' || block.type === 'callout') && (
                 <div className="space-y-2.5">
-                  {block.contentMarkdown && (
+                  {(block.contentMarkdown || block.imageUrl) && (
                     <div className="text-sm text-slate-800 leading-relaxed">
-                      <RichContentRenderer content={block.contentMarkdown} />
-                    </div>
-                  )}
-                  {block.imageUrl && (
-                    <div className="pt-1 text-center">
-                      <img
-                        src={block.imageUrl}
-                        alt={block.title || 'Minh họa'}
-                        className="max-h-72 mx-auto rounded-lg border border-slate-200 object-contain bg-white"
+                      <RichContentRenderer
+                        content={block.contentMarkdown || ''}
+                        imageUrl={block.imageUrl}
+                        inlineImages={block.inlineImages}
                       />
                     </div>
                   )}
@@ -5029,7 +6857,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                   />
                   {block.caption && (
                     <div className="text-xs italic text-slate-600">
-                      <RichContentRenderer content={block.caption} />
+                      <RichContentRenderer content={block.caption} inlineImages={block.inlineImages} />
                     </div>
                   )}
                 </div>
@@ -5039,7 +6867,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 <div className="space-y-2">
                   {block.contentMarkdown && (
                     <div className="text-xs text-slate-700">
-                      <RichContentRenderer content={block.contentMarkdown} />
+                      <RichContentRenderer
+                        content={block.contentMarkdown}
+                        inlineImages={block.inlineImages}
+                      />
                     </div>
                   )}
                   <div className="flex flex-wrap gap-2">
@@ -5064,15 +6895,13 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               {block.type === 'question' && block.question && (
                 <div className="space-y-2.5 bg-white p-3.5 rounded-lg border border-purple-100">
                   <div className="text-sm font-semibold text-slate-900 leading-relaxed">
-                    <RichContentRenderer content={block.question.question} />
-                  </div>
-                  {block.question.imageUrl && (
-                    <img
-                      src={block.question.imageUrl}
-                      alt="Hình câu hỏi"
-                      className="max-h-60 rounded-lg border border-slate-200 object-contain"
+                    <RichContentRenderer
+                      content={block.question.question}
+                      imageUrl={block.question.imageUrl}
+                      imageCaption={block.question.imageCaption}
+                      inlineImages={block.question.inlineImages}
                     />
-                  )}
+                  </div>
                   {(block.question.type === 'single_choice' ||
                     block.question.type === 'multiple_choice') &&
                     block.question.options && (
@@ -5104,7 +6933,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                 {letter}
                               </span>
                               <div className="flex-1 min-w-0">
-                                <RichContentRenderer content={opt} />
+                                <RichContentRenderer
+                                  content={opt}
+                                  inlineImages={block.question!.inlineImages}
+                                />
                               </div>
                             </div>
                           );
@@ -5124,7 +6956,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                               {String.fromCharCode(97 + tIdx)})
                             </span>
                             <div className="text-slate-800">
-                              <RichContentRenderer content={it.statement} />
+                              <RichContentRenderer
+                                content={it.statement}
+                                inlineImages={block.question!.inlineImages}
+                              />
                             </div>
                           </div>
                           {canManageCurrent && coursePreviewShowAnswers && (
@@ -5165,12 +7000,34 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                     />
                   )}
 
+                  {block.question.type === 'essay' && (
+                    <div className="p-2.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-600 space-y-1.5">
+                      <div>Khung soạn thảo tự luận &amp; công thức toán học trực tuyến của học sinh</div>
+                      {canManageCurrent &&
+                        coursePreviewShowAnswers &&
+                        block.question.sampleAnswer && (
+                          <div className="p-2 rounded bg-emerald-50 border border-emerald-200 text-emerald-950 space-y-1">
+                            <div className="font-bold">Đáp án tham khảo:</div>
+                            <RichContentRenderer
+                              content={block.question.sampleAnswer}
+                              inlineImages={block.question.inlineImages}
+                            />
+                          </div>
+                        )}
+                    </div>
+                  )}
+
                   {canManageCurrent &&
                     coursePreviewShowAnswers &&
-                    block.question.explanation && (
+                    (block.question.explanation || block.question.explanationImageUrl) && (
                       <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-950 space-y-1">
                         <div className="font-bold">Lời giải chi tiết:</div>
-                        <RichContentRenderer content={block.question.explanation} />
+                        <RichContentRenderer
+                          content={block.question.explanation || ''}
+                          imageUrl={block.question.explanationImageUrl}
+                          imageCaption={block.question.explanationImageCaption}
+                          inlineImages={block.question.inlineImages}
+                        />
                       </div>
                     )}
                 </div>
@@ -5289,7 +7146,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                         <span className="font-bold text-slate-900 block mb-1 text-xs uppercase tracking-wide">
                           Mô tả khóa học:
                         </span>
-                        <RichContentRenderer content={currentCourse.description} />
+                        <RichContentRenderer
+                          content={currentCourse.description}
+                          inlineImages={currentCourse.inlineImages}
+                        />
                       </div>
                     )}
 
@@ -5311,7 +7171,12 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                 {chap.title}
                               </h3>
                               {chap.description && (
-                                <p className="text-xs text-slate-600 mt-0.5">{chap.description}</p>
+                                <div className="text-xs text-slate-600 mt-0.5">
+                                  <RichContentRenderer
+                                    content={chap.description}
+                                    inlineImages={chap.inlineImages}
+                                  />
+                                </div>
                               )}
                             </div>
                           </div>
@@ -5337,9 +7202,12 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                           Bài {lIdx + 1}: {les.title}
                                         </div>
                                         {les.summary && (
-                                          <p className="text-xs text-slate-600 mt-0.5">
-                                            {les.summary}
-                                          </p>
+                                          <div className="text-xs text-slate-600 mt-0.5">
+                                            <RichContentRenderer
+                                              content={les.summary}
+                                              inlineImages={les.inlineImages}
+                                            />
+                                          </div>
                                         )}
                                       </div>
                                       <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
@@ -5354,9 +7222,27 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                       </div>
                                     ) : (
                                       <div className="space-y-3">
-                                        {(les.blocks || []).map((blk, bIdx) =>
-                                          renderPreviewBlock(blk, bIdx)
-                                        )}
+                                        {groupBlocksBySections(les).map((grp, gIdx) => (
+                                          <div key={grp.sectionNode?.section.id || `unassigned_${gIdx}`} className="space-y-2.5">
+                                            {grp.sectionNode && (
+                                              <div
+                                                style={{ marginLeft: `${Math.min(3, grp.sectionNode.depth) * 14}px` }}
+                                                className="px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-xs font-bold text-indigo-900 flex items-center gap-2"
+                                              >
+                                                <span className="font-mono text-indigo-700">{grp.sectionNode.numberPath}</span>
+                                                <span>{grp.sectionNode.section.title}</span>
+                                                {grp.sectionNode.section.summary && (
+                                                  <span className="font-normal text-indigo-700 text-[11px] truncate">
+                                                    — {grp.sectionNode.section.summary}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            )}
+                                            {grp.blocks.map(({ block: blk, flatIndex }) =>
+                                              renderPreviewBlock(blk, flatIndex)
+                                            )}
+                                          </div>
+                                        ))}
                                       </div>
                                     )}
 
@@ -5481,7 +7367,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
                           {currentSim.lesson.summary && (
                             <div className="text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                              {currentSim.lesson.summary}
+                              <RichContentRenderer
+                                content={currentSim.lesson.summary}
+                                inlineImages={currentSim.lesson.inlineImages}
+                              />
                             </div>
                           )}
 
@@ -5491,9 +7380,22 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                             </div>
                           ) : (
                             <div className="space-y-4">
-                              {(currentSim.lesson.blocks || []).map((blk, bIdx) =>
-                                renderPreviewBlock(blk, bIdx)
-                              )}
+                              {groupBlocksBySections(currentSim.lesson).map((grp, gIdx) => (
+                                <div key={grp.sectionNode?.section.id || `sim_un_${gIdx}`} className="space-y-3">
+                                  {grp.sectionNode && (
+                                    <div
+                                      style={{ marginLeft: `${Math.min(3, grp.sectionNode.depth) * 14}px` }}
+                                      className="px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-xs font-bold text-indigo-900 flex items-center gap-2"
+                                    >
+                                      <span className="font-mono text-indigo-700">{grp.sectionNode.numberPath}</span>
+                                      <span>{grp.sectionNode.section.title}</span>
+                                    </div>
+                                  )}
+                                  {grp.blocks.map(({ block: blk, flatIndex }) =>
+                                    renderPreviewBlock(blk, flatIndex)
+                                  )}
+                                </div>
+                              ))}
                             </div>
                           )}
 
@@ -5649,6 +7551,275 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
           </div>
         );
       })()}
+
+      {/* Title-only Modal for Cursor-Inserted / Pasted Images */}
+      <InlineImageTitleModal
+        isOpen={Boolean(courseCursorModal)}
+        initialImageSrc={courseCursorModal?.imageSrc || ''}
+        initialTitle={courseCursorModal?.defaultTitle || 'Hình minh họa'}
+        onClose={() => setCourseCursorModal(null)}
+        onConfirm={(confirmedSrc, title) => {
+          if (!courseCursorModal) return;
+          const imgId = registerImplicitImage(confirmedSrc);
+          insertImplicitTokenAtTarget(
+            courseCursorModal.target,
+            imgId,
+            confirmedSrc,
+            title,
+            courseCursorModal.el,
+            courseCursorModal.range
+          );
+          setCourseCursorModal(null);
+          showToast('✓ Đã chèn ảnh vào ngay vị trí con trỏ!');
+        }}
+      />
+
+      {/* Clipboard Image Paste Title Modal for Student Essay Checkpoint */}
+      <InlineImageTitleModal
+        isOpen={Boolean(checkpointPasteModal)}
+        initialImageSrc={checkpointPasteModal?.imageSrc || ''}
+        initialTitle={checkpointPasteModal?.defaultTitle || 'Hình bài làm'}
+        targetLabel="Bài làm tự luận trong bài học"
+        onClose={() => setCheckpointPasteModal(null)}
+        onConfirm={(confirmedSrc, title) => {
+          const modal = checkpointPasteModal;
+          setCheckpointPasteModal(null);
+          if (!modal) return;
+          const imgId = registerImplicitImage(confirmedSrc);
+          setCheckpointInlineImages((prev) => ({
+            ...prev,
+            [modal.blockId]: { ...(prev[modal.blockId] || {}), [imgId]: confirmedSrc },
+          }));
+          const token = formatInlineImageToken(imgId, title);
+          if (!modal.el || !insertTextAtEditableElement(modal.el, token, modal.range)) {
+            setCheckpointAnswers((prev) => {
+              const cur = typeof prev[modal.blockId] === 'string' ? (prev[modal.blockId] as string) : '';
+              return { ...prev, [modal.blockId]: cur ? `${cur}\n${token}` : token };
+            });
+          }
+          showToast('✓ Đã chèn ảnh vào bài làm tự luận!');
+        }}
+      />
+      {/* Course Recovery Modal */}
+      {isRecoveryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[88vh]">
+            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <RotateCcw className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="text-sm font-extrabold">
+                    Kiểm tra &amp; Khôi phục dữ liệu Khóa học
+                  </h3>
+                  <p className="text-[11px] text-slate-300">
+                    Quét toàn bộ Cloud Firestore, danh sách chặn đồng bộ, IndexedDB trình duyệt &amp; file sao lưu
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRecoveryModalOpen(false)}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4">
+              {recoveryFeedback && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
+                  {recoveryFeedback}
+                </div>
+              )}
+
+              {recoveryReport?.error && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
+                  {recoveryReport.error}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs text-slate-600 font-semibold">
+                  {isScanningRecovery
+                    ? 'Đang quét các nguồn dữ liệu...'
+                    : `Tìm thấy ${recoveryReport?.entries.length || 0} bản ghi khóa học có thể khôi phục`}
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={recoveryJsonInputRef}
+                    type="file"
+                    accept=".json,application/json"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        const ok = importAllDataFromJson(String(reader.result || ''));
+                        if (ok) {
+                          onRefreshCourses();
+                          setRecoveryFeedback('✓ Đã nhập dữ liệu từ file sao lưu JSON và bắt đầu đồng bộ lên Cloud!');
+                          void runRecoveryScan(false);
+                        } else {
+                          setRecoveryFeedback('File JSON không hợp lệ hoặc không đọc được.');
+                        }
+                      };
+                      reader.readAsText(file);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => recoveryJsonInputRef.current?.click()}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Nạp từ file sao lưu (.json)</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isScanningRecovery}
+                    onClick={() => void runRecoveryScan(false)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isScanningRecovery ? 'animate-spin' : ''}`} />
+                    <span>Quét lại</span>
+                  </button>
+                </div>
+              </div>
+
+              {recoveryReport && recoveryReport.entries.length > 0 && (
+                <div className="space-y-2">
+                  {recoveryReport.entries.map((entry) => {
+                    const checked = selectedRecoveryIds.has(entry.course.id);
+                    const chCount =
+                      entry.course.chapters && entry.course.chapters.length > 0
+                        ? entry.course.chapters.length
+                        : entry.course.chapterCount ?? 0;
+                    const lesCount =
+                      entry.course.chapters && entry.course.chapters.length > 0
+                        ? entry.course.chapters.reduce((s, ch) => s + (ch.lessons?.length || 0), 0)
+                        : entry.course.lessonCount ?? entry.course.lessons?.length ?? 0;
+                    const sourceLabel =
+                      entry.source === 'cloud'
+                        ? 'Cloud Firestore'
+                        : entry.source === 'indexeddb'
+                        ? 'IndexedDB Trình duyệt'
+                        : entry.source === 'server_backup'
+                        ? 'Bản sao lưu máy chủ'
+                        : 'Bộ nhớ đệm bị ẩn';
+
+                    return (
+                      <label
+                        key={entry.course.id}
+                        className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors ${
+                          checked
+                            ? 'bg-purple-50/60 border-purple-300'
+                            : 'bg-white border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            setSelectedRecoveryIds((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(entry.course.id);
+                              else next.delete(entry.course.id);
+                              return next;
+                            });
+                          }}
+                          className="mt-1 rounded border-slate-300 text-purple-700"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-extrabold text-slate-900 truncate">
+                              {entry.course.title || 'Khóa học không tên'}
+                            </span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                              {sourceLabel}
+                            </span>
+                            {entry.isTombstoned && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                                Từng bị đánh dấu xóa
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-2">
+                            <span className="font-mono">{entry.course.id}</span>
+                            <span>·</span>
+                            <span>{chCount} chương · {lesCount} bài học</span>
+                            {entry.course.visibility && (
+                              <>
+                                <span>·</span>
+                                <span>Chế độ: {entry.course.visibility}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+
+              {recoveryReport &&
+                !isScanningRecovery &&
+                recoveryReport.entries.length === 0 && (
+                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-2">
+                    <p className="font-bold text-slate-900">
+                      Không tìm thấy bản ghi khóa học nào còn lưu trên Cloud Firestore hoặc IndexedDB của trình duyệt này.
+                    </p>
+                    <p>
+                      Nếu bạn từng tải xuống file sao lưu (`.json`) hoặc đăng nhập trên một trình duyệt/máy tính khác, hãy dùng nút <strong>Nạp từ file sao lưu (.json)</strong> ở trên hoặc mở lại bằng trình duyệt cũ trước khi đồng bộ để cứu bản sao lưu IndexedDB trên máy đó.
+                    </p>
+                  </div>
+                )}
+
+              {recoveryReport && recoveryReport.orphanReferencedCourseIds.length > 0 && (
+                <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1.5">
+                  <div className="font-bold">
+                    Phát hiện {recoveryReport.orphanReferencedCourseIds.length} mã khóa học từng tồn tại trong lịch sử đồng bộ (`siteConfig/tombstones` / lớp học) nhưng tài liệu gốc đã bị xóa khỏi Firestore:
+                  </div>
+                  <div className="font-mono text-[11px] text-amber-800 break-all">
+                    {recoveryReport.orphanReferencedCourseIds.join(', ')}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsRecoveryModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer"
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isRestoringCourses ||
+                  isScanningRecovery ||
+                  (selectedRecoveryIds.size === 0 &&
+                    (recoveryReport?.orphanReferencedCourseIds.length || 0) === 0)
+                }
+                onClick={() => void handleRestoreSelected()}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-purple-700 hover:bg-purple-800 text-white disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>
+                  {isRestoringCourses
+                    ? 'Đang khôi phục...'
+                    : selectedRecoveryIds.size > 0
+                    ? `Khôi phục ${selectedRecoveryIds.size} khóa học`
+                    : 'Gỡ bỏ các mã khóa học bị chặn'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

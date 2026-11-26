@@ -1,527 +1,572 @@
-import React, { useMemo } from 'react';
-import { Flag, Mountain, Anchor, CheckCircle2, RotateCcw } from 'lucide-react';
-import type { MountainPlayerState } from '../types/exam';
-import { getMountainPetById, MOUNTAIN_OBSTACLES } from '../data/mountainPets';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  CheckCircle2,
+  Compass,
+  EyeOff,
+  Flag,
+  HelpCircle,
+  Maximize2,
+  Minimize2,
+  Mountain,
+  RotateCcw,
+  Skull,
+  Trophy,
+  X,
+} from 'lucide-react';
+import type { ObstaclePlayerState } from '../types/exam';
+import { getMountainPetById, getObstacleStageMeta } from '../data/mountainPets';
 
-interface MountainClimbMapProps {
-  players: MountainPlayerState[];
-  summitSteps: number;
-  currentPlayerId?: string;
-  totalQuestions: number;
+interface AvatarTokenProps {
+  player: ObstaclePlayerState;
+  isMe: boolean;
+  sizeClass?: string;
 }
 
-interface Point2D {
-  x: number;
-  y: number;
-}
-
-const WAYPOINTS: Point2D[] = [
-  { x: 96, y: 472 },   // Base camp (Step 0)
-  { x: 245, y: 458 },
-  { x: 430, y: 446 },
-  { x: 645, y: 430 },
-  { x: 790, y: 382 },  // Switchback 1 right
-  { x: 655, y: 332 },
-  { x: 410, y: 320 },
-  { x: 180, y: 298 },  // Switchback 2 left
-  { x: 135, y: 238 },
-  { x: 310, y: 205 },
-  { x: 545, y: 192 },
-  { x: 740, y: 162 },  // Switchback 3 right
-  { x: 610, y: 112 },
-  { x: 425, y: 94 },
-  { x: 495, y: 66 },   // Summit ridge
-  { x: 660, y: 62 },   // Summit peak!
-];
-
-function samplePolylinePoints(waypoints: Point2D[], count: number): Point2D[] {
-  if (count <= 1) return [waypoints[0]];
-  const segLengths: number[] = [];
-  let totalLen = 0;
-  for (let i = 0; i < waypoints.length - 1; i++) {
-    const dx = waypoints[i + 1].x - waypoints[i].x;
-    const dy = waypoints[i + 1].y - waypoints[i].y;
-    const len = Math.hypot(dx, dy);
-    segLengths.push(len);
-    totalLen += len;
-  }
-
-  const out: Point2D[] = [];
-  for (let i = 0; i < count; i++) {
-    const targetDist = (i / (count - 1)) * totalLen;
-    let accum = 0;
-    let placed = false;
-    for (let s = 0; s < segLengths.length; s++) {
-      const segLen = segLengths[s];
-      if (accum + segLen >= targetDist || s === segLengths.length - 1) {
-        const localT = segLen > 0 ? Math.max(0, Math.min(1, (targetDist - accum) / segLen)) : 0;
-        const p0 = waypoints[s];
-        const p1 = waypoints[s + 1];
-        out.push({
-          x: p0.x + (p1.x - p0.x) * localT,
-          y: p0.y + (p1.y - p0.y) * localT,
-        });
-        placed = true;
-        break;
-      }
-      accum += segLen;
-    }
-    if (!placed) out.push(waypoints[waypoints.length - 1]);
-  }
-  return out;
-}
-
-function buildSmoothSvgPath(points: Point2D[]): string {
-  if (points.length === 0) return '';
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(0, i - 1)];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = points[Math.min(points.length - 1, i + 2)];
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  }
-  return d;
-}
-
-export const MountainClimbMap: React.FC<MountainClimbMapProps> = ({
-  players,
-  summitSteps,
-  currentPlayerId,
-  totalQuestions,
+const AnimalAvatarBadge: React.FC<AvatarTokenProps> = ({
+  player,
+  isMe,
+  sizeClass = 'w-16 h-16 sm:w-20 sm:h-20',
 }) => {
-  const safeSteps = Math.max(4, summitSteps);
-
-  const stepPoints = useMemo(
-    () => samplePolylinePoints(WAYPOINTS, safeSteps + 1),
-    [safeSteps]
-  );
-
-  const trailPathD = useMemo(() => buildSmoothSvgPath(WAYPOINTS), []);
-
-  const obstacleNodes = useMemo(() => {
-    const fractions = [0.18, 0.36, 0.54, 0.72, 0.88];
-    return MOUNTAIN_OBSTACLES.map((obs, idx) => {
-      const stepIdx = Math.max(
-        1,
-        Math.min(safeSteps - 1, Math.round(fractions[idx] * safeSteps))
-      );
-      const pt = stepPoints[stepIdx] || stepPoints[0];
-      return {
-        ...obs,
-        stepIdx,
-        pt,
-        labelAbove: idx % 2 === 0,
-      };
-    });
-  }, [safeSteps, stepPoints]);
-
-  // Group players by their step so co-located pets spread neatly without overlapping
-  const positionedPlayers = useMemo(() => {
-    const groups = new Map<number, MountainPlayerState[]>();
-    players.forEach((p) => {
-      const clampedStep = Math.max(0, Math.min(safeSteps, p.step));
-      const arr = groups.get(clampedStep) || [];
-      arr.push(p);
-      groups.set(clampedStep, arr);
-    });
-
-    const result: Array<{
-      player: MountainPlayerState;
-      x: number;
-      y: number;
-      clampedStep: number;
-    }> = [];
-
-    groups.forEach((group, stepIdx) => {
-      const basePt = stepPoints[stepIdx] || stepPoints[0];
-      const count = group.length;
-      group.forEach((player, idx) => {
-        if (count === 1) {
-          result.push({ player, x: basePt.x, y: basePt.y - 22, clampedStep: stepIdx });
-          return;
-        }
-        const angle = ((idx / count) * Math.PI * 2) - Math.PI / 2;
-        const radius = count <= 3 ? 22 : count <= 6 ? 28 : 34;
-        result.push({
-          player,
-          x: basePt.x + Math.cos(angle) * radius,
-          y: basePt.y - 18 + Math.sin(angle) * (radius * 0.65),
-          clampedStep: stepIdx,
-        });
-      });
-    });
-
-    // Sort so current player renders on top
-    return result.sort((a, b) => {
-      if (a.player.id === currentPlayerId) return 1;
-      if (b.player.id === currentPlayerId) return -1;
-      return 0;
-    });
-  }, [players, safeSteps, stepPoints, currentPlayerId]);
-
-  const summitPt = stepPoints[stepPoints.length - 1] || WAYPOINTS[WAYPOINTS.length - 1];
-  const basePt = stepPoints[0] || WAYPOINTS[0];
-
-  const myPlayer = players.find((p) => p.id === currentPlayerId);
-  const myAnchoredEarly = Boolean(myPlayer && myPlayer.step >= safeSteps && !myPlayer.officiallyFinished);
-
+  const pet = getMountainPetById(player.petId);
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-      {/* Map Header Bar */}
-      <div className="px-4 py-3 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-300 shrink-0">
-            <Mountain className="w-4 h-4" />
-          </div>
-          <div className="min-w-0">
-            <h3 className="text-sm font-extrabold tracking-tight truncate">
-              Bản đồ Chinh phục Đỉnh núi ({safeSteps} bậc)
-            </h3>
-            <p className="text-[11px] text-slate-300 truncate">
-              Cần vượt chặng &amp; hoàn thành đủ {totalQuestions} câu hỏi để về đích chính thức
-            </p>
-          </div>
-        </div>
+    <div className="flex flex-col items-center gap-1 select-none">
+      <div
+        className={`relative ${sizeClass} rounded-2xl flex items-center justify-center shadow-md border-[3px] transition-all duration-300 ${
+          player.eliminated
+            ? 'bg-slate-200 border-slate-400 grayscale opacity-75'
+            : isMe
+              ? 'bg-white border-emerald-500 ring-4 ring-emerald-400/35 shadow-emerald-200/80 scale-[1.03]'
+              : `${pet.bgClass} ${pet.borderClass}`
+        }`}
+        style={{
+          borderColor: !player.eliminated && isMe ? '#10b981' : !player.eliminated ? pet.accentHex : undefined,
+        }}
+      >
+        <span className="text-3xl sm:text-4xl leading-none drop-shadow-xs" aria-hidden="true">
+          {pet.emoji}
+        </span>
 
-        <div className="flex items-center gap-2 text-[11px] font-bold">
-          <span className="px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-amber-300 tabular-nums">
-            Đích: Bậc {safeSteps}
+        {isMe && (
+          <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-extrabold uppercase tracking-wide shadow-xs whitespace-nowrap">
+            Bạn
           </span>
-          {myPlayer && (
-            <span className="px-2.5 py-1 rounded-md bg-emerald-600 text-white tabular-nums">
-              Bạn: Bậc {myPlayer.step}/{safeSteps}
-            </span>
-          )}
-        </div>
+        )}
+
+        {player.finished && !player.eliminated && (
+          <span
+            className="absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-sm border-2 border-white"
+            title="Đã về đích"
+          >
+            <Trophy className="w-3.5 h-3.5" />
+          </span>
+        )}
+
+        {player.eliminated && (
+          <span
+            className="absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-sm border-2 border-white"
+            title="Bị loại"
+          >
+            <Skull className="w-3.5 h-3.5" />
+          </span>
+        )}
       </div>
 
-      {/* Early Summit Anchor Alert */}
-      {myAnchoredEarly && (
-        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 flex items-center gap-2 text-xs text-amber-900 font-semibold">
-          <Anchor className="w-4 h-4 text-amber-600 shrink-0" />
-          <span>
-            Linh vật của bạn đã chạm đỉnh sớm! Hãy tiếp tục hoàn tất các câu hỏi còn lại (và sửa câu sai nếu có) để được công nhận <strong>Về đích chính thức</strong>.
+      <span
+        className={`max-w-[96px] truncate px-2 py-0.5 rounded-lg text-[11px] font-bold shadow-xs border whitespace-nowrap ${
+          isMe
+            ? 'bg-emerald-700 text-white border-emerald-800'
+            : 'bg-white/95 text-slate-800 border-slate-200'
+        }`}
+        title={player.name}
+      >
+        {player.name}
+      </span>
+    </div>
+  );
+};
+
+// ============================================================================
+// MAP 1: MINIMAP TỔNG QUÁT (Thu gọn góc trên bên trái, bấm mở rộng toàn cảnh)
+// ============================================================================
+interface MountainMinimapProps {
+  players: ObstaclePlayerState[];
+  totalObstacles: number;
+  currentPlayerId?: string;
+}
+
+export const MountainMinimap: React.FC<MountainMinimapProps> = ({
+  players,
+  totalObstacles,
+  currentPlayerId,
+}) => {
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpanded(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [expanded]);
+
+  const safeTotal = Math.max(1, totalObstacles);
+
+  const stageNodes = useMemo(() => {
+    return Array.from({ length: safeTotal + 1 }, (_, idx) => {
+      const t = idx / safeTotal;
+      // Gentle ascending zig-zag inside a 260x88 viewBox
+      const x = 18 + t * 224;
+      const wave = Math.sin(t * Math.PI * 2.5) * 14;
+      const y = 70 - t * 48 + wave * (idx === 0 || idx === safeTotal ? 0 : 0.65);
+      return { idx, x, y };
+    });
+  }, [safeTotal]);
+
+  const pathD = useMemo(() => {
+    if (stageNodes.length === 0) return '';
+    return stageNodes.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ');
+  }, [stageNodes]);
+
+  return (
+    <>
+      {/* Collapsed Compact Minimap Widget (Top-Left) */}
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        data-testid="minimap-collapsed-trigger"
+        className="group text-left bg-white/95 hover:bg-white border-2 border-slate-200 hover:border-sky-400 rounded-2xl p-2.5 shadow-md hover:shadow-lg transition-all cursor-pointer w-56 sm:w-64 shrink-0"
+        title="Bấm để mở rộng bản đồ tổng quát"
+      >
+        <div className="flex items-center justify-between gap-2 mb-1.5">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Compass className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+            <span className="text-[11px] font-extrabold text-slate-800 truncate">
+              Bản đồ tổng quát
+            </span>
+          </div>
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded-md border border-sky-200 shrink-0 whitespace-nowrap group-hover:bg-sky-100">
+            <Maximize2 className="w-2.5 h-2.5" />
+            Mở rộng
           </span>
         </div>
-      )}
 
-      {/* Interactive Winding Mountain SVG */}
-      <div className="relative w-full bg-sky-100 select-none">
-        <svg
-          viewBox="0 0 900 540"
-          className="w-full h-auto block"
-          role="img"
-          aria-label="Bản đồ đường đi leo núi với các chướng ngại vật và vị trí người chơi"
-        >
-          <defs>
-            <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.28" />
-              <stop offset="55%" stopColor="#e0f2fe" stopOpacity="0.9" />
-              <stop offset="100%" stopColor="#ecfdf5" />
-            </linearGradient>
-            <linearGradient id="mountainBack" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#64748b" />
-              <stop offset="100%" stopColor="#94a3b8" />
-            </linearGradient>
-            <linearGradient id="mountainMain" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#334155" />
-              <stop offset="35%" stopColor="#475569" />
-              <stop offset="70%" stopColor="#15803d" />
-              <stop offset="100%" stopColor="#166534" />
-            </linearGradient>
-            <linearGradient id="trailStroke" x1="0" y1="1" x2="1" y2="0">
-              <stop offset="0%" stopColor="#f59e0b" />
-              <stop offset="50%" stopColor="#fbbf24" />
-              <stop offset="100%" stopColor="#fef08a" />
-            </linearGradient>
-          </defs>
+        <div className="relative rounded-xl bg-linear-to-b from-sky-50 to-emerald-50 border border-slate-100 overflow-hidden">
+          <svg viewBox="0 0 260 88" className="w-full h-20 block">
+            <path d={pathD} fill="none" stroke="#cbd5e1" strokeWidth={5} strokeLinecap="round" strokeLinejoin="round" />
+            <path d={pathD} fill="none" stroke="#0284c7" strokeWidth={2} strokeDasharray="4 4" strokeLinecap="round" />
 
-          {/* Sky Background */}
-          <rect x="0" y="0" width="900" height="540" fill="url(#skyGrad)" />
+            {stageNodes.map((pt) => (
+              <circle
+                key={pt.idx}
+                cx={pt.x}
+                cy={pt.y}
+                r={pt.idx === safeTotal ? 5 : 3}
+                fill={pt.idx === safeTotal ? '#f59e0b' : pt.idx === 0 ? '#10b981' : '#ffffff'}
+                stroke={pt.idx === safeTotal ? '#b45309' : '#64748b'}
+                strokeWidth={1.5}
+              />
+            ))}
 
-          {/* Sun & Soft Clouds */}
-          <circle cx="148" cy="84" r="34" fill="#fde047" opacity="0.85" />
-          <circle cx="148" cy="84" r="48" fill="#fef08a" opacity="0.3" />
-          <g fill="#ffffff" opacity="0.82">
-            <ellipse cx="265" cy="96" rx="46" ry="16" />
-            <ellipse cx="290" cy="86" rx="30" ry="14" />
-            <ellipse cx="780" cy="112" rx="48" ry="15" />
-            <ellipse cx="805" cy="102" rx="28" ry="13" />
-          </g>
-
-          {/* Far Mountain Range Silhouette */}
-          <path
-            d="M 0 360 L 145 190 L 295 310 L 455 150 L 635 280 L 795 145 L 900 245 L 900 540 L 0 540 Z"
-            fill="url(#mountainBack)"
-            opacity="0.38"
-          />
-
-          {/* Main Alpine Massif */}
-          <path
-            d="M -20 540 L -20 420 L 160 280 L 290 220 L 440 120 L 660 52 L 820 155 L 920 270 L 920 540 Z"
-            fill="url(#mountainMain)"
-            opacity="0.92"
-          />
-
-          {/* Snow Cap on Summit */}
-          <path
-            d="M 548 86 L 660 52 L 758 116 L 718 122 L 690 104 L 656 122 L 620 100 L 580 116 Z"
-            fill="#f8fafc"
-            opacity="0.95"
-          />
-          <path
-            d="M 380 160 L 440 120 L 502 152 L 465 155 L 440 144 L 412 162 Z"
-            fill="#f1f5f9"
-            opacity="0.75"
-          />
-
-          {/* Meadow Slope Base */}
-          <path
-            d="M 0 470 Q 250 435 490 462 T 900 445 L 900 540 L 0 540 Z"
-            fill="#15803d"
-            opacity="0.88"
-          />
-
-          {/* Stylized Pine Trees */}
-          {[
-            { x: 54, y: 452, s: 1 },
-            { x: 75, y: 465, s: 0.85 },
-            { x: 830, y: 425, s: 1.05 },
-            { x: 856, y: 440, s: 0.9 },
-            { x: 255, y: 375, s: 0.78 },
-            { x: 515, y: 265, s: 0.75 },
-          ].map((tree, idx) => (
-            <g
-              key={idx}
-              transform={`translate(${tree.x}, ${tree.y}) scale(${tree.s})`}
-              opacity="0.85"
-            >
-              <polygon points="0,-32 -14,-6 14,-6" fill="#065f46" />
-              <polygon points="0,-20 -17,6 17,6" fill="#047857" />
-              <rect x="-3" y="6" width="6" height="10" fill="#78350f" />
-            </g>
-          ))}
-
-          {/* Winding Trail Base Shadow & Path */}
-          <path
-            d={trailPathD}
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="18"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            opacity="0.3"
-          />
-          <path
-            d={trailPathD}
-            fill="none"
-            stroke="url(#trailStroke)"
-            strokeWidth="12"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d={trailPathD}
-            fill="none"
-            stroke="#ffffff"
-            strokeWidth="2.5"
-            strokeDasharray="6 10"
-            strokeLinecap="round"
-            opacity="0.65"
-          />
-
-          {/* Step Nodes along Trail */}
-          {stepPoints.map((pt, idx) => {
-            const isStart = idx === 0;
-            const isSummit = idx === stepPoints.length - 1;
-            const isMajor = idx % 5 === 0 || isStart || isSummit;
-            return (
-              <g key={idx}>
-                <circle
-                  cx={pt.x}
-                  cy={pt.y}
-                  r={isSummit ? 11 : isStart ? 9 : isMajor ? 7 : 4.5}
-                  fill={isSummit ? '#facc15' : isStart ? '#10b981' : '#ffffff'}
-                  stroke={isSummit ? '#854d0e' : '#0f172a'}
-                  strokeWidth={isMajor ? 2.5 : 1.5}
-                />
-                {isMajor && !isStart && !isSummit && (
-                  <text
-                    x={pt.x}
-                    y={pt.y + 3}
-                    textAnchor="middle"
-                    fontSize="8"
-                    fontWeight="800"
-                    fill="#0f172a"
-                  >
-                    {idx}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-
-          {/* Base Camp Sign */}
-          <g transform={`translate(${basePt.x}, ${basePt.y + 26})`}>
-            <rect x="-44" y="-11" width="88" height="22" rx="6" fill="#065f46" stroke="#ecfdf5" strokeWidth="1.5" />
-            <text x="0" y="3.5" textAnchor="middle" fontSize="10" fontWeight="800" fill="#ffffff">
-              CHÂN NÚI · 0
-            </text>
-          </g>
-
-          {/* Summit Flag & Peak Banner */}
-          <g transform={`translate(${summitPt.x}, ${summitPt.y})`}>
-            <line x1="0" y1="0" x2="0" y2="-40" stroke="#78350f" strokeWidth="3.5" strokeLinecap="round" />
-            <polygon points="1,-40 34,-30 1,-20" fill="#ef4444" stroke="#ffffff" strokeWidth="1.2" />
-            <rect x="40" y="-22" width="112" height="24" rx="6" fill="#0f172a" stroke="#facc15" strokeWidth="1.8" />
-            <text x="96" y="-6.5" textAnchor="middle" fontSize="10.5" fontWeight="800" fill="#fde047">
-              ĐỈNH NÚI · {safeSteps}
-            </text>
-          </g>
-
-          {/* Obstacle Milestones */}
-          {obstacleNodes.map((obs, idx) => {
-            const dy = obs.labelAbove ? -26 : 28;
-            return (
-              <g key={`${obs.label}_${idx}`} transform={`translate(${obs.pt.x}, ${obs.pt.y + dy})`}>
-                <rect
-                  x="-42"
-                  y="-11"
-                  width="84"
-                  height="21"
-                  rx="6"
-                  fill="#0f172a"
-                  fillOpacity="0.82"
-                  stroke="#cbd5e1"
-                  strokeWidth="1"
-                />
-                <text x="0" y="3" textAnchor="middle" fontSize="9.5" fontWeight="700" fill="#f8fafc">
-                  {obs.icon} {obs.label}
-                </text>
-              </g>
-            );
-          })}
-
-          {/* Animated Pet Tokens */}
-          {positionedPlayers.map(({ player, x, y }) => {
-            const pet = getMountainPetById(player.petId);
-            const isSelf = player.id === currentPlayerId;
-            const isAnchoredEarly = player.step >= safeSteps && !player.officiallyFinished;
-            const shortName =
-              player.name.length > 11 ? `${player.name.slice(0, 10)}…` : player.name;
-
-            return (
-              <g
-                key={player.id}
-                style={{
-                  transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`,
-                  transition: 'transform 650ms cubic-bezier(0.22, 1, 0.36, 1)',
-                }}
-              >
-                {/* Glow ring for current player or official finisher */}
-                {(isSelf || player.officiallyFinished) && (
+            {players.map((p, idx) => {
+              const node = stageNodes[Math.min(safeTotal, Math.max(0, p.stageIndex))] || stageNodes[0];
+              const isMe = p.id === currentPlayerId;
+              const pet = getMountainPetById(p.petId);
+              const offsetX = ((idx % 3) - 1) * 5;
+              const offsetY = Math.floor(idx / 3) * -6;
+              return (
+                <g key={p.id} transform={`translate(${node.x + offsetX}, ${node.y + offsetY})`}>
                   <circle
-                    cx="0"
-                    cy="0"
-                    r="23"
-                    fill="none"
-                    stroke={player.officiallyFinished ? '#facc15' : '#10b981'}
-                    strokeWidth="3"
-                    strokeDasharray={isAnchoredEarly ? '4 3' : undefined}
-                  />
-                )}
-
-                {/* Token circle */}
-                <circle
-                  cx="0"
-                  cy="0"
-                  r="18"
-                  fill="#ffffff"
-                  stroke={isSelf ? '#059669' : pet.accentHex}
-                  strokeWidth={isSelf ? 3.5 : 2.5}
-                />
-                <text
-                  x="0"
-                  y="7"
-                  textAnchor="middle"
-                  fontSize="21"
-                >
-                  {pet.emoji}
-                </text>
-
-                {/* Status micro-badge (Finished / Anchored / Retrying) */}
-                {player.officiallyFinished && (
-                  <g transform="translate(14, -14)">
-                    <circle cx="0" cy="0" r="8" fill="#16a34a" stroke="#ffffff" strokeWidth="1.5" />
-                    <text x="0" y="3.5" textAnchor="middle" fontSize="9" fontWeight="900" fill="#ffffff">
-                      ✓
-                    </text>
-                  </g>
-                )}
-                {isAnchoredEarly && (
-                  <g transform="translate(15, -14)">
-                    <circle cx="0" cy="0" r="8.5" fill="#d97706" stroke="#ffffff" strokeWidth="1.5" />
-                    <text x="0" y="3" textAnchor="middle" fontSize="9" fontWeight="900" fill="#ffffff">
-                      ⚓
-                    </text>
-                  </g>
-                )}
-
-                {/* Player name pill underneath */}
-                <g transform="translate(0, 25)">
-                  <rect
-                    x="-40"
-                    y="-8"
-                    width="80"
-                    height="16"
-                    rx="4"
-                    fill={isSelf ? '#065f46' : '#0f172a'}
-                    fillOpacity="0.9"
+                    r={isMe ? 8.5 : 6.5}
+                    fill={isMe ? '#10b981' : '#ffffff'}
+                    stroke={isMe ? '#065f46' : pet.accentHex}
+                    strokeWidth={isMe ? 2.2 : 1.5}
                   />
                   <text
                     x="0"
                     y="3"
                     textAnchor="middle"
-                    fontSize="9"
-                    fontWeight="700"
-                    fill="#ffffff"
+                    fontSize={isMe ? '10' : '8'}
                   >
-                    {shortName} ({player.step})
+                    {pet.emoji}
                   </text>
                 </g>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
+              );
+            })}
+          </svg>
+        </div>
 
-      {/* Compact Legend Footer */}
-      <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="inline-flex items-center gap-1 font-semibold">
-            <Flag className="w-3.5 h-3.5 text-rose-600" />
-            <span>Mốc đỉnh: {safeSteps} bậc</span>
+        <div className="mt-1 flex items-center justify-between text-[10px] font-semibold text-slate-500">
+          <span>{players.length} người thi đấu</span>
+          <span className="tabular-nums">{safeTotal} chướng ngại</span>
+        </div>
+      </button>
+
+      {/* Expanded Minimap Overview Modal (click outside or close button to collapse) */}
+      {expanded && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-4"
+          data-testid="minimap-expanded-modal"
+          onClick={() => setExpanded(false)}
+        >
+          <div
+            className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center">
+                  <Mountain className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-extrabold text-slate-900">
+                    Toàn cảnh tuyến đường leo núi
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Theo dõi vị trí tất cả người chơi qua {safeTotal} chướng ngại vật. Bấm ra ngoài để thu gọn.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExpanded(false)}
+                data-testid="minimap-collapse-button"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Minimize2 className="w-4 h-4" />
+                Thu gọn
+                <X className="w-3.5 h-3.5 ml-0.5" />
+              </button>
+            </div>
+
+            <MountainSpectatorMap
+              players={players}
+              totalObstacles={safeTotal}
+              currentPlayerId={currentPlayerId}
+              compactHeight
+            />
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+// ============================================================================
+// MAP 2: MAP ĐƯỜNG ĐI CHÍNH ("Đi đến đâu hiện đến đấy, đi qua xa ẩn đi")
+// ============================================================================
+interface MountainProgressiveMapProps {
+  players: ObstaclePlayerState[];
+  totalObstacles: number;
+  currentPlayerId?: string;
+  pushedBackNotice?: string | null;
+}
+
+export const MountainProgressiveMap: React.FC<MountainProgressiveMapProps> = ({
+  players,
+  totalObstacles,
+  currentPlayerId,
+  pushedBackNotice,
+}) => {
+  const safeTotal = Math.max(1, totalObstacles);
+  const myPlayer = players.find((p) => p.id === currentPlayerId);
+  const myStage = Math.min(safeTotal, Math.max(0, myPlayer?.stageIndex ?? 0));
+
+  // Window: 1 chặng ngay sau lưng + chặng hiện tại + 3 chặng phía trước
+  // Nếu bị phạt lùi chặng, myStage giảm xuống -> cửa sổ tự động dịch lùi và mở sáng lại các chặng đã qua!
+  const windowStart = Math.max(0, myStage - 1);
+  const windowEnd = Math.min(safeTotal, myStage + 3);
+
+  const visibleIndices = useMemo(() => {
+    const arr: number[] = [];
+    for (let i = windowStart; i <= windowEnd; i++) {
+      arr.push(i);
+    }
+    return arr;
+  }, [windowStart, windowEnd]);
+
+  const hiddenBehindCount = windowStart;
+  const hiddenAheadCount = safeTotal - windowEnd;
+
+  const playersByStage = useMemo(() => {
+    const map = new Map<number, ObstaclePlayerState[]>();
+    players.forEach((p) => {
+      const s = Math.min(safeTotal, Math.max(0, p.stageIndex));
+      const list = map.get(s) || [];
+      list.push(p);
+      map.set(s, list);
+    });
+    // Sort self first so self is never buried
+    map.forEach((list) => {
+      list.sort((a, b) => {
+        if (a.id === currentPlayerId) return -1;
+        if (b.id === currentPlayerId) return 1;
+        return a.joinedAtMs - b.joinedAtMs;
+      });
+    });
+    return map;
+  }, [players, safeTotal, currentPlayerId]);
+
+  return (
+    <div
+      className="rounded-3xl border border-slate-200 bg-linear-to-b from-sky-50 via-white to-emerald-50/60 p-4 sm:p-5 shadow-sm space-y-4 overflow-hidden"
+      data-testid="progressive-main-map"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Mountain className="w-4 h-4 text-emerald-700" />
+          <span className="text-xs sm:text-sm font-extrabold text-slate-900">
+            Hành trình chặng hiện tại
           </span>
-          <span className="inline-flex items-center gap-1 font-semibold text-amber-700">
-            <Anchor className="w-3.5 h-3.5" />
-            <span>Neo đỉnh: Chờ hoàn tất câu hỏi</span>
-          </span>
-          <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            <span>Về đích chính thức: Xong toàn bộ &amp; sạch câu sai</span>
+          <span className="text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-lg tabular-nums">
+            {myStage >= safeTotal ? `Đích ${safeTotal}/${safeTotal}` : `Chặng ${myStage + 1}/${safeTotal}`}
           </span>
         </div>
-        <span className="inline-flex items-center gap-1 text-slate-500">
-          <RotateCcw className="w-3 h-3" />
-          <span>Sai sẽ tự động quay lại vòng ôn cuối chặng</span>
-        </span>
+
+        {pushedBackNotice && (
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold animate-pulse">
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>{pushedBackNotice}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Horizontal winding trail across visible window */}
+      <div className="overflow-x-auto pb-2">
+        <div className="flex items-stretch gap-3 min-w-max px-1 py-2">
+          {/* Dimmed collapsed stub for distant passed obstacles */}
+          {hiddenBehindCount > 0 && (
+            <div
+              className="flex flex-col items-center justify-center w-28 shrink-0 rounded-2xl border border-dashed border-slate-300 bg-slate-100/70 px-3 py-4 opacity-55 transition-all"
+              data-testid="progressive-hidden-behind"
+              title="Các chặng đã vượt qua xa được thu gọn để giữ màn hình gọn gàng; sẽ tự động hiện lại nếu bạn bị lùi chặng"
+            >
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 mb-1.5" />
+              <span className="text-[11px] font-bold text-slate-600 text-center">
+                Đã vượt qua
+              </span>
+              <span className="text-xs font-extrabold text-slate-700 tabular-nums mt-0.5">
+                {hiddenBehindCount} chặng trước
+              </span>
+            </div>
+          )}
+
+          {/* Visible obstacle nodes */}
+          {visibleIndices.map((stageIdx, arrIdx) => {
+            const isStart = stageIdx === 0;
+            const isSummit = stageIdx === safeTotal;
+            const isCurrent = stageIdx === myStage && myStage < safeTotal;
+            const isPassed = stageIdx < myStage;
+            const meta = getObstacleStageMeta(stageIdx);
+            const playersHere = playersByStage.get(stageIdx) || [];
+
+            return (
+              <React.Fragment key={stageIdx}>
+                <div
+                  data-testid={`progressive-stage-${stageIdx}`}
+                  className={`relative flex flex-col justify-between min-w-[168px] max-w-[230px] rounded-2xl border-2 p-3.5 transition-all duration-300 ${
+                    isCurrent
+                      ? 'bg-emerald-50/90 border-emerald-500 shadow-md ring-2 ring-emerald-300/60'
+                      : isSummit
+                        ? 'bg-amber-50/90 border-amber-400 shadow-sm'
+                        : isPassed
+                          ? 'bg-slate-50/80 border-slate-200 opacity-75'
+                          : 'bg-white border-sky-200 shadow-xs'
+                  }`}
+                >
+                  {/* Obstacle Header */}
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-lg leading-none" aria-hidden="true">
+                        {isStart ? '⛺' : isSummit ? '🏔️' : meta.icon}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-xs font-extrabold text-slate-900 truncate">
+                          {isStart ? 'Xuất phát' : isSummit ? 'Đỉnh núi' : `Chặng ${stageIdx}`}
+                        </div>
+                        <div className="text-[10px] font-semibold text-slate-500 truncate">
+                          {isStart ? 'Trại chân núi' : isSummit ? 'Vinh quang' : meta.label}
+                        </div>
+                      </div>
+                    </div>
+
+                    {isCurrent && (
+                      <span className="px-1.5 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-extrabold whitespace-nowrap shrink-0">
+                        Đang ở đây
+                      </span>
+                    )}
+                    {isPassed && (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    )}
+                    {isSummit && myStage >= safeTotal && (
+                      <Flag className="w-4 h-4 text-amber-600 shrink-0" />
+                    )}
+                  </div>
+
+                  {/* Players standing on this obstacle — spaced in flex-wrap grid so 64-80px avatars never overlap */}
+                  <div className="min-h-[108px] flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                    {playersHere.length > 0 ? (
+                      playersHere.map((p) => (
+                        <AnimalAvatarBadge
+                          key={p.id}
+                          player={p}
+                          isMe={p.id === currentPlayerId}
+                          sizeClass="w-16 h-16 sm:w-20 sm:h-20"
+                        />
+                      ))
+                    ) : (
+                      <div className="flex flex-col items-center justify-center text-slate-300 py-3">
+                        <div className="w-8 h-8 rounded-full border-2 border-dashed border-slate-200 flex items-center justify-center text-[11px] font-bold">
+                          {stageIdx}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {arrIdx < visibleIndices.length - 1 && (
+                  <div className="flex items-center justify-center shrink-0">
+                    <div className="w-6 h-1.5 rounded-full bg-linear-to-r from-emerald-300 to-sky-300" />
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+
+          {/* Fogged upcoming obstacles */}
+          {hiddenAheadCount > 0 && (
+            <div
+              className="flex flex-col items-center justify-center w-32 shrink-0 rounded-2xl border border-dashed border-sky-300 bg-sky-50/75 px-3 py-4 opacity-80"
+              data-testid="progressive-hidden-ahead"
+            >
+              <div className="w-8 h-8 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center mb-1.5">
+                {hiddenAheadCount > 2 ? <EyeOff className="w-4 h-4" /> : <HelpCircle className="w-4 h-4" />}
+              </div>
+              <span className="text-[11px] font-bold text-slate-600 text-center">
+                Sương mù phía trước
+              </span>
+              <span className="text-xs font-extrabold text-sky-800 tabular-nums mt-0.5">
+                +{hiddenAheadCount} chặng ẩn
+              </span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 };
+
+// ============================================================================
+// BẢN ĐỒ TOÀN CẢNH CHO CHỦ TRÒ QUAN SÁT & CHẾ ĐỘ MỞ RỘNG MINIMAP
+// ============================================================================
+interface MountainSpectatorMapProps {
+  players: ObstaclePlayerState[];
+  totalObstacles: number;
+  currentPlayerId?: string;
+  compactHeight?: boolean;
+}
+
+export const MountainSpectatorMap: React.FC<MountainSpectatorMapProps> = ({
+  players,
+  totalObstacles,
+  currentPlayerId,
+  compactHeight = false,
+}) => {
+  const safeTotal = Math.max(1, totalObstacles);
+
+  const playersByStage = useMemo(() => {
+    const map = new Map<number, ObstaclePlayerState[]>();
+    players.forEach((p) => {
+      const s = Math.min(safeTotal, Math.max(0, p.stageIndex));
+      const list = map.get(s) || [];
+      list.push(p);
+      map.set(s, list);
+    });
+    return map;
+  }, [players, safeTotal]);
+
+  const stages = useMemo(
+    () => Array.from({ length: safeTotal + 1 }, (_, i) => i),
+    [safeTotal]
+  );
+
+  return (
+    <div
+      className={`rounded-3xl border border-slate-200 bg-linear-to-b from-sky-50 via-white to-emerald-50/50 p-4 sm:p-6 shadow-sm ${
+        compactHeight ? '' : 'min-h-[340px]'
+      }`}
+      data-testid="spectator-panorama-map"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <div className="flex items-center gap-2">
+          <Mountain className="w-5 h-5 text-emerald-700" />
+          <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+            Bản đồ toàn cảnh đường đua ({safeTotal} chướng ngại vật)
+          </h3>
+        </div>
+        <span className="text-xs font-bold text-slate-600 bg-white border border-slate-200 px-2.5 py-1 rounded-lg tabular-nums">
+          {players.filter((p) => p.finished && !p.eliminated).length}/{players.length} đã về đích
+        </span>
+      </div>
+
+      {/* Responsive full-route track grid where every obstacle and 64-80px player avatar sits clearly without overlapping */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        {stages.map((stageIdx) => {
+          const isStart = stageIdx === 0;
+          const isSummit = stageIdx === safeTotal;
+          const meta = getObstacleStageMeta(stageIdx);
+          const group = playersByStage.get(stageIdx) || [];
+
+          return (
+            <div
+              key={stageIdx}
+              className={`rounded-2xl border-2 p-3 flex flex-col justify-between min-h-[156px] transition-all ${
+                isSummit
+                  ? 'bg-amber-50/85 border-amber-400 shadow-sm'
+                  : isStart
+                    ? 'bg-emerald-50/80 border-emerald-300'
+                    : group.length > 0
+                      ? 'bg-white border-sky-300 shadow-xs'
+                      : 'bg-white/75 border-slate-200'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-1.5 border-b border-slate-100 pb-2 mb-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-base leading-none" aria-hidden="true">
+                    {isStart ? '⛺' : isSummit ? '🏆' : meta.icon}
+                  </span>
+                  <span className="text-xs font-extrabold text-slate-900 truncate">
+                    {isStart ? 'Xuất phát' : isSummit ? 'Đỉnh núi' : `Chặng ${stageIdx}`}
+                  </span>
+                </div>
+                <span className="text-[10px] font-bold text-slate-500 tabular-nums shrink-0">
+                  {group.length > 0 ? `${group.length} người` : `#${stageIdx}`}
+                </span>
+              </div>
+
+              <div className="flex-1 flex flex-wrap items-center justify-center gap-2 py-1">
+                {group.length > 0 ? (
+                  group.map((p) => (
+                    <AnimalAvatarBadge
+                      key={p.id}
+                      player={p}
+                      isMe={p.id === currentPlayerId}
+                      sizeClass="w-16 h-16"
+                    />
+                  ))
+                ) : (
+                  <span className="text-[11px] font-semibold text-slate-400">
+                    {isStart ? 'Điểm xuất phát' : isSummit ? 'Cờ đích' : meta.label}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// Legacy alias kept in case any external reference exists
+export const MountainClimbMap = MountainSpectatorMap;

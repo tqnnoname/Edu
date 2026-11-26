@@ -83,9 +83,10 @@ export const ExamHistoryView: React.FC<ExamHistoryViewProps> = ({
         const rawProg = getStudentCourseProgress(course.id, currentUser.id);
         const synced = syncCourseScormState(course, rawProg);
         const pct = calculateCourseProgressPercentage(course, synced);
-        const totalLessons = course.chapters
-          ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
-          : course.lessons?.length || 0;
+        const totalLessons =
+          course.chapters && course.chapters.length > 0
+            ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
+            : course.lessonCount ?? course.lessons?.length ?? 0;
         const status = synced.scormData?.lessonStatus || 'not attempted';
         const statusLabel =
           status === 'passed'

@@ -42,11 +42,21 @@ import {
   saveHomeworkSubmission,
 } from '../utils/storage';
 import { processImageFile } from '../utils/imageUpload';
+import { insertTextAtEditableElement } from '../utils/cursorInsert';
+import {
+  collectUsedInlineImages,
+  extractImageFileFromClipboardEvent,
+  formatInlineImageToken,
+  registerImplicitImage,
+  registerImplicitImagesMap,
+} from '../utils/inlineImages';
 import { MathToolbar } from './MathToolbar';
 import { RichContentRenderer } from './RichContentRenderer';
+import { InlineImageStrip, InlineImageTitleModal } from './InlineImageTitleModal';
 import { ConfirmModal } from './ConfirmModal';
 import { CopyContentButton } from './CopyContentButton';
 import type { UnsavedNavigationGuard } from './UnsavedChangesModal';
+import { publishCloudNotification } from '../utils/notificationsFirestore';
 
 interface ClassroomHomeworkTabProps {
   classroom: Classroom;
@@ -134,12 +144,14 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
   const [hwCloseTime, setHwCloseTime] = useState('');
   const [hwMaxScore, setHwMaxScore] = useState<number>(10);
   const [hwAttachments, setHwAttachments] = useState<HomeworkAttachment[]>([]);
+  const [hwInlineImages, setHwInlineImages] = useState<Record<string, string>>({});
   const [editorError, setEditorError] = useState<string | null>(null);
   const teacherInstrRef = useRef<HTMLTextAreaElement>(null);
 
   // Student Submission state
   const [mySubmission, setMySubmission] = useState<HomeworkSubmission | undefined>(undefined);
   const [draftTextAnswer, setDraftTextAnswer] = useState('');
+  const [draftInlineImages, setDraftInlineImages] = useState<Record<string, string>>({});
   const [draftNote, setDraftNote] = useState('');
   const [draftImages, setDraftImages] = useState<string[]>([]);
   const [draftAttachments, setDraftAttachments] = useState<HomeworkAttachment[]>([]);
@@ -147,6 +159,13 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showEssayPreview, setShowEssayPreview] = useState(true);
   const studentEssayRef = useRef<HTMLTextAreaElement>(null);
+  const [pasteImageModal, setPasteImageModal] = useState<{
+    target: 'student' | 'teacher';
+    imageSrc: string;
+    defaultTitle: string;
+    el: HTMLTextAreaElement | null;
+    range: { start: number; end: number } | null;
+  } | null>(null);
 
   // Teacher submissions view & grading drafts
   const [hwSubmissions, setHwSubmissions] = useState<HomeworkSubmission[]>([]);
@@ -201,8 +220,10 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
 
     const sub = getStudentSubmissionForHomework(hwId, currentUserId);
     setMySubmission(sub);
+    registerImplicitImagesMap(selectedHomework?.inlineImages);
+    registerImplicitImagesMap(sub?.inlineImages);
 
-    let restoredDraft: { textAnswer?: string; note?: string } | null = null;
+    let restoredDraft: { textAnswer?: string; note?: string; inlineImages?: Record<string, string> } | null = null;
     try {
       const raw = sessionStorage.getItem(getStudentDraftKey(hwId));
       if (raw) {
@@ -212,11 +233,20 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       // ignore storage errors
     }
 
+    const nextDraftInline =
+      restoredDraft && restoredDraft.inlineImages && typeof restoredDraft.inlineImages === 'object'
+        ? restoredDraft.inlineImages
+        : sub?.inlineImages
+        ? { ...sub.inlineImages }
+        : {};
+    registerImplicitImagesMap(nextDraftInline);
+
     setDraftTextAnswer(
       restoredDraft && typeof restoredDraft.textAnswer === 'string'
         ? restoredDraft.textAnswer
         : sub?.textAnswer || ''
     );
+    setDraftInlineImages(nextDraftInline);
     setDraftNote(
       restoredDraft && typeof restoredDraft.note === 'string'
         ? restoredDraft.note
@@ -225,7 +255,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
     setDraftImages(sub?.imageUrls || []);
     setDraftAttachments(sub?.attachments || []);
     setUploadError(null);
-  }, [classroom.id, selectedHomework?.id, currentUserId]);
+  }, [classroom.id, selectedHomework?.id, selectedHomework?.inlineImages, currentUserId]);
 
   // Bảo toàn bản nháp bài tự luận của học sinh khi chuyển tab trong lớp hoặc đổi chế độ
   useEffect(() => {
@@ -235,20 +265,28 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       try {
         const baselineText = mySubmission?.textAnswer || '';
         const baselineNote = mySubmission?.note || '';
-        if (draftTextAnswer === baselineText && draftNote === baselineNote) {
+        if (
+          draftTextAnswer === baselineText &&
+          draftNote === baselineNote &&
+          Object.keys(draftInlineImages).length === 0
+        ) {
           sessionStorage.removeItem(getStudentDraftKey(hwId));
           return;
         }
         sessionStorage.setItem(
           getStudentDraftKey(hwId),
-          JSON.stringify({ textAnswer: draftTextAnswer, note: draftNote })
+          JSON.stringify({
+            textAnswer: draftTextAnswer,
+            note: draftNote,
+            inlineImages: draftInlineImages,
+          })
         );
       } catch {
         // ignore quota errors
       }
     }, 200);
     return () => clearTimeout(timer);
-  }, [classroom.id, selectedHomework?.id, currentUserId, draftTextAnswer, draftNote, mySubmission]);
+  }, [classroom.id, selectedHomework?.id, currentUserId, draftTextAnswer, draftNote, draftInlineImages, mySubmission]);
 
   // Khôi phục bản nháp giao bài tập của giáo viên nếu quay lại tab Bài tập
   useEffect(() => {
@@ -266,6 +304,12 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       setHwCloseTime(d.hwCloseTime || '');
       setHwMaxScore(typeof d.hwMaxScore === 'number' ? d.hwMaxScore : 10);
       if (Array.isArray(d.hwAttachments)) setHwAttachments(d.hwAttachments);
+      if (d.hwInlineImages && typeof d.hwInlineImages === 'object') {
+        registerImplicitImagesMap(d.hwInlineImages);
+        setHwInlineImages(d.hwInlineImages);
+      } else {
+        setHwInlineImages({});
+      }
       setIsEditorOpen(true);
     } catch {
       // ignore parse errors
@@ -294,6 +338,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
             hwCloseTime,
             hwMaxScore,
             hwAttachments,
+            hwInlineImages,
           })
         );
       } catch {
@@ -311,6 +356,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
     hwCloseTime,
     hwMaxScore,
     hwAttachments,
+    hwInlineImages,
   ]);
 
   // Sync teacher submissions view when teacher opens/updates homework
@@ -443,11 +489,13 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
     setHwCloseTime('');
     setHwMaxScore(10);
     setHwAttachments([]);
+    setHwInlineImages({});
     setEditorError(null);
     setIsEditorOpen(true);
   };
 
   const openEditModal = (hw: ClassroomHomework) => {
+    registerImplicitImagesMap(hw.inlineImages);
     setEditingHwId(hw.id);
     setHwTitle(hw.title);
     setHwInstructions(hw.instructions || '');
@@ -455,6 +503,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
     setHwCloseTime(hw.closeTime || '');
     setHwMaxScore(hw.maxScore || 10);
     setHwAttachments(hw.attachments ? [...hw.attachments] : []);
+    setHwInlineImages(hw.inlineImages ? { ...hw.inlineImages } : {});
     setEditorError(null);
     setIsEditorOpen(true);
   };
@@ -503,6 +552,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       classId: classroom.id,
       title: hwTitle.trim(),
       instructions: hwInstructions.trim() || undefined,
+      inlineImages: collectUsedInlineImages([hwInstructions], hwInlineImages),
       attachments: hwAttachments.length > 0 ? hwAttachments : undefined,
       openTime: hwOpenTime || undefined,
       closeTime: hwCloseTime || undefined,
@@ -519,6 +569,32 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
     setHomeworks(nextList);
     setSelectedHomeworkId(saved.id);
     setIsEditorOpen(false);
+    if (!editingHwId) {
+      const studentEmails = Array.from(
+        new Set(
+          (classroom.students || [])
+            .map((s) => (s.email || '').trim().toLowerCase())
+            .filter(Boolean)
+        )
+      );
+      if (studentEmails.length > 0) {
+        void publishCloudNotification({
+          title: `Bài tập về nhà mới: ${saved.title}`,
+          message: `${currentUser?.fullName || 'Giáo viên'} đã giao bài tập về nhà mới trong lớp ${classroom.name}${saved.closeTime ? ` (hạn ${saved.closeTime.replace('T', ' ')})` : ''}.`,
+          category: 'homework',
+          targetType: 'homework',
+          targetId: saved.id,
+          secondaryId: 'homework',
+          targetLabel: `Mở BTVN · ${classroom.name}`,
+          classId: classroom.id,
+          className: classroom.name,
+          recipientScope: 'class',
+          recipientEmails: studentEmails,
+          senderName: currentUser?.fullName || currentUser?.email || 'Giáo viên',
+          senderEmail: currentUser?.email || '',
+        }).catch(() => {});
+      }
+    }
     onToast(editingHwId ? '✓ Đã cập nhật bài tập về nhà!' : '✓ Đã giao bài tập về nhà mới cho lớp!');
     return true;
   };
@@ -652,6 +728,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
     }
 
     const maxScore = selectedHomework.maxScore && selectedHomework.maxScore > 0 ? selectedHomework.maxScore : 10;
+    const usedInlineImgs = collectUsedInlineImages([draftTextAnswer], draftInlineImages);
     const saved = saveHomeworkSubmission({
       id: mySubmission?.id || `hwsub_${selectedHomework.id}_${currentUserId}_${Date.now()}`,
       classId: classroom.id,
@@ -664,6 +741,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       imageUrls: draftImages,
       attachments: draftAttachments,
       textAnswer: draftTextAnswer.trim() || undefined,
+      inlineImages: usedInlineImgs,
       note: draftNote.trim() || undefined,
       maxScore,
       submittedAt: mySubmission?.submittedAt || new Date().toISOString(),
@@ -696,6 +774,26 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       draft.feedback,
       currentUser?.fullName || currentUser?.email || 'Giáo viên'
     );
+    if (sub.studentEmail) {
+      void publishCloudNotification({
+        title: `Đã chấm điểm BTVN: ${selectedHomework.title}`,
+        message:
+          parsedScore !== undefined
+            ? `Bạn đạt ${parsedScore}/${maxScore} điểm${draft.feedback?.trim() ? ` — Nhận xét: "${draft.feedback.trim()}"` : ''}.`
+            : `Giáo viên vừa nhận xét bài nộp của bạn.`,
+        category: 'grade',
+        targetType: 'grade',
+        targetId: selectedHomework.id,
+        secondaryId: 'homework',
+        targetLabel: `Xem điểm · ${classroom.name}`,
+        classId: classroom.id,
+        className: classroom.name,
+        recipientScope: 'user',
+        recipientEmails: [sub.studentEmail.trim().toLowerCase()],
+        senderName: currentUser?.fullName || currentUser?.email || 'Giáo viên',
+        senderEmail: currentUser?.email || '',
+      }).catch(() => {});
+    }
     reloadSubmissionsForSelected(selectedHomework.id);
     onToast(`✓ Đã lưu điểm cho ${sub.studentName}!`);
   };
@@ -926,7 +1024,10 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                 {/* Instructions */}
                 {selectedHomework.instructions ? (
                   <div className="text-sm text-slate-800 leading-relaxed bg-slate-50/70 p-4 rounded-xl border border-slate-200">
-                    <RichContentRenderer content={selectedHomework.instructions} />
+                    <RichContentRenderer
+                      content={selectedHomework.instructions}
+                      inlineImages={selectedHomework.inlineImages}
+                    />
                   </div>
                 ) : (
                   <div className="text-xs italic text-slate-400">
@@ -1066,10 +1167,20 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                         <MathToolbar
                           targetRef={studentEssayRef}
                           onInsert={(snippet) => {
-                            const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
-                            setDraftTextAnswer((prev) =>
-                              prev ? (isBlock ? `${prev}\n${snippet}` : `${prev} ${snippet}`) : snippet
-                            );
+                            if (!insertTextAtEditableElement(studentEssayRef.current, snippet)) {
+                              const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
+                              setDraftTextAnswer((prev) =>
+                                prev ? (isBlock ? `${prev}\n${snippet}` : `${prev} ${snippet}`) : snippet
+                              );
+                            }
+                          }}
+                          onInsertInlineImage={(imgId, imgSrc, title) => {
+                            registerImplicitImage(imgSrc, imgId);
+                            setDraftInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+                            const token = formatInlineImageToken(imgId, title);
+                            if (!insertTextAtEditableElement(studentEssayRef.current, token)) {
+                              setDraftTextAnswer((prev) => (prev ? `${prev}\n${token}` : token));
+                            }
                           }}
                         />
 
@@ -1078,8 +1189,34 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                           rows={6}
                           value={draftTextAnswer}
                           onChange={(e) => setDraftTextAnswer(e.target.value)}
-                          placeholder="Nhập lời giải tự luận trực tiếp tại đây... Đặt con trỏ ở vị trí bất kỳ rồi bấm nút trên thanh công thức để chèn ngay tại đó."
+                          onPaste={(e) => {
+                            const file = extractImageFileFromClipboardEvent(e.nativeEvent);
+                            if (!file) return;
+                            e.preventDefault();
+                            const el = e.currentTarget;
+                            const range = {
+                              start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
+                              end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
+                            };
+                            void processImageFile(file, 1200, 0.85).then((compressed) => {
+                              setPasteImageModal({
+                                target: 'student',
+                                imageSrc: compressed,
+                                defaultTitle: 'Ảnh bài làm',
+                                el,
+                                range,
+                              });
+                            }).catch(() => {});
+                          }}
+                          placeholder="Nhập lời giải tự luận trực tiếp tại đây... Đặt con trỏ ở vị trí bất kỳ rồi bấm nút trên thanh công thức, Chèn ảnh hoặc nhấn Ctrl+V để dán ảnh."
                           className="w-full p-3.5 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-600 font-mono leading-relaxed"
+                        />
+
+                        <InlineImageStrip
+                          content={draftTextAnswer}
+                          inlineImages={draftInlineImages}
+                          label="Ảnh đã chèn trong bài tự luận"
+                          onUpdateContent={setDraftTextAnswer}
                         />
 
                         {showEssayPreview && draftTextAnswer.trim() && (
@@ -1088,7 +1225,10 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                               Xem trước bài soạn thảo:
                             </div>
                             <div className="text-sm text-slate-900 leading-relaxed">
-                              <RichContentRenderer content={draftTextAnswer} />
+                              <RichContentRenderer
+                                content={draftTextAnswer}
+                                inlineImages={draftInlineImages}
+                              />
                             </div>
                           </div>
                         )}
@@ -1278,7 +1418,10 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                         <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
                           <div className="text-xs font-bold text-slate-700">Bài làm trực tuyến đã nộp:</div>
                           <div className="text-sm text-slate-900">
-                            <RichContentRenderer content={mySubmission.textAnswer} />
+                            <RichContentRenderer
+                              content={mySubmission.textAnswer}
+                              inlineImages={mySubmission.inlineImages}
+                            />
                           </div>
                         </div>
                       )}
@@ -1402,7 +1545,10 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                                   Bài làm tự luận trực tuyến:
                                 </div>
                                 <div className="text-sm text-slate-900 leading-relaxed">
-                                  <RichContentRenderer content={sub.textAnswer} />
+                                  <RichContentRenderer
+                                    content={sub.textAnswer}
+                                    inlineImages={sub.inlineImages}
+                                  />
                                 </div>
                               </div>
                             )}
@@ -1591,10 +1737,20 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
               <MathToolbar
                 targetRef={teacherInstrRef}
                 onInsert={(snippet) => {
-                  const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
-                  setHwInstructions((prev) =>
-                    prev ? (isBlock ? `${prev}\n${snippet}` : `${prev} ${snippet}`) : snippet
-                  );
+                  if (!insertTextAtEditableElement(teacherInstrRef.current, snippet)) {
+                    const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
+                    setHwInstructions((prev) =>
+                      prev ? (isBlock ? `${prev}\n${snippet}` : `${prev} ${snippet}`) : snippet
+                    );
+                  }
+                }}
+                onInsertInlineImage={(imgId, imgSrc, title) => {
+                  registerImplicitImage(imgSrc, imgId);
+                  setHwInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+                  const token = formatInlineImageToken(imgId, title);
+                  if (!insertTextAtEditableElement(teacherInstrRef.current, token)) {
+                    setHwInstructions((prev) => (prev ? `${prev}\n${token}` : token));
+                  }
                 }}
               />
               <textarea
@@ -1602,15 +1758,43 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                 rows={4}
                 value={hwInstructions}
                 onChange={(e) => setHwInstructions(e.target.value)}
-                placeholder="Nhập đề bài hoặc hướng dẫn làm bài cho học sinh..."
+                onPaste={(e) => {
+                  const file = extractImageFileFromClipboardEvent(e.nativeEvent);
+                  if (!file) return;
+                  e.preventDefault();
+                  const el = e.currentTarget;
+                  const range = {
+                    start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
+                    end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
+                  };
+                  void processImageFile(file, 1200, 0.85).then((compressed) => {
+                    setPasteImageModal({
+                      target: 'teacher',
+                      imageSrc: compressed,
+                      defaultTitle: 'Hình đề bài',
+                      el,
+                      range,
+                    });
+                  }).catch(() => {});
+                }}
+                placeholder="Nhập đề bài hoặc hướng dẫn làm bài cho học sinh (hỗ trợ KaTeX, Chèn ảnh hoặc Ctrl+V dán ảnh)..."
                 className="w-full p-3 bg-white border border-slate-300 rounded-xl font-mono text-xs sm:text-sm leading-relaxed"
+              />
+              <InlineImageStrip
+                content={hwInstructions}
+                inlineImages={hwInlineImages}
+                label="Ảnh đã chèn trong đề bài / hướng dẫn"
+                onUpdateContent={setHwInstructions}
               />
               {hwInstructions.trim() && (
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
                   <div className="font-bold text-slate-500 uppercase text-[10px] mb-1">
                     Xem trước hiển thị:
                   </div>
-                  <RichContentRenderer content={hwInstructions} />
+                  <RichContentRenderer
+                    content={hwInstructions}
+                    inlineImages={hwInlineImages}
+                  />
                 </div>
               )}
             </div>
@@ -1908,6 +2092,36 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
         message={confirmState.message}
         onConfirm={confirmState.onConfirm}
         onClose={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
+      />
+
+      <InlineImageTitleModal
+        isOpen={Boolean(pasteImageModal)}
+        initialImageSrc={pasteImageModal?.imageSrc || ''}
+        initialTitle={pasteImageModal?.defaultTitle || ''}
+        targetLabel={
+          pasteImageModal?.target === 'teacher'
+            ? 'Nội dung / Yêu cầu BTVN'
+            : 'Bài làm tự luận trực tuyến'
+        }
+        onClose={() => setPasteImageModal(null)}
+        onConfirm={(imgSrc, title) => {
+          const modal = pasteImageModal;
+          setPasteImageModal(null);
+          if (!modal) return;
+          const imgId = registerImplicitImage(imgSrc);
+          const token = formatInlineImageToken(imgId, title);
+          if (modal.target === 'teacher') {
+            setHwInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+            if (!modal.el || !insertTextAtEditableElement(modal.el, token, modal.range)) {
+              setHwInstructions((prev) => (prev ? `${prev}\n${token}` : token));
+            }
+          } else {
+            setDraftInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+            if (!modal.el || !insertTextAtEditableElement(modal.el, token, modal.range)) {
+              setDraftTextAnswer((prev) => (prev ? `${prev}\n${token}` : token));
+            }
+          }
+        }}
       />
     </div>
   );

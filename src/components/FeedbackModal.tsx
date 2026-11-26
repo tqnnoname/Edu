@@ -50,7 +50,7 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({
   const categories = [
     { id: 'general', label: 'Góp ý chung' },
     { id: 'ui', label: 'Giao diện & Tiện ích' },
-    { id: 'exams', label: 'Đề thi & Đấu trường' },
+    { id: 'exams', label: 'Đề thi & Khóa học' },
     { id: 'feature', label: 'Đề xuất tính năng' },
     { id: 'bug', label: 'Báo lỗi phát sinh' },
   ] as const;

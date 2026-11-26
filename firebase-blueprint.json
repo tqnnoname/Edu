@@ -498,7 +498,7 @@
     },
     "CourseDoc": {
       "title": "CourseDoc",
-      "description": "Micro-course containing chapters, lessons, blocks, and SCORM metadata.",
+      "description": "Lightweight micro-course root metadata; large chapters, lessons, and blocks live in subcollections.",
       "type": "object",
       "properties": {
         "id": {
@@ -525,9 +525,28 @@
           "type": "string",
           "maxLength": 4000
         },
+        "coverImageUrl": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "inlineImages": {
+          "type": "object"
+        },
         "instructor": {
           "type": "string",
           "maxLength": 150
+        },
+        "schemaVersion": {
+          "type": "number"
+        },
+        "chapterCount": {
+          "type": "number"
+        },
+        "lessonCount": {
+          "type": "number"
+        },
+        "chapterIndex": {
+          "type": "array"
         },
         "chapters": {
           "type": "array"
@@ -609,6 +628,83 @@
         }
       },
       "required": ["id", "title", "subject", "visibility", "status", "creatorUid", "creatorEmail", "createdAt", "updatedAt"]
+    },
+    "CourseChapterDoc": {
+      "title": "CourseChapterDoc",
+      "description": "Chapter metadata under courses/{courseId}/chapters/{chapterId}.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "courseId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "inlineImages": { "type": "object" },
+        "order": { "type": "number" },
+        "lessonIds": { "type": "array" },
+        "chapterExamId": { "type": "string", "maxLength": 128 },
+        "chapterExamTitle": { "type": "string", "maxLength": 300 },
+        "creatorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "creatorEmail": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "courseId", "title", "order", "creatorUid", "updatedAt"]
+    },
+    "CourseLessonDoc": {
+      "title": "CourseLessonDoc",
+      "description": "Lesson metadata, sections, homework config, and attachment URLs under courses/{courseId}/lessons/{lessonId}.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "courseId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "chapterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "order": { "type": "number" },
+        "durationMinutes": { "type": "number" },
+        "summary": { "type": "string", "maxLength": 20000 },
+        "contentMarkdown": { "type": "string", "maxLength": 100000 },
+        "inlineImages": { "type": "object" },
+        "sections": { "type": "array" },
+        "attachments": { "type": "array" },
+        "blockIds": { "type": "array" },
+        "practiceExamId": { "type": "string", "maxLength": 128 },
+        "practiceExamTitle": { "type": "string", "maxLength": 300 },
+        "homework": { "type": "object" },
+        "creatorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "creatorEmail": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "courseId", "chapterId", "title", "order", "creatorUid", "updatedAt"]
+    },
+    "CourseBlockDoc": {
+      "title": "CourseBlockDoc",
+      "description": "Individual lesson block (theory, callout, image, file, or question) under courses/{courseId}/blocks/{blockId}.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "courseId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "chapterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "lessonId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "order": { "type": "number" },
+        "type": { "type": "string", "enum": ["theory", "question", "callout", "image", "file", "practice_link"] },
+        "sectionId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 300 },
+        "contentMarkdown": { "type": "string", "maxLength": 100000 },
+        "imageUrl": { "type": "string", "maxLength": 2000 },
+        "caption": { "type": "string", "maxLength": 1000 },
+        "inlineImages": { "type": "object" },
+        "calloutType": { "type": "string", "enum": ["info", "tip", "warning", "formula"] },
+        "attachments": { "type": "array" },
+        "question": { "type": "object" },
+        "practiceExamId": { "type": "string", "maxLength": 128 },
+        "practiceExamTitle": { "type": "string", "maxLength": 300 },
+        "creatorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "creatorEmail": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "courseId", "chapterId", "lessonId", "type", "order", "creatorUid", "updatedAt"]
     },
     "ClassroomDoc": {
       "title": "ClassroomDoc",
@@ -928,6 +1024,9 @@
         "answers": {
           "type": "object"
         },
+        "inlineImages": {
+          "type": "object"
+        },
         "questions": {
           "type": "array"
         },
@@ -1061,6 +1160,9 @@
           "type": "string",
           "maxLength": 20000
         },
+        "inlineImages": {
+          "type": "object"
+        },
         "attachments": {
           "type": "array"
         },
@@ -1183,6 +1285,9 @@
         "textAnswer": {
           "type": "string",
           "maxLength": 50000
+        },
+        "inlineImages": {
+          "type": "object"
         },
         "note": {
           "type": "string",
@@ -1483,6 +1588,341 @@
         }
       },
       "required": ["id", "title", "mode", "specialMode", "rounds", "participants", "creatorUid", "creatorEmail", "updatedAt"]
+    },
+    "UserCredentialVaultDoc": {
+      "title": "UserCredentialVaultDoc",
+      "description": "Access-restricted credential sync record readable only by the user themselves, their assigned classroom teachers, and the Master Admin.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "studentCode": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "role": {
+          "type": "string",
+          "enum": ["student", "teacher"]
+        },
+        "isMasterAdmin": {
+          "type": "boolean"
+        },
+        "school": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "classId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "teacherEmails": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "visiblePassword": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "isGoogleAuth": {
+          "type": "boolean"
+        },
+        "pendingActivation": {
+          "type": "boolean"
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "uid", "email", "username", "fullName", "role", "teacherEmails", "updatedAt"]
+    },
+    "GameRoomDoc": {
+      "title": "GameRoomDoc",
+      "description": "Real-time Mountain Climb obstacle quiz game room state.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]{6}$"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]{6}$"
+        },
+        "hostUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "hostName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "hostEmail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "hostIsSpectator": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["WAITING", "PLAYING", "FINISHED"]
+        },
+        "config": {
+          "type": "object"
+        },
+        "questions": {
+          "type": "array"
+        },
+        "startedAtMs": {
+          "type": "number"
+        },
+        "endsAtMs": {
+          "type": "number"
+        },
+        "finishedAtMs": {
+          "type": "number"
+        },
+        "finishReason": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "code", "hostUid", "hostName", "hostIsSpectator", "status", "config", "questions", "updatedAt"]
+    },
+    "GameRoomPlayerDoc": {
+      "title": "GameRoomPlayerDoc",
+      "description": "Participant state and statistics inside a Mountain Climb game room.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "roomCode": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]{6}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "petId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "isHost": {
+          "type": "boolean"
+        },
+        "stageIndex": {
+          "type": "number"
+        },
+        "score": {
+          "type": "number"
+        },
+        "lives": {
+          "type": "number"
+        },
+        "correctQuestionsCount": {
+          "type": "number"
+        },
+        "wrongQuestionsCount": {
+          "type": "number"
+        },
+        "totalCorrectAttempts": {
+          "type": "number"
+        },
+        "totalWrongAttempts": {
+          "type": "number"
+        },
+        "correctQuestionIds": {
+          "type": "array"
+        },
+        "wrongQuestionIds": {
+          "type": "array"
+        },
+        "bonusTimeSec": {
+          "type": "number"
+        },
+        "cooldownUntilMs": {
+          "type": "number"
+        },
+        "questionStartedAtMs": {
+          "type": "number"
+        },
+        "lastAnsweredAtMs": {
+          "type": "number"
+        },
+        "finished": {
+          "type": "boolean"
+        },
+        "eliminated": {
+          "type": "boolean"
+        },
+        "finishedAtMs": {
+          "type": "number"
+        },
+        "joinedAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "uid", "roomCode", "name", "petId", "isHost", "stageIndex", "score", "lives", "correctQuestionsCount", "wrongQuestionsCount", "totalCorrectAttempts", "totalWrongAttempts", "finished", "eliminated", "updatedAt"]
+    },
+    "NotificationDoc": {
+      "title": "NotificationDoc",
+      "description": "In-app notification with deep-link metadata targeting exams, courses, homework, classrooms, or game rooms.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "category": {
+          "type": "string",
+          "enum": ["exam", "bundle", "course", "homework", "grade", "classroom", "game", "teacher_request", "system"]
+        },
+        "targetType": {
+          "type": "string",
+          "enum": ["none", "exam", "bundle", "course", "classroom", "homework", "grade", "classroom_requests", "game_room", "teacher_requests"]
+        },
+        "targetId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "secondaryId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "targetLabel": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "classId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "className": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "actionPath": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "recipientScope": {
+          "type": "string",
+          "enum": ["all", "teachers", "students", "class", "user"]
+        },
+        "recipientEmails": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "senderUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "senderEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "createdAtStr": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "message", "category", "targetType", "recipientScope", "senderUid", "senderName", "senderEmail", "createdAtStr", "updatedAt"]
     }
   },
   "firestore": {
@@ -1498,6 +1938,10 @@
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Lightweight (<1KB) unified user profile keyed by Firebase Auth UID."
     },
+    "/userCredentials/{credId}": {
+      "schema": { "$ref": "#/entities/UserCredentialVaultDoc" },
+      "description": "Strictly access-controlled cross-device credential sync vault for Master Admin and classroom teachers."
+    },
     "/exams/{examId}": {
       "schema": { "$ref": "#/entities/ExamDoc" },
       "description": "Exams collection supporting public discovery, creator ownership, and classroom access lists."
@@ -1512,7 +1956,19 @@
     },
     "/courses/{courseId}": {
       "schema": { "$ref": "#/entities/CourseDoc" },
-      "description": "Micro-courses collection with chapters, lessons, and blocks."
+      "description": "Lightweight micro-course root metadata."
+    },
+    "/courses/{courseId}/chapters/{chapterId}": {
+      "schema": { "$ref": "#/entities/CourseChapterDoc" },
+      "description": "Chapters subcollection belonging to a micro-course."
+    },
+    "/courses/{courseId}/lessons/{lessonId}": {
+      "schema": { "$ref": "#/entities/CourseLessonDoc" },
+      "description": "Lessons subcollection belonging to a micro-course."
+    },
+    "/courses/{courseId}/blocks/{blockId}": {
+      "schema": { "$ref": "#/entities/CourseBlockDoc" },
+      "description": "Individual lesson content and quiz blocks under a micro-course."
     },
     "/classrooms/{classroomId}": {
       "schema": { "$ref": "#/entities/ClassroomDoc" },
@@ -1565,6 +2021,18 @@
     "/scoreboards/{scoreboardId}": {
       "schema": { "$ref": "#/entities/ScoreboardDoc" },
       "description": "Dynamic competition scoreboards managed by teachers."
+    },
+    "/gameRooms/{roomCode}": {
+      "schema": { "$ref": "#/entities/GameRoomDoc" },
+      "description": "Interactive Mountain Climb quiz game rooms keyed by 6-char uppercase code."
+    },
+    "/gameRooms/{roomCode}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/GameRoomPlayerDoc" },
+      "description": "Subcollection of players inside a Mountain Climb game room."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationDoc" },
+      "description": "Deep-linked in-app notifications scoped to roles, classrooms, or specific recipients."
     }
   }
 }

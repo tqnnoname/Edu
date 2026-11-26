@@ -116,6 +116,10 @@ export interface Question {
   topic?: string;
   difficulty?: 'easy' | 'medium' | 'hard';
   imageUrl?: string;
+  imageCaption?: string; // Tiêu đề ảnh đề bài
+  explanationImageUrl?: string; // Ảnh minh họa đính kèm trong lời giải chi tiết
+  explanationImageCaption?: string; // Tiêu đề ảnh lời giải chi tiết
+  inlineImages?: { [imgId: string]: string }; // Ánh xạ ngầm cho ảnh chèn tại vị trí con trỏ
   partId?: string;    // ID phần thi của câu hỏi (VD: Phần I, Phần II...)
   partTitle?: string; // Tên phần thi hiển thị (tuỳ chọn)
 
@@ -273,6 +277,7 @@ export interface UserExamState {
   candidateCode?: string;
   mode: 'exam' | 'practice';
   answers: { [questionId: string]: CandidateAnswerValue };
+  essayInlineImages?: { [imgId: string]: string };
   flagged: { [questionId: string]: boolean };
   currentQuestionIndex: number;
   startTime: number;
@@ -322,6 +327,7 @@ export interface ExamResult {
   submissionReason?: string; // Lý do nộp (nộp bài thông thường, hết giờ, hoặc tự động nộp do rời trang quá số lần)
   tabSwitchCount?: number;   // Số lần ghi nhận rời phòng thi
   answers: { [questionId: string]: CandidateAnswerValue };
+  inlineImages?: { [imgId: string]: string }; // Ánh xạ ảnh chèn trong bài tự luận của thí sinh
   questions: Question[];
   scoreDetails: { [questionId: string]: QuestionScoreDetail };
   topicBreakdown: { [topic: string]: { total: number; earned: number; maxPoints: number } };
@@ -439,13 +445,24 @@ export interface CourseAttachment {
   uploadedBy?: string;
 }
 
+export interface LessonSection {
+  id: string;
+  title: string;
+  summary?: string; // Ý tưởng / mục tiêu / ghi chú cho phân mục
+  parentSectionId?: string; // Hỗ trợ phân mục con lồng trong phân mục cha
+  order: number;
+  inlineImages?: { [imgId: string]: string };
+}
+
 export interface LessonBlock {
   id: string;
   type: LessonBlockType;
+  sectionId?: string; // Thuộc phân mục nào trong bài học (tùy chọn)
   title?: string;
   contentMarkdown?: string; // Hỗ trợ Markdown, LaTeX KaTeX & ảnh chèn giữa nội dung
   imageUrl?: string;
   caption?: string; // Chú thích ảnh minh họa
+  inlineImages?: { [imgId: string]: string }; // Ánh xạ ngầm cho ảnh chèn tại con trỏ trong lý thuyết/ghi chú
   calloutType?: 'info' | 'tip' | 'warning' | 'formula';
   attachments?: CourseAttachment[]; // Tài liệu đính kèm (PDF, Word, PPT, Excel, Zip...)
   // Dành cho 'question' (câu hỏi tương tác trung gian giữa bài học):
@@ -469,6 +486,7 @@ export interface ClassroomHomework {
   classId: string;
   title: string;
   instructions?: string;
+  inlineImages?: { [imgId: string]: string };
   attachments?: HomeworkAttachment[];
   openTime?: string;   // Thời gian mở nộp BTVN (YYYY-MM-DDTHH:mm)
   closeTime?: string;  // Thời gian đóng nộp BTVN (YYYY-MM-DDTHH:mm)
@@ -503,6 +521,7 @@ export interface HomeworkSubmission {
   imageUrls: string[];
   attachments?: HomeworkAttachment[];
   textAnswer?: string;
+  inlineImages?: { [imgId: string]: string };
   note?: string;
   submittedAt: string;
   updatedAt?: string;
@@ -519,6 +538,8 @@ export interface CourseLesson {
   durationMinutes?: number;
   summary?: string;
   contentMarkdown?: string;
+  inlineImages?: { [imgId: string]: string };
+  sections?: LessonSection[]; // Các phân mục nhỏ (cha/con) trong bài học
   blocks?: LessonBlock[]; // Danh sách các khối lý thuyết, ảnh, tài liệu & câu hỏi trung gian
   attachments?: CourseAttachment[]; // Tài liệu đính kèm của bài học (PDF, DOC, PPT, Excel...)
   practiceExamId?: string; // Đề luyện tập đính kèm
@@ -530,10 +551,18 @@ export interface CourseChapter {
   id: string;
   title: string;
   description?: string;
+  inlineImages?: { [imgId: string]: string };
   order: number;
   lessons: CourseLesson[];
   chapterExamId?: string; // Đề thi / kiểm tra định kỳ kết thúc chương
   chapterExamTitle?: string;
+}
+
+export interface CourseChapterIndexItem {
+  id: string;
+  title: string;
+  order: number;
+  lessonCount: number;
 }
 
 export interface MicroCourse {
@@ -542,12 +571,22 @@ export interface MicroCourse {
   subject: string;
   grade: string;
   description: string;
+  coverImageUrl?: string; // URL ảnh bìa nhẹ (không lưu Base64 trên Firestore)
+  inlineImages?: { [imgId: string]: string };
   instructor: string;
   chapters?: CourseChapter[]; // Hệ thống chương / bài học
   lessons: CourseLesson[]; // Danh sách phẳng hoặc bài học chung
   finalExamId?: string; // Đề thi tổng kết khóa học
   finalExamTitle?: string;
   createdAt: string;
+
+  // Metadata phân mảnh subcollection (Firestore v2 schema)
+  schemaVersion?: number;
+  chapterCount?: number;
+  lessonCount?: number;
+  chapterIndex?: CourseChapterIndexItem[];
+  hasLegacyInlineContent?: boolean;
+  detailsLoaded?: boolean;
 
   // Trạng thái & Thời gian mở/đóng khóa học
   status?: ExamStatus; // 'draft' | 'scheduled' | 'open' | 'closed'
@@ -590,6 +629,7 @@ export interface StudentCourseProgress {
       selectedAnswer: any;
       isCorrect: boolean;
       answeredAt: string;
+      inlineImages?: { [imgId: string]: string };
     };
   };
   completedExamIds: string[];
@@ -602,7 +642,7 @@ export interface NavTabItem {
   id: string;
   label: string;
   iconName: 'book' | 'layers' | 'users' | 'graduation' | 'swords' | 'gamepad' | 'chart' | 'clock' | 'folder' | 'atom' | 'code';
-  targetView: 'single' | 'bundle' | 'classrooms' | 'courses' | 'battle' | 'games' | 'analytics' | 'history' | 'custom_subject';
+  targetView: 'single' | 'bundle' | 'classrooms' | 'courses' | 'games' | 'analytics' | 'history' | 'custom_subject';
   subjectFilter?: string; // Nếu là tab môn học cụ thể
   badgeText?: string;
   isCustom?: boolean;
@@ -635,6 +675,8 @@ export interface MountainQuestionItem {
   options: string[];
   correctAnswer?: number;
   explanation?: string;
+  explanationImageUrl?: string;
+  inlineImages?: { [imgId: string]: string };
   sourceTitle?: string;
 }
 
@@ -732,6 +774,79 @@ export interface MountainGameRoomState {
   lastRoundSummary?: MountainRoundResultSummary | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export type ObstaclePlayMode = 'speed_race' | 'accuracy' | 'survival';
+export type ObstacleRoomStatus = 'WAITING' | 'PLAYING' | 'FINISHED';
+export type ObstacleQuestionSourceType = 'sample' | 'exam' | 'course' | 'document';
+
+export interface ObstacleGameConfig {
+  playMode: ObstaclePlayMode;
+  questionTimeSec: number;
+  totalTimeSec: number;
+  sourceType: ObstacleQuestionSourceType;
+  sourceId: string;
+  sourceTitle: string;
+  obstacleCount: number;
+  correctPoints: number;
+  speedBonusMax: number;
+  wrongPointsPenalty: number;
+  timeBonusSec: number;
+  timePenaltySec: number;
+  wrongStepBack: number;
+  wrongCooldownSec: number;
+  survivalLives: number;
+  hostIsSpectator: boolean;
+}
+
+export interface ObstaclePlayerState {
+  id: string;
+  uid: string;
+  roomCode: string;
+  name: string;
+  petId: string;
+  isHost: boolean;
+  stageIndex: number;
+  score: number;
+  lives: number;
+  correctQuestionsCount: number;
+  wrongQuestionsCount: number;
+  totalCorrectAttempts: number;
+  totalWrongAttempts: number;
+  correctQuestionIds: string[];
+  wrongQuestionIds: string[];
+  bonusTimeSec: number;
+  cooldownUntilMs: number;
+  questionStartedAtMs: number;
+  lastAnsweredAtMs: number;
+  finished: boolean;
+  eliminated: boolean;
+  finishedAtMs: number;
+  joinedAtMs: number;
+}
+
+export interface ObstacleGameRoomState {
+  id: string;
+  code: string;
+  hostUid: string;
+  hostName: string;
+  hostEmail?: string;
+  hostIsSpectator: boolean;
+  status: ObstacleRoomStatus;
+  config: ObstacleGameConfig;
+  questions: MountainQuestionItem[];
+  startedAtMs: number;
+  endsAtMs: number;
+  finishedAtMs: number;
+  finishReason?: string;
+}
+
+export interface RankedObstaclePlayer {
+  player: ObstaclePlayerState;
+  rank: number;
+  totalAttempts: number;
+  accuracyPercent: number;
+  wrongPercent: number;
 }
 
 // --- Online Judge / VNOI / SPOJ Competitive Programming ---
@@ -887,5 +1002,53 @@ export interface Scoreboard {
   creatorName?: string;
   createdAt: string;
   updatedAt?: string;
+}
+
+// --- Hệ thống Thông báo & Liên kết trực tiếp đến tin cần đến ---
+export type NotificationCategory =
+  | 'exam'
+  | 'bundle'
+  | 'course'
+  | 'homework'
+  | 'grade'
+  | 'classroom'
+  | 'game'
+  | 'teacher_request'
+  | 'system';
+
+export type NotificationTargetType =
+  | 'none'
+  | 'exam'
+  | 'bundle'
+  | 'course'
+  | 'classroom'
+  | 'homework'
+  | 'grade'
+  | 'classroom_requests'
+  | 'game_room'
+  | 'teacher_requests';
+
+export type NotificationRecipientScope = 'all' | 'teachers' | 'students' | 'class' | 'user';
+
+export interface AppNotification {
+  id: string;
+  title: string;
+  message: string;
+  category: NotificationCategory;
+  targetType: NotificationTargetType;
+  targetId?: string;
+  secondaryId?: string;
+  targetLabel?: string;
+  classId?: string;
+  className?: string;
+  actionPath?: string;
+  recipientScope: NotificationRecipientScope;
+  recipientEmails?: string[];
+  senderUid: string;
+  senderName: string;
+  senderEmail: string;
+  createdAt: string;
+  updatedAt?: string;
+  isDerived?: boolean;
 }
 

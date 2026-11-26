@@ -425,7 +425,12 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
 
                 {/* Question Statement */}
                 <div className="text-sm md:text-base font-medium text-slate-900 mb-4 leading-relaxed">
-                  <RichContentRenderer content={q.question} imageUrl={q.imageUrl} />
+                  <RichContentRenderer
+                    content={q.question}
+                    imageUrl={q.imageUrl}
+                    imageCaption={q.imageCaption}
+                    inlineImages={q.inlineImages}
+                  />
                 </div>
 
                 {/* Review Format 1: Single Choice */}
@@ -485,7 +490,7 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                             {letter}
                           </span>
                           <div className="flex-1 leading-relaxed">
-                            <RichContentRenderer content={optText} />
+                            <RichContentRenderer content={optText} inlineImages={q.inlineImages} />
                             {q.optionImages?.[optIdx] && (
                               <div className="mt-1.5">
                                 <img
@@ -544,7 +549,7 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                               {letter})
                             </span>
                             <div className="leading-relaxed">
-                              <RichContentRenderer content={item.statement} />
+                              <RichContentRenderer content={item.statement} inlineImages={q.inlineImages} />
                             </div>
                           </div>
 
@@ -620,7 +625,10 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                       </div>
                       {typeof userAns === 'string' && userAns.trim() ? (
                         <div className="text-slate-900 leading-relaxed bg-white p-3 rounded-lg border border-slate-200">
-                          <RichContentRenderer content={userAns} />
+                          <RichContentRenderer
+                            content={userAns}
+                            inlineImages={{ ...(q.inlineImages || {}), ...(result.inlineImages || {}) }}
+                          />
                         </div>
                       ) : (
                         <div className="text-slate-500 italic">(Chưa nhập bài làm)</div>
@@ -633,7 +641,7 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                           Đáp án tham khảo / Gợi ý chấm điểm:
                         </div>
                         <div className="text-emerald-950 leading-relaxed">
-                          <RichContentRenderer content={q.sampleAnswer} />
+                          <RichContentRenderer content={q.sampleAnswer} inlineImages={q.inlineImages} />
                         </div>
                       </div>
                     )}
@@ -661,7 +669,12 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                               </span>
                             )}
                           </div>
-                          <RichContentRenderer content={subQ.question} imageUrl={subQ.imageUrl} />
+                          <RichContentRenderer
+                            content={subQ.question}
+                            imageUrl={subQ.imageUrl}
+                            imageCaption={subQ.imageCaption}
+                            inlineImages={subQ.inlineImages || q.inlineImages}
+                          />
                           {subQ.type === 'single_choice' && subQ.options && (
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 mt-2">
                               {subQ.options.map((sOpt, sOptIdx) => {
@@ -684,7 +697,10 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                                     <div className="flex items-start gap-1">
                                       <span className="font-bold shrink-0">{sLetter}.</span>
                                       <div className="flex-1 min-w-0">
-                                        <RichContentRenderer content={sOpt} />
+                                        <RichContentRenderer
+                                          content={sOpt}
+                                          inlineImages={subQ.inlineImages || q.inlineImages}
+                                        />
                                       </div>
                                       {!isOnlyStudentAnswers && isSubCorrect && <span className="ml-auto text-[10px] text-emerald-700 font-bold shrink-0">✓ Đúng</span>}
                                       {isUserSelected && (!isSubCorrect || isOnlyStudentAnswers) && (
@@ -742,34 +758,56 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                               <strong className="inline-flex items-start gap-1">
                                 {subAns !== undefined ? (
                                   subQ.type === 'single_choice' && subQ.options && typeof subAns === 'number' ? (
-                                    <>
-                                      <span>{String.fromCharCode(65 + subAns)}.</span>
-                                      <RichContentRenderer content={subQ.options[subAns] || ''} />
-                                    </>
+                                      <>
+                                        <span>{String.fromCharCode(65 + subAns)}.</span>
+                                        <RichContentRenderer
+                                          content={subQ.options[subAns] || ''}
+                                          inlineImages={subQ.inlineImages || q.inlineImages}
+                                        />
+                                      </>
+                                    ) : (
+                                      <span>{String(subAns)}</span>
+                                    )
                                   ) : (
-                                    <span>{String(subAns)}</span>
-                                  )
-                                ) : (
-                                  '(Chưa làm)'
-                                )}
-                              </strong>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                                    '(Chưa làm)'
+                                  )}
+                                </strong>
+                              </div>
+                            )}
+
+                            {!isOnlyStudentAnswers && (subQ.explanation || subQ.explanationImageUrl) && (
+                              <div className="mt-2.5 p-2.5 bg-white border border-purple-200 rounded-lg text-xs text-slate-800 space-y-1">
+                                <div className="font-bold text-purple-900">
+                                  Lời giải chi tiết ({originalIndex + 1}.{sIdx + 1}):
+                                </div>
+                                <RichContentRenderer
+                                  content={subQ.explanation || ''}
+                                  imageUrl={subQ.explanationImageUrl}
+                                  imageCaption={subQ.explanationImageCaption}
+                                  inlineImages={subQ.inlineImages || q.inlineImages}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
 
                 {/* Detailed Explanation - Only shown if not restricted */}
-                {!isOnlyStudentAnswers && q.explanation && (
+                {!isOnlyStudentAnswers && (q.explanation || q.explanationImageUrl) && (
                   <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs md:text-sm text-slate-800">
                     <div className="font-bold text-slate-900 mb-1 flex items-center gap-1.5">
                       <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                       <span>Lời giải chi tiết:</span>
                     </div>
                     <div className="text-slate-700 leading-relaxed pl-5 border-l-2 border-emerald-500">
-                      <RichContentRenderer content={q.explanation} />
+                      <RichContentRenderer
+                        content={q.explanation || ''}
+                        imageUrl={q.explanationImageUrl}
+                        imageCaption={q.explanationImageCaption}
+                        inlineImages={q.inlineImages}
+                      />
                     </div>
                   </div>
                 )}

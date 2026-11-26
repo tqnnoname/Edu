@@ -10,7 +10,10 @@ import {
   CustomSubject, 
   NavTabItem,
   UserAccount,
-  TeacherRoleRequest
+  TeacherRoleRequest,
+  AppNotification,
+  ClassroomHomework,
+  HomeworkSubmission,
 } from './types/exam';
 import { 
   getAllExams, 
@@ -44,6 +47,7 @@ import {
   canShowInPublicLibrary,
   canUserAccessProtectedItem,
   pullDataFromServer,
+  applyRealtimeCloudDelta,
   triggerCloudSync,
   initAutoSyncLifecycle,
   subscribeCloudSyncStatus,
@@ -55,12 +59,23 @@ import {
   isExamHiddenFromStudents,
   isItemScheduleOpen,
   getUserAttemptCountForExam,
-  getUserAttemptCountForBundle
+  getUserAttemptCountForBundle,
+  getAllClassroomHomeworks,
+  getAllHomeworkSubmissions
 } from './utils/storage';
+import {
+  buildDerivedNotifications,
+  getReadNotificationIds,
+  markAllNotificationsAsRead,
+  markNotificationAsRead,
+  publishCloudNotification,
+  subscribeUserNotifications,
+} from './utils/notificationsFirestore';
 import {
   attachRealtimeFirestoreListeners,
   subscribeFirebaseAuthState,
   getFirebaseAuthUser,
+  RealtimeListenerScope,
 } from './utils/firebase';
 import { ExamCard } from './components/ExamCard';
 import { BundleCard } from './components/BundleCard';
@@ -79,7 +94,6 @@ import { ExamPreviewModal } from './components/ExamPreviewModal';
 import { BundleElectiveSelectorModal } from './components/BundleElectiveSelectorModal';
 import { ClassroomManagementView } from './components/ClassroomManagementView';
 import { MicroCoursesView } from './components/MicroCoursesView';
-import { BattleArenaView } from './components/BattleArenaView';
 import { MountainGamesView } from './components/MountainGamesView';
 import { TabAndSubjectManagerModal } from './components/TabAndSubjectManagerModal';
 import { ExamAccessModal } from './components/ExamAccessModal';
@@ -93,6 +107,7 @@ import { StudentCompetencyView } from './components/StudentCompetencyView';
 import { TeacherToolsView } from './components/TeacherToolsView';
 import { ExamScorePresentationView } from './components/ExamScorePresentationView';
 import { RoomLockGuard, tryEnterKioskFullscreen } from './components/RoomLockGuard';
+import { NotificationCenterModal } from './components/NotificationCenterModal';
 import { exportExamToWord, exportResultsToExcel } from './utils/exportFiles';
 import { 
   Search, 
@@ -154,7 +169,6 @@ type ViewState =
   | 'bundle-result'
   | 'classrooms'
   | 'courses'
-  | 'battle'
   | 'games'
   | 'analytics'
   | 'teacher-tools';
@@ -244,6 +258,20 @@ export default function App() {
     initialParsedRoute.gameRoomCode
   );
   const [presentingExamForStage, setPresentingExamForStage] = useState<Exam | null>(null);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [cloudNotifications, setCloudNotifications] = useState<AppNotification[]>([]);
+  const [readNotificationIds, setReadNotificationIds] = useState<Set<string>>(() =>
+    getReadNotificationIds(getCurrentUser())
+  );
+  const [classroomHomeworks, setClassroomHomeworks] = useState<ClassroomHomework[]>(() =>
+    getAllClassroomHomeworks()
+  );
+  const [homeworkSubmissions, setHomeworkSubmissions] = useState<HomeworkSubmission[]>(() =>
+    getAllHomeworkSubmissions()
+  );
+  const [teacherRequestsList, setTeacherRequestsList] = useState<TeacherRoleRequest[]>(() =>
+    getAllTeacherRequests()
+  );
 
   // Xác định quyền Giáo viên thực sự: chỉ tài khoản Master Admin hoặc tài khoản giáo viên đã được phê duyệt
   const isActualTeacher = Boolean(
@@ -256,35 +284,26 @@ export default function App() {
   // Role-based state (Phân quyền giáo viên và học sinh): Mặc định cho học sinh và khách chưa đăng nhập là 'student'
   const [userRole, setUserRole] = useState<UserRole>('student');
 
-  // Initialize resilient auto-sync & Firebase Auth session check
+  // Initialize resilient auto-sync & Firebase Auth session check (single boot pull, no polling)
   useEffect(() => {
     try {
       localStorage.removeItem('edutest_web_lock_v1');
     } catch {}
     initAutoSyncLifecycle();
 
-    let unsubscribeFirestore: () => void = () => {};
-
-    const syncAll = () => {
-      if (!getCurrentUser()) {
+    const syncAll = (opts?: { forceFull?: boolean; minIntervalMs?: number }) => {
+      if (!getCurrentUser() && !getFirebaseAuthUser()) {
         setIsInitialLoading(false);
         return;
       }
-      pullDataFromServer()
+      pullDataFromServer({
+        forceFull: opts?.forceFull,
+        minIntervalMs: opts?.minIntervalMs ?? 20000,
+        activeClassId: getActiveClassId() || undefined,
+      })
         .then((pulled) => {
           if (pulled.success) {
             refreshAllData();
-            const fbUser = getFirebaseAuthUser();
-            if (fbUser && !fbUser.isAnonymous) {
-              void syncUserSessionFromFirebaseAuth(fbUser)
-                .then((latest) => {
-                  if (latest) {
-                    setCurrentUser(latest);
-                    setCurrentUserAccount(latest);
-                  }
-                })
-                .catch(() => {});
-            }
           }
         })
         .catch(() => {
@@ -300,23 +319,15 @@ export default function App() {
       setSyncErrorMsg(state.error || null);
     });
 
-    syncAll();
-
     const unsubscribeAuth = subscribeFirebaseAuthState((fbUser) => {
-      unsubscribeFirestore();
-      unsubscribeFirestore = () => {};
       if (fbUser && !fbUser.isAnonymous) {
         // 0ms immediate optimistic workspace unlock
         const optimisticUser = buildOptimisticUserFromFirebase(fbUser);
         setCurrentUser(optimisticUser);
         setCurrentUserAccount(optimisticUser);
         setIsInitialLoading(false);
-        syncAll();
-        unsubscribeFirestore = attachRealtimeFirestoreListeners(
-          optimisticUser,
-          () => syncAll()
-        );
-        // Non-blocking background profile reconciliation
+        syncAll({ minIntervalMs: 10000 });
+        // Non-blocking initial profile reconciliation
         void syncUserSessionFromFirebaseAuth(fbUser)
           .then((unified) => {
             if (unified) {
@@ -328,6 +339,7 @@ export default function App() {
         setCurrentUser(null);
         setCurrentUserAccount(null);
         setIsInitialLoading(false);
+        syncAll({ minIntervalMs: 60000 });
       }
     });
 
@@ -339,35 +351,254 @@ export default function App() {
     };
     window.addEventListener('edutest-auth-profile-synced', handleProfileSynced);
 
+    let lastFocusSyncAt = Date.now();
+    let hiddenSinceAt = 0;
     const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenSinceAt = Date.now();
+        return;
+      }
       if (document.visibilityState === 'visible') {
-        syncAll();
+        const now = Date.now();
+        const hiddenDuration = hiddenSinceAt > 0 ? now - hiddenSinceAt : 0;
+        hiddenSinceAt = 0;
+        // Only delta-refresh when returning from an extended background sleep (>= 2 min) & cooldown >= 3 min
+        if (hiddenDuration < 120_000 || now - lastFocusSyncAt < 180_000) return;
+        lastFocusSyncAt = now;
+        syncAll({ minIntervalMs: 120_000 });
       }
     };
-    window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-
-    const periodicSyncTimer = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        syncAll();
-      }
-    }, 25000);
 
     const handleStorageSync = () => {
       refreshAllData();
     };
     window.addEventListener('storage', handleStorageSync);
     return () => {
-      clearInterval(periodicSyncTimer);
       unsubscribeSyncState();
       unsubscribeAuth();
-      unsubscribeFirestore();
       window.removeEventListener('edutest-auth-profile-synced', handleProfileSynced);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('storage', handleStorageSync);
     };
   }, []);
+
+  // View/Class-scoped real-time Firestore listeners (strict unsubscribe on tab switch, logout, or beforeunload)
+  useEffect(() => {
+    const scope: RealtimeListenerScope = {
+      view: currentView,
+      homeTab,
+      activeClassId: activeClassId || undefined,
+      activeCourseId: selectedCourseIdForView || undefined,
+    };
+
+    const unsubscribe = attachRealtimeFirestoreListeners(
+      currentUser,
+      () => {
+        void pullDataFromServer({
+          minIntervalMs: 30000,
+          activeClassId: activeClassId || undefined,
+        }).then((pulled) => {
+          if (pulled.success) {
+            refreshAllData();
+          }
+        });
+      },
+      (delta, removedByCollection) => {
+        applyRealtimeCloudDelta(delta, removedByCollection);
+        refreshAllData();
+      },
+      undefined,
+      scope
+    );
+
+    const handleUnloadCleanup = () => {
+      unsubscribe();
+    };
+    window.addEventListener('beforeunload', handleUnloadCleanup);
+    window.addEventListener('pagehide', handleUnloadCleanup);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleUnloadCleanup);
+      window.removeEventListener('pagehide', handleUnloadCleanup);
+      unsubscribe();
+    };
+  }, [
+    currentUser?.uid,
+    currentUser?.role,
+    currentView,
+    homeTab,
+    activeClassId,
+    selectedCourseIdForView,
+  ]);
+
+  // Scoped In-App Cloud Notifications Listener (with clean unmount / beforeunload teardown)
+  useEffect(() => {
+    setReadNotificationIds(getReadNotificationIds(currentUser));
+    if (!currentUser) {
+      setCloudNotifications([]);
+      return;
+    }
+    const unsub = subscribeUserNotifications({
+      user: currentUser,
+      isTeacher: isActualTeacher,
+      isAdmin: isMasterAdmin,
+      onUpdate: (items) => {
+        setCloudNotifications(items);
+      },
+    });
+    const handleUnload = () => unsub();
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('pagehide', handleUnload);
+      unsub();
+    };
+  }, [currentUser?.uid, currentUser?.email, isActualTeacher, isMasterAdmin]);
+
+  const mergedNotifications = useMemo(() => {
+    const derived = buildDerivedNotifications({
+      currentUser,
+      userRole,
+      isActualTeacher,
+      isMasterAdmin,
+      classrooms,
+      homeworks: classroomHomeworks,
+      submissions: homeworkSubmissions,
+      teacherRequests: teacherRequestsList,
+    });
+    const map = new Map<string, AppNotification>();
+    cloudNotifications.forEach((n) => map.set(n.id, n));
+    derived.forEach((n) => {
+      if (!map.has(n.id)) map.set(n.id, n);
+    });
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [
+    cloudNotifications,
+    currentUser,
+    userRole,
+    isActualTeacher,
+    isMasterAdmin,
+    classrooms,
+    classroomHomeworks,
+    homeworkSubmissions,
+    teacherRequestsList,
+  ]);
+
+  const unreadNotificationCount = useMemo(
+    () => mergedNotifications.filter((n) => !readNotificationIds.has(n.id)).length,
+    [mergedNotifications, readNotificationIds]
+  );
+
+  const handleMarkNotificationRead = (id: string) => {
+    setReadNotificationIds(markNotificationAsRead(id, currentUser));
+  };
+
+  const handleMarkAllNotificationsRead = () => {
+    setReadNotificationIds(
+      markAllNotificationsAsRead(
+        mergedNotifications.map((n) => n.id),
+        currentUser
+      )
+    );
+  };
+
+  const handleNavigateNotification = (notif: AppNotification) => {
+    handleMarkNotificationRead(notif.id);
+    setIsNotificationsOpen(false);
+    if (notif.targetType === 'none') return;
+
+    requestProtectedNavigate(() => {
+      if (notif.targetType === 'teacher_requests') {
+        setIsTeacherRequestsAdminModalOpen(true);
+        return;
+      }
+
+      if (notif.targetType === 'game_room') {
+        const cleanCode = (notif.targetId || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+        setActiveGameRoomCode(cleanCode || undefined);
+        setCurrentView('games');
+        return;
+      }
+
+      if (notif.targetType === 'course') {
+        setSelectedCourseIdForView(notif.targetId || '');
+        setUrlCourseChapterSlug(undefined);
+        setUrlCourseLessonSlug(undefined);
+        setCurrentView('courses');
+        return;
+      }
+
+      if (notif.targetType === 'exam') {
+        const targetExam = exams.find((e) => e.id === notif.targetId);
+        const clsId = notif.classId || targetExam?.assignedClassId;
+        if (clsId && classrooms.some((c) => c.id === clsId)) {
+          setActiveClassId(clsId);
+          setActiveClassIdState(clsId);
+          setUrlClassroomTab('exams');
+          setCurrentView('classrooms');
+        } else {
+          setHomeTab('single');
+          setSelectedSubject('all');
+          setCurrentView('home');
+        }
+        if (targetExam) {
+          if (userRole === 'student' && targetExam.accessMode === 'code_only') {
+            setAccessModalTarget({
+              exam: targetExam,
+              bundle: null,
+              mode: 'exam',
+              sourceClassId: clsId || null,
+            });
+            setIsExamAccessModalOpen(true);
+          } else {
+            setPreviewingExam(targetExam);
+          }
+        }
+        return;
+      }
+
+      if (notif.targetType === 'bundle') {
+        const targetBundle = bundles.find((b) => b.id === notif.targetId);
+        const clsId = notif.classId || targetBundle?.assignedClassId;
+        if (clsId && classrooms.some((c) => c.id === clsId)) {
+          setActiveClassId(clsId);
+          setActiveClassIdState(clsId);
+          setUrlClassroomTab('exams');
+          setCurrentView('classrooms');
+        } else {
+          setHomeTab('bundle');
+          setCurrentView('home');
+          if (targetBundle) setSearchQuery(targetBundle.title);
+        }
+        return;
+      }
+
+      if (
+        notif.targetType === 'homework' ||
+        notif.targetType === 'grade' ||
+        notif.targetType === 'classroom' ||
+        notif.targetType === 'classroom_requests'
+      ) {
+        const targetClsId = notif.classId || notif.targetId;
+        if (targetClsId) {
+          setActiveClassId(targetClsId);
+          setActiveClassIdState(targetClsId);
+        }
+        const tab: ClassroomTabRouteId =
+          notif.targetType === 'classroom_requests'
+            ? 'requests'
+            : notif.targetType === 'homework' || notif.targetType === 'grade'
+              ? 'homework'
+              : ((notif.secondaryId as ClassroomTabRouteId) || 'exams');
+        setUrlClassroomTab(tab);
+        setCurrentView('classrooms');
+      }
+    });
+  };
 
   // Sync role and candidateProfile when currentUser changes
   useEffect(() => {
@@ -425,8 +656,11 @@ export default function App() {
     setSyncErrorMsg(null);
     setSyncToast('Đang đồng bộ dữ liệu lên Cloud Firestore...');
     try {
-      const res = await triggerCloudSync();
-      const pullRes = await pullDataFromServer();
+      const res = await triggerCloudSync({ forceFull: true });
+      const pullRes = await pullDataFromServer({
+        forceFull: true,
+        activeClassId: activeClassId || undefined,
+      });
       refreshAllData();
       if (res.firestoreSynced) {
         setSyncStatus('synced');
@@ -499,7 +733,7 @@ export default function App() {
     refreshAllData();
     setIsAuthModalOpen(false);
     setSyncStatus('synced');
-    void pullDataFromServer().then(() => {
+    void pullDataFromServer({ minIntervalMs: 10000, activeClassId: activeClassId || undefined }).then(() => {
       refreshAllData();
       const fbUser = getFirebaseAuthUser();
       if (fbUser && !fbUser.isAnonymous) {
@@ -791,6 +1025,9 @@ export default function App() {
     setSubjects(getAllSubjects());
     setNavTabs(getNavTabs());
     setActiveClassIdState(getActiveClassId());
+    setClassroomHomeworks(getAllClassroomHomeworks());
+    setHomeworkSubmissions(getAllHomeworkSubmissions());
+    setTeacherRequestsList(getAllTeacherRequests());
   };
 
   // --- Single Exam Handlers ---
@@ -1023,6 +1260,38 @@ export default function App() {
       return;
     }
     saveCustomExam(newExam);
+    if (!existingTarget && newExam.visibility !== 'private') {
+      const targetCls = newExam.assignedClassId
+        ? classrooms.find((c) => c.id === newExam.assignedClassId)
+        : undefined;
+      const classStudentEmails = targetCls
+        ? Array.from(
+            new Set(
+              (targetCls.students || [])
+                .map((s) => (s.email || '').trim().toLowerCase())
+                .filter(Boolean)
+            )
+          )
+        : undefined;
+      if (!targetCls || (classStudentEmails && classStudentEmails.length > 0)) {
+        void publishCloudNotification({
+          title: `Đề thi mới: ${newExam.title}`,
+          message: targetCls
+            ? `${currentUser?.fullName || 'Giáo viên'} đã giao đề thi mới cho lớp ${targetCls.name} (${newExam.durationMinutes} phút · ${newExam.questions.length} câu).`
+            : `${currentUser?.fullName || 'Giáo viên'} đã phát hành đề thi mới "${newExam.title}".`,
+          category: 'exam',
+          targetType: 'exam',
+          targetId: newExam.id,
+          targetLabel: `Đề thi: ${newExam.title}`,
+          classId: targetCls?.id,
+          className: targetCls?.name,
+          recipientScope: targetCls ? 'class' : 'students',
+          recipientEmails: classStudentEmails,
+          senderName: currentUser?.fullName || 'Giáo viên',
+          senderEmail: currentUser?.email || '',
+        }).catch(() => {});
+      }
+    }
     unsavedGuardRef.current = null;
     setEditingExam(null);
     refreshAllData();
@@ -1446,8 +1715,6 @@ export default function App() {
         setUrlCourseChapterSlug(undefined);
         setUrlCourseLessonSlug(undefined);
         setCurrentView('courses');
-      } else if (tab.targetView === 'battle') {
-        setCurrentView('battle');
       } else if (tab.targetView === 'games') {
         setActiveGameRoomCode(undefined);
         setCurrentView('games');
@@ -1569,7 +1836,6 @@ export default function App() {
                 (tab.targetView === 'bundle' && currentView === 'home' && homeTab === 'bundle') ||
                 (tab.targetView === 'classrooms' && currentView === 'classrooms') ||
                 (tab.targetView === 'courses' && currentView === 'courses') ||
-                (tab.targetView === 'battle' && currentView === 'battle') ||
                 (tab.targetView === 'games' && currentView === 'games') ||
                 (tab.targetView === 'history' && currentView === 'history') ||
                 (tab.targetView === 'analytics' && currentView === 'analytics') ||
@@ -2115,7 +2381,6 @@ export default function App() {
                     {currentView === 'home' && (homeTab === 'single' ? 'Ngân hàng Đề thi' : 'Tổ hợp Đề liên môn')}
                     {currentView === 'classrooms' && 'Hệ thống Lớp học & Khóa học'}
                     {currentView === 'courses' && 'Khóa học & Lý thuyết tương tác'}
-                    {currentView === 'battle' && 'Đấu trường Tri thức (1v1 Arena)'}
                     {currentView === 'games' && 'Trò chơi · Vượt chướng ngại vật — Chinh phục đỉnh núi'}
                     {currentView === 'analytics' && 'Năng lực cá nhân Học sinh'}
                     {currentView === 'teacher-tools' && 'Công cụ Giáo viên · Bảng điểm & Vinh danh'}
@@ -2162,6 +2427,28 @@ export default function App() {
 
               {/* Right quick tools */}
               <div className="flex flex-wrap items-center gap-2 shrink-0 max-w-full">
+                {/* Notification Bell Button */}
+                {currentUser && (
+                  <button
+                    type="button"
+                    onClick={() => setIsNotificationsOpen(true)}
+                    data-testid="notification-bell-btn"
+                    className="relative px-2.5 sm:px-3 py-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 border border-slate-200 hover:border-blue-200 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                    title="Xem thông báo & mở nhanh tin cần đến"
+                  >
+                    <Bell className="w-4 h-4" />
+                    <span className="hidden md:inline">Thông báo</span>
+                    {unreadNotificationCount > 0 && (
+                      <span
+                        data-testid="notification-unread-badge"
+                        className="px-1.5 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-extrabold leading-none tabular-nums"
+                      >
+                        {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+
                 {/* Direct 8-digit code */}
                 <button
                   type="button"
@@ -2497,25 +2784,13 @@ export default function App() {
         </main>
       )}
 
-      {/* View 10: 1v1 Battle Arena (Đấu trường đối kháng) */}
-      {currentView === 'battle' && (
-        <main className="flex-1">
-          <BattleArenaView
-            onBackToHome={() => setCurrentView('home')}
-            allExams={exams}
-            allBundles={bundles}
-            currentUser={currentUser}
-            userRole={userRole}
-            classrooms={classrooms}
-          />
-        </main>
-      )}
-
       {/* View 10-games: Interactive Mountain Climb Quiz Game */}
       {currentView === 'games' && (
         <main className="flex-1 min-w-0">
           <MountainGamesView
             visibleExams={visibleLibraryExams}
+            visibleCourses={courses}
+            classrooms={classrooms}
             currentUser={currentUser}
             userRole={userRole}
             initialRoomCode={activeGameRoomCode}
@@ -3398,6 +3673,33 @@ export default function App() {
           onClose={() => setPresentingExamForStage(null)}
         />
       )}
+
+      {/* Global In-App Notification Center Modal */}
+      <NotificationCenterModal
+        isOpen={isNotificationsOpen}
+        notifications={mergedNotifications}
+        readIds={readNotificationIds}
+        currentUser={currentUser}
+        canCompose={isActualTeacher && userRole === 'teacher'}
+        isMasterAdmin={isMasterAdmin}
+        exams={visibleLibraryExams}
+        bundles={visibleLibraryBundles}
+        courses={courses}
+        classrooms={classrooms}
+        onClose={() => setIsNotificationsOpen(false)}
+        onMarkRead={handleMarkNotificationRead}
+        onMarkAllRead={handleMarkAllNotificationsRead}
+        onNavigateNotification={handleNavigateNotification}
+        onCreatedNotification={(created) => {
+          setCloudNotifications((prev) =>
+            [created, ...prev.filter((x) => x.id !== created.id)].sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            )
+          );
+          setSyncToast(`✓ Đã gửi thông báo "${created.title}"!`);
+          setTimeout(() => setSyncToast(null), 3500);
+        }}
+      />
 
       {/* Cloud Sync Toast Notification */}
       {syncToast && (

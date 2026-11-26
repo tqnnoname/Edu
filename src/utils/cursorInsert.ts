@@ -21,14 +21,29 @@ export function isEditableTextInput(el: Element | null | undefined): el is Edita
  */
 export function insertTextAtEditableElement(
   el: EditableTextElement | null | undefined,
-  snippet: string
+  snippet: string,
+  explicitRange?: { start: number; end: number } | null
 ): boolean {
   if (!isEditableTextInput(el)) return false;
 
   const currentVal = el.value ?? '';
+  const hasExplicit =
+    explicitRange &&
+    typeof explicitRange.start === 'number' &&
+    typeof explicitRange.end === 'number';
   const hasSelection = typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number';
-  const start = hasSelection ? (el.selectionStart as number) : currentVal.length;
-  const end = hasSelection ? (el.selectionEnd as number) : start;
+  const rawStart = hasExplicit
+    ? explicitRange!.start
+    : hasSelection
+    ? (el.selectionStart as number)
+    : currentVal.length;
+  const rawEnd = hasExplicit
+    ? explicitRange!.end
+    : hasSelection
+    ? (el.selectionEnd as number)
+    : rawStart;
+  const start = Math.max(0, Math.min(rawStart, currentVal.length));
+  const end = Math.max(start, Math.min(rawEnd, currentVal.length));
 
   const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
   let insertStr = snippet;
@@ -144,7 +159,8 @@ export function wrapSelectionAtEditableElement(
 }
 
 /**
- * Thêm hoặc bỏ tiền tố đầu dòng (danh sách `- `, tiêu đề `### `) trên các dòng đang chọn.
+ * Thêm, thay thế hoặc bỏ tiền tố đầu dòng (tiêu đề `# `..`#### `, danh sách `- `, `  - `, `1. `, `▸ `, ...)
+ * trên các dòng đang chọn.
  */
 export function applyLinePrefixAtEditableElement(
   el: EditableTextElement | null | undefined,
@@ -163,10 +179,26 @@ export function applyLinePrefixAtEditableElement(
 
   const segment = currentVal.slice(lineStart, lineEnd);
   const lines = segment.split('\n');
-  const allHavePrefix = lines.every((l) => l.startsWith(linePrefix));
+  const isHeadingPrefix = /^#{1,4}\s+$/.test(linePrefix);
+  const isListPrefix = /^([ \t]*)(?:[-*+•◦▪▸★✓❖→]|\d+\.|[a-zA-Z]\)|[IVXivx]+\.)\s+$/.test(
+    linePrefix
+  );
+
+  const allHaveExactPrefix = lines.every((l) => l.startsWith(linePrefix));
 
   const transformedLines = lines.map((l) => {
-    if (allHavePrefix) return l.slice(linePrefix.length);
+    if (allHaveExactPrefix) return l.slice(linePrefix.length);
+    if (isHeadingPrefix) {
+      const stripped = l.replace(/^#{1,4}\s+/, '');
+      return `${linePrefix}${stripped}`;
+    }
+    if (isListPrefix) {
+      const stripped = l.replace(
+        /^[ \t]*(?:[-*+•◦▪▸★✓❖→]|\d+\.|[a-zA-Z]\)|[IVXivx]+\.)\s+/,
+        ''
+      );
+      return `${linePrefix}${stripped}`;
+    }
     return l.startsWith(linePrefix) ? l : `${linePrefix}${l}`;
   });
   const replaced = transformedLines.join('\n');
@@ -186,7 +218,76 @@ export function applyLinePrefixAtEditableElement(
   requestAnimationFrame(() => {
     try {
       el.focus();
-      el.setSelectionRange(lineStart, nextEnd);
+      el.setSelectionRange(
+        lines.length === 1 ? nextEnd : lineStart,
+        nextEnd
+      );
+    } catch {
+      // Ignore selection errors
+    }
+  });
+
+  return true;
+}
+
+/**
+ * Thụt cấp con (+2 dấu cách) hoặc lùi cấp cha (-2 dấu cách) cho dòng hiện tại hoặc các dòng đang chọn.
+ */
+export function indentEditableLines(
+  el: EditableTextElement | null | undefined,
+  direction: 'indent' | 'outdent'
+): boolean {
+  if (!isEditableTextInput(el)) return false;
+
+  const currentVal = el.value ?? '';
+  const hasSelection = typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number';
+  const start = hasSelection ? (el.selectionStart as number) : currentVal.length;
+  const end = hasSelection ? (el.selectionEnd as number) : start;
+
+  const lineStart = currentVal.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+  const lineEndRaw = currentVal.indexOf('\n', end);
+  const lineEnd = lineEndRaw === -1 ? currentVal.length : lineEndRaw;
+
+  const segment = currentVal.slice(lineStart, lineEnd);
+  const lines = segment.split('\n');
+  const transformedLines = lines.map((l) => {
+    if (direction === 'indent') {
+      if (!l.trim()) return `  - ${l}`;
+      const match = l.match(/^([ \t]*)/);
+      const currentIndent = match ? match[1].replace(/\t/g, '  ') : '';
+      const nextLevel = Math.min(4, Math.floor(currentIndent.length / 2) + 1);
+      const rest = l.slice(match ? match[1].length : 0);
+      // Nếu dòng đang dùng ký hiệu mặc định '-' hoặc '•', tự chuyển marker hợp cấp nếu muốn
+      if (/^[-•◦▪▸]\s+/.test(rest)) {
+        const markerByLevel = ['-', '-', '▪', '▸', '→'][nextLevel] || '-';
+        return `${'  '.repeat(nextLevel)}${markerByLevel} ${rest.replace(/^[-•◦▪▸]\s+/, '')}`;
+      }
+      return `  ${l}`;
+    }
+    // outdent
+    if (l.startsWith('  ')) return l.slice(2);
+    if (l.startsWith('\t')) return l.slice(1);
+    if (l.startsWith(' ')) return l.slice(1);
+    return l;
+  });
+
+  const replaced = transformedLines.join('\n');
+  const proto =
+    el instanceof HTMLTextAreaElement
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+  const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+  if (!nativeSetter) return false;
+
+  const nextValue = currentVal.slice(0, lineStart) + replaced + currentVal.slice(lineEnd);
+  nativeSetter.call(el, nextValue);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+
+  const nextEnd = lineStart + replaced.length;
+  requestAnimationFrame(() => {
+    try {
+      el.focus();
+      el.setSelectionRange(lines.length === 1 ? nextEnd : lineStart, nextEnd);
     } catch {
       // Ignore selection errors
     }

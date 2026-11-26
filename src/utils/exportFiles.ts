@@ -40,6 +40,7 @@ import {
 } from './scoring';
 import { formatMatchingLabel, getDisplayedLabelForAnswerValue } from './matching';
 import { buildDocxMathTextRuns, formatMathToReadableText } from './mathUnicode';
+import { resolveImplicitImage } from './inlineImages';
 
 const SUBJECT_NAMES: Record<string, string> = {
   math: 'Toán học',
@@ -1573,13 +1574,28 @@ async function resolveImageForDocx(url?: string, maxWidth = 460): Promise<Parsed
   }
 }
 
-function extractInlineImageUrls(text: string): { cleanText: string; inlineImages: string[] } {
+function extractInlineImageUrls(
+  text: string,
+  inlineImagesMap?: Record<string, string>
+): { cleanText: string; inlineImages: string[] } {
   const inlineImages: string[] = [];
   const cleanText = (text || '')
     .replace(/\[IMG:\s*([^\]]+)\]/gi, (_, imgUrl: string) => {
       const trimmed = imgUrl.trim();
       if (trimmed) inlineImages.push(trimmed);
       return '';
+    })
+    .replace(/\[\[img:([a-zA-Z0-9_-]+)(?:\|([^\]]*))?\]\]/g, (_, id: string, title?: string) => {
+      const resolved = resolveImplicitImage(id, inlineImagesMap);
+      if (resolved) inlineImages.push(resolved);
+      const cleanTitle = (title || '').trim();
+      return cleanTitle ? ` [Hình: ${cleanTitle}] ` : '';
+    })
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt: string, src: string) => {
+      const trimmed = src.trim();
+      if (trimmed) inlineImages.push(trimmed);
+      const cleanAlt = (alt || '').trim();
+      return cleanAlt ? ` [Hình: ${cleanAlt}] ` : '';
     })
     .trim();
   return { cleanText, inlineImages };
@@ -1644,10 +1660,11 @@ function createWordTableFromMarkdown(tableLines: string[]): Table | null {
 async function buildRichTextChildren(
   rawText: string,
   extraImageUrl?: string,
-  prefixRun?: TextRun
+  prefixRun?: TextRun,
+  inlineImagesMap?: Record<string, string>
 ): Promise<(Paragraph | Table)[]> {
   const blocks: (Paragraph | Table)[] = [];
-  const { cleanText, inlineImages } = extractInlineImageUrls(rawText);
+  const { cleanText, inlineImages } = extractInlineImageUrls(rawText, inlineImagesMap);
   const lines = cleanText.split('\n');
 
   let i = 0;
@@ -1981,7 +1998,8 @@ export async function exportExamToWord(
         bold: true,
         size: 22,
         font: 'Times New Roman',
-      })
+      }),
+      q.inlineImages
     );
     docChildren.push(...qBlocks);
 
@@ -2013,7 +2031,8 @@ export async function exportExamToWord(
             bold: true,
             size: 22,
             font: 'Times New Roman',
-          })
+          }),
+          q.inlineImages
         );
         docChildren.push(...optBlocks);
       }
@@ -2331,7 +2350,8 @@ export async function exportExamToWord(
             bold: true,
             size: 21,
             font: 'Times New Roman',
-          })
+          }),
+          sub.inlineImages || q.inlineImages
         );
         docChildren.push(...subBlocks);
 
@@ -2346,7 +2366,8 @@ export async function exportExamToWord(
                 bold: true,
                 size: 21,
                 font: 'Times New Roman',
-              })
+              }),
+              sub.inlineImages || q.inlineImages
             );
             docChildren.push(...subOptBlocks);
           }
@@ -2435,10 +2456,10 @@ export async function exportExamToWord(
         })
       );
 
-      if (includeExplanations && q.explanation && q.explanation.trim()) {
+      if (includeExplanations && ((q.explanation && q.explanation.trim()) || q.explanationImageUrl)) {
         const expBlocks = await buildRichTextChildren(
-          q.explanation,
-          undefined,
+          q.explanation || '',
+          q.explanationImageUrl,
           new TextRun({
             text: '    Lời giải: ',
             italics: true,
@@ -2446,9 +2467,31 @@ export async function exportExamToWord(
             size: 21,
             color: '1E40AF',
             font: 'Times New Roman',
-          })
+          }),
+          q.inlineImages
         );
         docChildren.push(...expBlocks);
+      }
+      if (includeExplanations && q.type === 'grouped' && q.subQuestions) {
+        for (let sIdx = 0; sIdx < q.subQuestions.length; sIdx++) {
+          const sub = q.subQuestions[sIdx];
+          if ((sub.explanation && sub.explanation.trim()) || sub.explanationImageUrl) {
+            const subExpBlocks = await buildRichTextChildren(
+              sub.explanation || '',
+              sub.explanationImageUrl,
+              new TextRun({
+                text: `    Lời giải ý ${idx + 1}.${sIdx + 1}: `,
+                italics: true,
+                bold: true,
+                size: 20,
+                color: '1E40AF',
+                font: 'Times New Roman',
+              }),
+              sub.inlineImages || q.inlineImages
+            );
+            docChildren.push(...subExpBlocks);
+          }
+        }
       }
     }
   }

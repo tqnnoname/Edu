@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { normalizeMathSyntax, renderMath } from '../utils/renderMath';
+import { registerImplicitImagesMap, resolveImplicitImage } from '../utils/inlineImages';
 
 interface RichContentRendererProps {
   content: string;
   imageUrl?: string;
+  imageCaption?: string;
+  inlineImages?: Record<string, string>;
   className?: string;
 }
 
@@ -55,7 +58,10 @@ function buildSanitizedStyle(rawStyle: string | undefined, tagName: string): str
   return safeParts.join('; ');
 }
 
-export function renderRichTextToHtml(text: string): string {
+export function renderRichTextToHtml(
+  text: string,
+  inlineImages?: Record<string, string>
+): string {
   if (!text) return '';
 
   const blockHolders: string[] = [];
@@ -77,7 +83,24 @@ export function renderRichTextToHtml(text: string): string {
     return key;
   });
 
-  // 3. Protect Markdown images ![alt](src) (reject javascript: URIs)
+  // 3a. Protect implicit inline image tokens [[img:id|title]] or [[img:id]]
+  safe = safe.replace(/\[\[img:([a-zA-Z0-9_-]+)(?:\|([^\]]*))?\]\]/g, (_, id: string, rawTitle?: string) => {
+    const cleanAlt = String(rawTitle || '').trim();
+    const resolvedSrc = resolveImplicitImage(id, inlineImages);
+    if (!resolvedSrc || /^javascript:/i.test(resolvedSrc)) {
+      return escapeHtml(cleanAlt ? `[Hình ảnh: ${cleanAlt}]` : '[Hình ảnh]');
+    }
+    const showCaption = Boolean(cleanAlt && cleanAlt.toLowerCase() !== 'image' && cleanAlt !== 'Hình minh họa');
+    const key = `___DOM_IMG_${imageHolders.length}___`;
+    imageHolders.push(
+      `<figure class="my-3 text-center"><img src="${escapeHtml(resolvedSrc)}" alt="${escapeHtml(cleanAlt || 'Hình minh họa')}" class="max-h-80 max-w-full rounded-xl border border-slate-200 inline-block shadow-xs bg-white object-contain" referrerpolicy="no-referrer" />${
+        showCaption ? `<figcaption class="text-xs text-slate-500 italic mt-1.5">${escapeHtml(cleanAlt)}</figcaption>` : ''
+      }</figure>`
+    );
+    return key;
+  });
+
+  // 3b. Protect Markdown images ![alt](src) (reject javascript: URIs)
   safe = safe.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
     const trimmedSrc = String(src || '').trim();
     if (/^javascript:/i.test(trimmedSrc)) {
@@ -134,13 +157,37 @@ export function renderRichTextToHtml(text: string): string {
   // 5. Escape raw HTML in plain text so '<script>', 'x < y', etc. never corrupt DOM
   safe = escapeHtml(safe);
 
-  // 6. Apply safe Markdown formatting (headings, bullets, bold, italic, strikethrough)
+  // 6. Apply safe Markdown formatting (headings H1-H4, multi-level & multi-symbol lists, bold, italic, strikethrough)
   safe = safe
+    .replace(/^#\s+(.+)$/gm, '<h2 class="font-extrabold text-slate-900 text-lg sm:text-xl mt-2 mb-1">$1</h2>')
     .replace(/^##\s+(.+)$/gm, '<h3 class="font-extrabold text-slate-900 text-base sm:text-lg mt-1.5 mb-0.5">$1</h3>')
     .replace(/^###\s+(.+)$/gm, '<h4 class="font-bold text-slate-900 text-sm sm:text-base mt-1 mb-0.5">$1</h4>')
+    .replace(/^####\s+(.+)$/gm, '<h5 class="font-bold text-slate-800 text-xs sm:text-sm mt-1 mb-0.5">$1</h5>')
     .replace(
-      /^[-•]\s+(.+)$/gm,
-      '<div class="flex items-start gap-2 pl-1"><span class="text-slate-500 select-none">•</span><span class="flex-1">$1</span></div>'
+      /^([ \t]*)([-*+•◦▪▸★✓❖→]|\d+\.|[a-zA-Z]\)|[IVXivx]+\.)\s+(.+)$/gm,
+      (_m, indent: string, rawMarker: string, body: string) => {
+        const spaceCount = indent.replace(/\t/g, '  ').length;
+        const level = Math.min(5, Math.floor(spaceCount / 2));
+        const paddingLeftPx = level * 20 + 4;
+        const defaultMarkers = ['•', '◦', '▪', '▸', '→', '·'];
+        const marker =
+          rawMarker === '-' || rawMarker === '*' || rawMarker === '+'
+            ? defaultMarkers[level] || '•'
+            : rawMarker;
+        const isOrdered = /^(\d+\.|[a-zA-Z]\)|[IVXivx]+\.)$/.test(marker);
+        const markerClass = isOrdered
+          ? 'text-slate-700 font-semibold select-none min-w-[1.25rem] text-left'
+          : marker === '★'
+          ? 'text-amber-500 select-none'
+          : marker === '✓'
+          ? 'text-emerald-600 font-bold select-none'
+          : marker === '❖'
+          ? 'text-purple-600 select-none'
+          : marker === '▸' || marker === '→'
+          ? 'text-blue-600 font-semibold select-none'
+          : 'text-slate-500 select-none';
+        return `<div class="flex items-start gap-2 my-0.5" style="padding-left: ${paddingLeftPx}px"><span class="${markerClass}">${marker}</span><span class="flex-1 min-w-0">${body}</span></div>`;
+      }
     )
     .replace(/\*\*([^\n*]+?)\*\*/g, '<strong>$1</strong>')
     .replace(/~~([^\n~]+?)~~/g, '<s class="line-through">$1</s>')
@@ -149,7 +196,7 @@ export function renderRichTextToHtml(text: string): string {
 
   // 7. Preserve line breaks without doubling spacing after block elements
   safe = safe
-    .replace(/(<\/h3>|<\/h4>|<\/div>)\n/g, '$1')
+    .replace(/(<\/h2>|<\/h3>|<\/h4>|<\/h5>|<\/div>)\n/g, '$1')
     .replace(/\n/g, '<br/>');
 
   // 8. Restore safe formatting tags with stack balancing so unclosed tags never leak
@@ -196,9 +243,15 @@ export function renderRichTextToHtml(text: string): string {
 export const RichContentRenderer: React.FC<RichContentRendererProps> = ({
   content,
   imageUrl,
+  imageCaption,
+  inlineImages,
   className = '',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  if (inlineImages) {
+    registerImplicitImagesMap(inlineImages);
+  }
 
   const renderedContent = useMemo(() => {
     if (!content) return null;
@@ -239,7 +292,7 @@ export const RichContentRenderer: React.FC<RichContentRendererProps> = ({
     flushText();
     flushTable();
 
-    const processLatexInText = (text: string) => renderRichTextToHtml(text);
+    const processLatexInText = (text: string) => renderRichTextToHtml(text, inlineImages);
 
     const renderMarkdownTable = (tableStr: string) => {
       const rows = tableStr
@@ -310,28 +363,33 @@ export const RichContentRenderer: React.FC<RichContentRendererProps> = ({
         })}
       </div>
     );
-  }, [content]);
+  }, [content, inlineImages]);
 
   useEffect(() => {
     renderMath(containerRef.current);
-  }, [content, imageUrl, renderedContent]);
+  }, [content, imageUrl, imageCaption, inlineImages, renderedContent]);
 
   return (
     <div ref={containerRef} className={`rich-content question-container ${className}`}>
       {renderedContent}
 
       {imageUrl && (
-        <div className="my-4 text-center">
+        <figure className="my-4 text-center">
           <img
             src={imageUrl}
-            alt="Hình minh họa cho câu hỏi"
+            alt={imageCaption || 'Hình minh họa'}
             className="max-h-80 max-w-full rounded-xl border border-slate-200 shadow-xs inline-block object-contain bg-white p-1"
             referrerPolicy="no-referrer"
             onError={(e) => {
               (e.target as HTMLElement).style.display = 'none';
             }}
           />
-        </div>
+          {imageCaption && imageCaption.trim() && (
+            <figcaption className="text-xs text-slate-500 italic mt-1.5">
+              {imageCaption.trim()}
+            </figcaption>
+          )}
+        </figure>
       )}
     </div>
   );

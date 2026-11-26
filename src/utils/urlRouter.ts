@@ -18,7 +18,6 @@ export type AppViewRoute =
   | 'bundle-result'
   | 'classrooms'
   | 'courses'
-  | 'battle'
   | 'games'
   | 'analytics'
   | 'teacher-tools';
@@ -103,8 +102,6 @@ export function buildNavTabPath(
       return '/lop-hoc';
     case 'courses':
       return '/khoa-hoc';
-    case 'battle':
-      return '/dau-truong';
     case 'games':
       return '/tro-choi';
     case 'history':
@@ -196,8 +193,6 @@ export function buildAppUrlPath(params: {
       return buildCourseUrlPath(courseState || {});
     case 'classrooms':
       return buildClassroomUrlPath(classroomState || {});
-    case 'battle':
-      return '/dau-truong';
     case 'games':
       return gameRoomCode ? `/tro-choi/${gameRoomCode.toUpperCase()}` : '/tro-choi';
     case 'history':
@@ -415,7 +410,7 @@ export function parsePathnameToRoute(
     };
   }
 
-  if (root === 'dau-truong') return { view: 'battle' };
+  if (root === 'dau-truong') return { view: 'home', homeTab: 'single', selectedSubject: 'all' };
   if (root === 'tro-choi') {
     return {
       view: 'games',

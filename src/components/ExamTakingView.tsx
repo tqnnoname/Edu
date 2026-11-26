@@ -41,9 +41,19 @@ import { ExamPreviewModal } from './ExamPreviewModal';
 import { MathToolbar } from './MathToolbar';
 import { CopyContentButton } from './CopyContentButton';
 import { RoomLockGuard, tryEnterKioskFullscreen } from './RoomLockGuard';
+import { InlineImageStrip, InlineImageTitleModal } from './InlineImageTitleModal';
 import { insertTextAtEditableElement } from '../utils/cursorInsert';
 import {
+  collectUsedInlineImages,
+  extractImageFileFromClipboardEvent,
+  formatInlineImageToken,
+  registerImplicitImage,
+  registerImplicitImagesMap,
+} from '../utils/inlineImages';
+import { processImageFile } from '../utils/imageUpload';
+import {
   gradeEntireExam,
+  gradeQuestion,
   shuffleExamQuestionsAndOptions,
   formatTrueFalseScoringRule,
   buildQuestionClusters,
@@ -145,6 +155,12 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     if (onUpdateExam) onUpdateExam(updatedExam);
   };
   const [remainingSeconds, setRemainingSeconds] = useState(exam.durationMinutes * 60);
+  const [practiceElapsedSeconds, setPracticeElapsedSeconds] = useState(0);
+  const [practiceQueue, setPracticeQueue] = useState<{ qIndex: number; isRetry: boolean }[]>(() =>
+    exam.questions.map((_, idx) => ({ qIndex: idx, isRetry: false }))
+  );
+  const [practiceCursor, setPracticeCursor] = useState(0);
+  const [practiceRetryToast, setPracticeRetryToast] = useState<string | null>(null);
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
   const [isLockdownNoticeOpen, setIsLockdownNoticeOpen] = useState(false);
@@ -172,15 +188,62 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   const [copyToastNotice, setCopyToastNotice] = useState<string | null>(null);
 
   const startTime = useMemo(() => Date.now(), []);
-  const currentQuestion: Question = exam.questions[currentIndex] || exam.questions[0];
+  const activePracticeItem = mode === 'practice' ? practiceQueue[practiceCursor] : undefined;
+  const effectiveQuestionIndex =
+    mode === 'practice' && activePracticeItem ? activePracticeItem.qIndex : currentIndex;
+  const currentQuestion: Question =
+    exam.questions[effectiveQuestionIndex] || exam.questions[0];
   const questionContainerRef = useRef<HTMLElement>(null);
   const essayTextareaRef = useRef<HTMLTextAreaElement>(null);
   const shortAnswerInputRef = useRef<HTMLInputElement>(null);
   const [showEssayPreview, setShowEssayPreview] = useState(true);
+  const [essayInlineImages, setEssayInlineImages] = useState<Record<string, string>>({});
+  const [essayPasteModal, setEssayPasteModal] = useState<{
+    imageSrc: string;
+    defaultTitle: string;
+    el: HTMLTextAreaElement | null;
+    range: { start: number; end: number } | null;
+    targetSubQuestionId?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    liveExam.questions.forEach((q) => {
+      registerImplicitImagesMap(q.inlineImages);
+      q.subQuestions?.forEach((sq) => registerImplicitImagesMap(sq.inlineImages));
+    });
+  }, [liveExam.questions]);
+
+  useEffect(() => {
+    if (mode !== 'practice') return;
+    setPracticeQueue((prev) => {
+      if (prev.length === 0 && exam.questions.length > 0) {
+        return exam.questions.map((_, idx) => ({ qIndex: idx, isRetry: false }));
+      }
+      const valid = prev.filter((item) => item.qIndex >= 0 && item.qIndex < exam.questions.length);
+      return valid.length > 0
+        ? valid
+        : exam.questions.map((_, idx) => ({ qIndex: idx, isRetry: false }));
+    });
+  }, [mode, exam.id, exam.questions.length]);
+
+  useEffect(() => {
+    if (mode === 'practice' && activePracticeItem && activePracticeItem.qIndex !== currentIndex) {
+      setCurrentIndex(activePracticeItem.qIndex);
+    }
+  }, [mode, activePracticeItem, currentIndex]);
 
   useEffect(() => {
     renderMath(questionContainerRef.current);
-  }, [currentIndex, currentQuestion?.id, isSplitView, fontSize, revealedExplanations, showEssayPreview, answers]);
+  }, [
+    currentIndex,
+    practiceCursor,
+    currentQuestion?.id,
+    isSplitView,
+    fontSize,
+    revealedExplanations,
+    showEssayPreview,
+    answers,
+  ]);
 
   // Anti-copy enabled check
   const isAntiCopyEnabled = exam.allowCopy === false || exam.settings?.allowCopy === false;
@@ -204,7 +267,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
   // Helper to submit exam
   const handleSubmitExam = useCallback((customReason?: string) => {
-    const timeSpent = Math.round((Date.now() - startTime) / 1000);
+    const timeSpent =
+      mode === 'practice'
+        ? practiceElapsedSeconds
+        : Math.round((Date.now() - startTime) / 1000);
     const result = gradeEntireExam(exam, answers, timeSpent);
     
     // Attach candidate profile, anti-cheat metadata and settings snapshot
@@ -219,8 +285,23 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     result.showAnswersAfterExam = exam.showAnswersAfterExam ?? exam.settings?.showAnswersAfterExam ?? true;
     result.showOnlyStudentAnswersAfterExam = exam.showOnlyStudentAnswersAfterExam ?? false;
 
+    const answerTexts: string[] = [];
+    Object.values(answers).forEach((val) => {
+      if (typeof val === 'string') {
+        answerTexts.push(val);
+      } else if (val && typeof val === 'object' && !Array.isArray(val)) {
+        Object.values(val).forEach((subVal) => {
+          if (typeof subVal === 'string') answerTexts.push(subVal);
+        });
+      }
+    });
+    const usedEssayImgs = collectUsedInlineImages(answerTexts, essayInlineImages);
+    if (usedEssayImgs) {
+      result.inlineImages = usedEssayImgs;
+    }
+
     onComplete(result);
-  }, [exam, answers, startTime, tabSwitchCount, candidateName, studentCode, onComplete]);
+  }, [exam, answers, essayInlineImages, mode, practiceElapsedSeconds, startTime, tabSwitchCount, candidateName, studentCode, onComplete]);
 
   // Handle saving draft in-place
   const handleSaveDraftExam = () => {
@@ -232,6 +313,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
       mode,
       answers,
       flagged,
+      essayInlineImages: Object.keys(essayInlineImages).length > 0 ? essayInlineImages : undefined,
       currentQuestionIndex: currentIndex,
       startTime,
       remainingSeconds,
@@ -356,7 +438,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     return graded.earnedPoints;
   }, [exam, answers, isLiveScoreVisible, mode]);
 
-  // Timer countdown
+  // Timer countdown for exam mode, count-up from 00:00 for practice mode
   useEffect(() => {
     if (mode !== 'exam') return;
 
@@ -373,6 +455,104 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
     return () => clearInterval(timer);
   }, [mode, handleSubmitExam]);
+
+  useEffect(() => {
+    if (mode !== 'practice') return;
+
+    const timer = setInterval(() => {
+      setPracticeElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [mode]);
+
+  const isQuestionCorrectForPractice = useCallback(
+    (q?: Question): boolean => {
+      if (!q) return true;
+      const detail = gradeQuestion(q, answers[q.id]);
+      if (q.type === 'essay') {
+        return !detail.isSkipped;
+      }
+      return detail.isFullyCorrect;
+    },
+    [answers]
+  );
+
+  const handlePracticeNextOrFinish = () => {
+    if (mode !== 'practice') {
+      if (currentIndex < exam.questions.length - 1) {
+        setCurrentIndex((prev) => Math.min(exam.questions.length - 1, prev + 1));
+      } else if (isEarlySubmitBlocked) {
+        setIsEarlySubmitNoticeOpen(true);
+      } else {
+        setIsSubmitModalOpen(true);
+      }
+      return;
+    }
+
+    const curItem = practiceQueue[practiceCursor];
+    if (!curItem) {
+      setIsSubmitModalOpen(true);
+      return;
+    }
+
+    const curQ = exam.questions[curItem.qIndex];
+    const isCorrect = isQuestionCorrectForPractice(curQ);
+    const alreadyQueuedAhead = practiceQueue
+      .slice(practiceCursor + 1)
+      .some((it) => it.qIndex === curItem.qIndex);
+
+    let nextQueue = practiceQueue;
+    if (!isCorrect && !alreadyQueuedAhead) {
+      nextQueue = [...practiceQueue, { qIndex: curItem.qIndex, isRetry: true }];
+      setPracticeQueue(nextQueue);
+      if (curQ?.id) {
+        setRevealedExplanations((prev) => {
+          if (!prev[curQ.id]) return prev;
+          const copy = { ...prev };
+          delete copy[curQ.id];
+          return copy;
+        });
+      }
+      setPracticeRetryToast(
+        `Câu ${curItem.qIndex + 1} chưa chính xác — đã đưa xuống cuối để bạn làm lại!`
+      );
+      setTimeout(() => setPracticeRetryToast(null), 2800);
+    }
+
+    const nextCursor = practiceCursor + 1;
+    if (nextCursor < nextQueue.length) {
+      setPracticeCursor(nextCursor);
+      setCurrentIndex(nextQueue[nextCursor].qIndex);
+    } else {
+      setIsSubmitModalOpen(true);
+    }
+  };
+
+  const handlePracticePrev = () => {
+    if (mode !== 'practice') {
+      setCurrentIndex((prev) => Math.max(0, prev - 1));
+      return;
+    }
+    if (practiceCursor > 0) {
+      const prevCursor = practiceCursor - 1;
+      setPracticeCursor(prevCursor);
+      setCurrentIndex(practiceQueue[prevCursor]?.qIndex ?? 0);
+    }
+  };
+
+  const handleJumpToQuestion = (idx: number) => {
+    if (mode !== 'practice') {
+      setCurrentIndex(idx);
+      return;
+    }
+    const foundAt = practiceQueue.findIndex((it, pos) => pos >= practiceCursor && it.qIndex === idx);
+    const fallbackAt = foundAt !== -1 ? foundAt : practiceQueue.findIndex((it) => it.qIndex === idx);
+    if (fallbackAt !== -1) {
+      setPracticeCursor(fallbackAt);
+    }
+    setCurrentIndex(idx);
+  };
 
   // Sync browser fullscreen state
   useEffect(() => {
@@ -402,8 +582,13 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   };
 
   const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
+    const safe = Math.max(0, Math.floor(secs));
+    const h = Math.floor(safe / 3600);
+    const m = Math.floor((safe % 3600) / 60);
+    const s = safe % 60;
+    if (h > 0) {
+      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
@@ -603,7 +788,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                       fontSize === 'large' ? 'text-base' : 'text-sm'
                     }`}
                   >
-                    <RichContentRenderer content={optText} />
+                    <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                     {currentQuestion.optionImages?.[optIdx] && (
                       <div className="mt-2.5">
                         <img
@@ -679,7 +864,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                       fontSize === 'large' ? 'text-base' : 'text-sm'
                     }`}
                   >
-                    <RichContentRenderer content={optText} />
+                    <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                     {currentQuestion.optionImages?.[optIdx] && (
                       <div className="mt-2.5">
                         <img
@@ -726,7 +911,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                       {letter})
                     </span>
                     <div className="text-sm text-slate-900 leading-relaxed">
-                      <RichContentRenderer content={item.statement} />
+                      <RichContentRenderer content={item.statement} inlineImages={currentQuestion.inlineImages} />
                       <span className="text-[11px] font-mono text-slate-400 block mt-0.5">
                         ({itemPoints.toFixed(2)} điểm)
                       </span>
@@ -840,10 +1025,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <label className="block text-xs font-bold text-slate-800">
-                  Soạn thảo bài làm tự luận trực tuyến (đặt con trỏ chuột ở đâu sẽ chèn công thức ngay tại đó):
+                  Soạn thảo bài làm tự luận trực tuyến (đặt con trỏ chuột ở đâu sẽ chèn công thức hoặc ảnh ngay tại đó):
                 </label>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Hỗ trợ gõ văn bản, công thức Toán $...$, căn thức, phân số, tích phân và bảng biến thiên.
+                  Hỗ trợ văn bản, tiêu đề, danh sách nhiều cấp, công thức Toán $...$, tải ảnh hoặc Ctrl+V dán ảnh tại vị trí con trỏ.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -855,7 +1040,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowEssayPreview((v) => !v)}
-                  className="px-2.5 py-1 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 rounded-lg flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
                 >
                   <Eye className="w-3.5 h-3.5" />
                   <span>{showEssayPreview ? 'Ẩn xem trước' : 'Hiện xem trước'}</span>
@@ -866,9 +1051,20 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             <MathToolbar
               targetRef={essayTextareaRef}
               onInsert={(snippet) => {
-                const cur = (answers[currentQuestion.id] as string) || '';
-                const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
-                handleSetTextInput(cur ? (isBlock ? `${cur}\n${snippet}` : `${cur} ${snippet}`) : snippet);
+                if (!insertTextAtEditableElement(essayTextareaRef.current, snippet)) {
+                  const cur = (answers[currentQuestion.id] as string) || '';
+                  const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
+                  handleSetTextInput(cur ? (isBlock ? `${cur}\n${snippet}` : `${cur} ${snippet}`) : snippet);
+                }
+              }}
+              onInsertInlineImage={(imgId, imgSrc, title) => {
+                registerImplicitImage(imgSrc, imgId);
+                setEssayInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+                const token = formatInlineImageToken(imgId, title);
+                if (!insertTextAtEditableElement(essayTextareaRef.current, token)) {
+                  const cur = (answers[currentQuestion.id] as string) || '';
+                  handleSetTextInput(cur ? `${cur}\n${token}` : token);
+                }
               }}
             />
 
@@ -877,17 +1073,45 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
               rows={8}
               value={(answers[currentQuestion.id] as string) || ''}
               onChange={(e) => handleSetTextInput(e.target.value)}
-              placeholder="Nhập nội dung bài làm tự luận của bạn tại đây..."
+              onPaste={(e) => {
+                const file = extractImageFileFromClipboardEvent(e.nativeEvent);
+                if (!file) return;
+                e.preventDefault();
+                const el = e.currentTarget;
+                const range = {
+                  start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
+                  end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
+                };
+                void processImageFile(file, 1200, 0.85).then((compressed) => {
+                  setEssayPasteModal({
+                    imageSrc: compressed,
+                    defaultTitle: 'Hình bài làm',
+                    el,
+                    range,
+                  });
+                }).catch(() => {});
+              }}
+              placeholder="Nhập nội dung bài làm tự luận của bạn tại đây (có thể bấm nút Chèn ảnh hoặc nhấn Ctrl+V để dán ảnh)..."
               className="w-full p-3.5 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono leading-relaxed select-text"
+            />
+
+            <InlineImageStrip
+              content={(answers[currentQuestion.id] as string) || ''}
+              inlineImages={essayInlineImages}
+              label="Ảnh đã chèn trong bài tự luận"
+              onUpdateContent={(next) => handleSetTextInput(next)}
             />
 
             {showEssayPreview && typeof answers[currentQuestion.id] === 'string' && (answers[currentQuestion.id] as string).trim() && (
               <div className="p-3.5 bg-white border border-blue-200 rounded-xl space-y-1.5 select-text">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-blue-700">
-                  Xem trước bài tự luận đã hiển thị công thức:
+                  Xem trước bài tự luận đã hiển thị công thức &amp; ảnh:
                 </div>
                 <div className="text-sm text-slate-900 leading-relaxed">
-                  <RichContentRenderer content={answers[currentQuestion.id] as string} />
+                  <RichContentRenderer
+                    content={answers[currentQuestion.id] as string}
+                    inlineImages={essayInlineImages}
+                  />
                 </div>
               </div>
             )}
@@ -933,7 +1157,12 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                   </div>
 
                   <div className="text-sm font-medium text-slate-900 leading-relaxed">
-                    <RichContentRenderer content={subQ.question} imageUrl={subQ.imageUrl} />
+                    <RichContentRenderer
+                      content={subQ.question}
+                      imageUrl={subQ.imageUrl}
+                      imageCaption={subQ.imageCaption}
+                      inlineImages={subQ.inlineImages || currentQuestion.inlineImages}
+                    />
                   </div>
 
                   {/* SubQ: Single choice */}
@@ -959,7 +1188,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                               {letter}
                             </span>
                             <div className="flex-1 leading-relaxed">
-                              <RichContentRenderer content={optText} />
+                              <RichContentRenderer
+                                content={optText}
+                                inlineImages={subQ.inlineImages || currentQuestion.inlineImages}
+                              />
                               {subQ.optionImages?.[optIdx] && (
                                 <div className="mt-2">
                                   <img
@@ -1011,7 +1243,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                               </span>
                             </div>
                             <div className="flex-1 leading-relaxed">
-                              <RichContentRenderer content={optText} />
+                              <RichContentRenderer
+                                content={optText}
+                                inlineImages={subQ.inlineImages || currentQuestion.inlineImages}
+                              />
                               {subQ.optionImages?.[optIdx] && (
                                 <div className="mt-2">
                                   <img
@@ -1043,7 +1278,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                                 className="p-3 bg-white rounded-lg border border-purple-100 flex items-center justify-between gap-3 text-xs"
                               >
                                 <div className="text-slate-800 flex-1">
-                                  {String.fromCharCode(97 + tfIdx)}) <RichContentRenderer content={item.statement} />
+                                  {String.fromCharCode(97 + tfIdx)}) <RichContentRenderer content={item.statement} inlineImages={subQ.inlineImages || currentQuestion.inlineImages} />
                                 </div>
                                 <div className="flex items-center gap-1.5 shrink-0">
                                   <button
@@ -1185,9 +1420,9 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           </div>
         </div>
 
-        {/* Center: Countdown Timer & Live Score */}
+        {/* Center: Countdown Timer (exam) or Count-up Timer (practice) & Live Score */}
         <div className="flex items-center gap-2">
-          {mode === 'exam' && (
+          {mode === 'exam' ? (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
               <Clock className={`w-4 h-4 ${remainingSeconds <= 300 ? 'text-rose-600 animate-pulse' : 'text-blue-600'}`} />
               <span
@@ -1196,6 +1431,16 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 }`}
               >
                 {formatTime(remainingSeconds)}
+              </span>
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg"
+              title="Thời gian luyện tập (đếm xuôi từ 00:00)"
+            >
+              <Clock className="w-4 h-4 text-amber-600" />
+              <span className="font-mono text-base font-bold tabular-nums text-slate-800">
+                {formatTime(practiceElapsedSeconds)}
               </span>
             </div>
           )}
@@ -1342,23 +1587,34 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
         </div>
       )}
 
-      {/* Main Container: 2-Column Desktop Layout */}
+      {/* Main Container: Full Width in Practice Mode (No Question Grid), 2-Column in Exam Mode */}
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left: Question Box (8 cols) */}
+        {/* Question Box (12 cols in practice mode, 8 cols in exam mode) */}
         <main
           ref={questionContainerRef}
-          className="lg:col-span-8 bg-white rounded-xl border border-slate-200 p-6 md:p-8 shadow-xs flex flex-col justify-between min-h-[580px]"
+          className={`${mode === 'practice' ? 'lg:col-span-12' : 'lg:col-span-8'} bg-white rounded-xl border border-slate-200 p-6 md:p-8 shadow-xs flex flex-col justify-between min-h-[580px]`}
         >
-          <div key={currentQuestion.id}>
+          <div key={`${currentQuestion.id}_${practiceCursor}`}>
+            {mode === 'practice' && activePracticeItem?.isRetry && (
+              <div className="mb-4 px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-semibold">
+                  <RotateCcw className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    Câu ôn lại ở cuối bài: Lượt trước câu này chưa chính xác. Hãy kiểm tra và chọn lại đáp án đúng!
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Question Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-6">
               <div className="flex items-center gap-3 flex-wrap">
                 {(() => {
                   const activeCluster = isGroupedByType
-                    ? questionClusters.find((c) => c.items.some((item) => item.flatIndex === currentIndex))
+                    ? questionClusters.find((c) => c.items.some((item) => item.flatIndex === effectiveQuestionIndex))
                     : undefined;
                   if (!activeCluster) return null;
-                  const idxInCluster = activeCluster.items.findIndex((item) => item.flatIndex === currentIndex);
+                  const idxInCluster = activeCluster.items.findIndex((item) => item.flatIndex === effectiveQuestionIndex);
                   return (
                     <span className="text-xs font-bold px-2.5 py-0.5 rounded-md bg-indigo-50 text-indigo-800 border border-indigo-200">
                       Phần {activeCluster.roman} · {activeCluster.shortLabel} ({idxInCluster + 1}/{activeCluster.items.length})
@@ -1367,8 +1623,16 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 })()}
 
                 <span className="text-base font-bold text-slate-900">
-                  Câu {currentIndex + 1} / {exam.questions.length}
+                  {mode === 'practice'
+                    ? `Câu ${effectiveQuestionIndex + 1}`
+                    : `Câu ${effectiveQuestionIndex + 1} / ${exam.questions.length}`}
                 </span>
+
+                {mode === 'practice' && activePracticeItem?.isRetry && (
+                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300">
+                    Ôn lại câu sai
+                  </span>
+                )}
 
                 {/* Question Type Badge */}
                 <span className="text-xs font-medium px-2.5 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
@@ -1453,6 +1717,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                     <RichContentRenderer
                       content={currentQuestion.question}
                       imageUrl={currentQuestion.imageUrl}
+                      imageCaption={currentQuestion.imageCaption}
+                      inlineImages={currentQuestion.inlineImages}
                     />
                   </div>
                 </div>
@@ -1480,6 +1746,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                     <RichContentRenderer
                       content={currentQuestion.question}
                       imageUrl={currentQuestion.imageUrl}
+                      imageCaption={currentQuestion.imageCaption}
+                      inlineImages={currentQuestion.inlineImages}
                     />
                   </div>
                 </div>
@@ -1505,14 +1773,43 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                     <span>Xem đáp án & giải thích chi tiết</span>
                   </button>
                 ) : (
-                  <div className="p-4 bg-emerald-50/60 border border-emerald-200 rounded-xl text-xs md:text-sm text-emerald-950">
-                    <div className="flex items-center gap-2 font-bold mb-2 text-emerald-800">
+                  <div className="p-4 bg-emerald-50/60 border border-emerald-200 rounded-xl text-xs md:text-sm text-emerald-950 space-y-3">
+                    <div className="flex items-center gap-2 font-bold text-emerald-800">
                       <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                       <span>Hướng dẫn giải chi tiết:</span>
                     </div>
-                    <div className="text-slate-800 leading-relaxed pl-6 border-l-2 border-emerald-400">
-                      <RichContentRenderer content={currentQuestion.explanation} />
-                    </div>
+                    {(currentQuestion.explanation || currentQuestion.explanationImageUrl) && (
+                      <div className="text-slate-800 leading-relaxed pl-6 border-l-2 border-emerald-400">
+                        <RichContentRenderer
+                          content={currentQuestion.explanation || ''}
+                          imageUrl={currentQuestion.explanationImageUrl}
+                          imageCaption={currentQuestion.explanationImageCaption}
+                          inlineImages={currentQuestion.inlineImages}
+                        />
+                      </div>
+                    )}
+                    {currentQuestion.type === 'grouped' &&
+                      (currentQuestion.subQuestions || []).some(
+                        (s) => s.explanation || s.explanationImageUrl
+                      ) && (
+                        <div className="space-y-2 pl-6 border-l-2 border-purple-300">
+                          {(currentQuestion.subQuestions || []).map((subQ, sIdx) =>
+                            subQ.explanation || subQ.explanationImageUrl ? (
+                              <div key={subQ.id} className="text-xs text-slate-800 space-y-1">
+                                <div className="font-bold text-purple-900">
+                                  Câu {currentIndex + 1}.{sIdx + 1}:
+                                </div>
+                                <RichContentRenderer
+                                  content={subQ.explanation || ''}
+                                  imageUrl={subQ.explanationImageUrl}
+                                  imageCaption={subQ.explanationImageCaption}
+                                  inlineImages={subQ.inlineImages || currentQuestion.inlineImages}
+                                />
+                              </div>
+                            ) : null
+                          )}
+                        </div>
+                      )}
                   </div>
                 )}
               </div>
@@ -1523,8 +1820,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           <div className="mt-8 pt-4 border-t border-slate-100 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
-                disabled={currentIndex === 0}
+                onClick={handlePracticePrev}
+                disabled={mode === 'practice' ? practiceCursor === 0 : currentIndex === 0}
                 className="py-2 px-4 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
               >
                 <ChevronLeft className="w-4 h-4" />
@@ -1544,13 +1841,17 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             </div>
 
             <div className="flex items-center gap-2">
-              {currentIndex < exam.questions.length - 1 ? (
+              {practiceRetryToast && (
+                <span className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+                  {practiceRetryToast}
+                </span>
+              )}
+
+              {(mode === 'practice'
+                ? practiceCursor < practiceQueue.length - 1
+                : currentIndex < exam.questions.length - 1) ? (
                 <button
-                  onClick={() =>
-                    setCurrentIndex((prev) =>
-                      Math.min(exam.questions.length - 1, prev + 1)
-                    )
-                  }
+                  onClick={handlePracticeNextOrFinish}
                   className="py-2 px-4 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-1 shadow-xs cursor-pointer"
                 >
                   <span>Câu tiếp</span>
@@ -1558,13 +1859,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                 </button>
               ) : (
                 <button
-                  onClick={() => {
-                    if (isEarlySubmitBlocked) {
-                      setIsEarlySubmitNoticeOpen(true);
-                    } else {
-                      setIsSubmitModalOpen(true);
-                    }
-                  }}
+                  onClick={handlePracticeNextOrFinish}
                   className={`py-2 px-4 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 shadow-xs cursor-pointer ${
                     isEarlySubmitBlocked
                       ? 'bg-amber-600 hover:bg-amber-700 text-white'
@@ -1572,7 +1867,13 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                   }`}
                 >
                   {isEarlySubmitBlocked ? <Lock className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
-                  <span>{isEarlySubmitBlocked ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})` : 'Hoàn thành & Nộp bài'}</span>
+                  <span>
+                    {isEarlySubmitBlocked
+                      ? `Đúng giờ mới nộp (${formatTime(remainingEarlySeconds)})`
+                      : mode === 'practice'
+                      ? 'Kiểm tra & Hoàn thành'
+                      : 'Hoàn thành & Nộp bài'}
+                  </span>
                 </button>
               )}
             </div>
@@ -1621,7 +1922,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           </div>
         </main>
 
-        {/* Right Sidebar: Question Matrix Palette (4 cols) */}
+        {/* Right Sidebar: Question Matrix Palette (Hidden in practice mode) */}
+        {mode !== 'practice' && (
         <aside className="lg:col-span-4 bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between">
           <div>
             {/* Header stats */}
@@ -1802,6 +2104,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             </button>
           </div>
         </aside>
+        )}
       </div>
 
       {/* Instructions Modal */}
@@ -1927,7 +2230,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
         exam={exam}
         userRole={userRole}
         isTaking={true}
-        onJumpToQuestion={(idx) => setCurrentIndex(idx)}
+        onJumpToQuestion={handleJumpToQuestion}
         onClose={() => setShowPreviewModal(false)}
       />
 
@@ -2069,6 +2372,34 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             : undefined
         }
         remainingLabel={formatTime(remainingSeconds)}
+      />
+
+      {/* Clipboard Image Paste Title Modal for Essay */}
+      <InlineImageTitleModal
+        isOpen={Boolean(essayPasteModal)}
+        initialImageSrc={essayPasteModal?.imageSrc || ''}
+        initialTitle={essayPasteModal?.defaultTitle || ''}
+        targetLabel="Bài làm tự luận trực tuyến"
+        onClose={() => setEssayPasteModal(null)}
+        onConfirm={(imgSrc, title) => {
+          const modal = essayPasteModal;
+          setEssayPasteModal(null);
+          if (!modal) return;
+          const imgId = registerImplicitImage(imgSrc);
+          setEssayInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+          const token = formatInlineImageToken(imgId, title);
+          if (!modal.el || !insertTextAtEditableElement(modal.el, token, modal.range)) {
+            if (modal.targetSubQuestionId) {
+              const currentSubMap =
+                (answers[currentQuestion.id] as { [id: string]: CandidateAnswerValue }) || {};
+              const cur = (currentSubMap[modal.targetSubQuestionId] as string) || '';
+              handleSetGroupedSubAnswer(modal.targetSubQuestionId, cur ? `${cur}\n${token}` : token);
+            } else {
+              const cur = (answers[currentQuestion.id] as string) || '';
+              handleSetTextInput(cur ? `${cur}\n${token}` : token);
+            }
+          }
+        }}
       />
     </div>
   );

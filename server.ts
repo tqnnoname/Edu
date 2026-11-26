@@ -800,7 +800,15 @@ function fsToIso(val: any, fallback = new Date().toISOString()): string {
   return fallback;
 }
 
-async function fsPullPublicSnapshot(): Promise<any> {
+let lastPublicFsPullMs = 0;
+let cachedPublicFsSnapshot: any = null;
+const PUBLIC_FS_PULL_TTL_MS = 20000;
+
+async function fsPullPublicSnapshot(forceRefresh = false): Promise<any> {
+  const now = Date.now();
+  if (!forceRefresh && cachedPublicFsSnapshot && now - lastPublicFsPullMs < PUBLIC_FS_PULL_TTL_MS) {
+    return cachedPublicFsSnapshot;
+  }
   const out: any = {};
   const [examSnap, bundleSnap, courseSnap, subjSnap, navSnap, liveSnap, tombSnap] = await Promise.all([
     getDocs(query(collection(firestoreDb, 'exams'), where('visibility', 'in', ['public', 'bundle_only', 'exam_only']))).catch(() => null),
@@ -842,6 +850,13 @@ async function fsPullPublicSnapshot(): Promise<any> {
       c.updatedAt = fsToIso(c.updatedAt, '');
       c.createdAt = c.createdAtStr || fsToIso(c.createdAt);
       delete c.createdAtStr;
+      const hasInline =
+        (Array.isArray(c.chapters) && c.chapters.length > 0) ||
+        (Array.isArray(c.lessons) && c.lessons.length > 0);
+      c.chapters = Array.isArray(c.chapters) ? c.chapters : [];
+      c.lessons = Array.isArray(c.lessons) ? c.lessons : [];
+      c.hasLegacyInlineContent = hasInline;
+      c.detailsLoaded = !(c.schemaVersion === 2 && !hasInline);
       return c;
     });
   }
@@ -866,6 +881,8 @@ async function fsPullPublicSnapshot(): Promise<any> {
     out.deletedSubjectIds = t.deletedSubjectIds || [];
     out.deletedScoreboardIds = t.deletedScoreboardIds || [];
   }
+  lastPublicFsPullMs = Date.now();
+  cachedPublicFsSnapshot = out;
   return out;
 }
 
@@ -897,6 +914,52 @@ function mergeArrayById(existingArr: any, incomingArr: any, deletedSet: Set<stri
       if (!item || !item.id || deletedSet.has(item.id)) continue;
       const prev = map.get(item.id);
       if (!prev || getItemTs(item) >= getItemTs(prev)) {
+        map.set(item.id, item);
+      }
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeCoursesArrayById(existingArr: any, incomingArr: any, deletedSet: Set<string>): any[] {
+  const map = new Map<string, any>();
+  if (Array.isArray(existingArr)) {
+    for (const item of existingArr) {
+      if (item && item.id && !deletedSet.has(item.id)) {
+        map.set(item.id, item);
+      }
+    }
+  }
+  if (Array.isArray(incomingArr)) {
+    for (const item of incomingArr) {
+      if (!item || !item.id || deletedSet.has(item.id)) continue;
+      const prev = map.get(item.id);
+      if (!prev) {
+        map.set(item.id, item);
+        continue;
+      }
+      const nextTs = getItemTs(item);
+      const prevTs = getItemTs(prev);
+      const incomingIsEmptyStub =
+        item.schemaVersion === 2 &&
+        item.detailsLoaded === false &&
+        (!Array.isArray(item.chapters) || item.chapters.length === 0) &&
+        (!Array.isArray(item.lessons) || item.lessons.length === 0);
+      const prevHasDetails =
+        (Array.isArray(prev.chapters) && prev.chapters.length > 0) ||
+        (Array.isArray(prev.lessons) && prev.lessons.length > 0);
+      if (incomingIsEmptyStub && prevHasDetails) {
+        if (nextTs >= prevTs) {
+          map.set(item.id, {
+            ...item,
+            chapters: prev.chapters,
+            lessons: prev.lessons,
+            detailsLoaded: true,
+          });
+        }
+        continue;
+      }
+      if (nextTs >= prevTs) {
         map.set(item.id, item);
       }
     }
@@ -1106,7 +1169,7 @@ function mergeStorageSnapshots(existing: any, payload: any) {
     teacherRequests: mergeArrayById(existing.teacherRequests, payload.teacherRequests, new Set()),
     customExams: mergeArrayById(existing.customExams, payload.customExams, new Set(deletedExamIds)),
     customBundles: mergeArrayById(existing.customBundles, payload.customBundles, new Set(deletedBundleIds)),
-    courses: mergeArrayById(existing.courses, payload.courses, new Set(deletedCourseIds)),
+    courses: mergeCoursesArrayById(existing.courses, payload.courses, new Set(deletedCourseIds)),
     classrooms: mergeArrayById(existing.classrooms, incomingClassrooms, new Set(deletedClassroomIds)),
     results: mergeArrayById(existing.results, payload.results, new Set(deletedResultIds)),
     courseProgress: mergeCourseProgressMaps(existing.courseProgress, payload.courseProgress),
@@ -1244,16 +1307,19 @@ app.get('/api/files/:fileName', (req, res) => {
 app.get('/api/sync', async (req, res) => {
   const caller = await verifyBearerCaller(req);
   let store = getOrInitializeStorage();
+  const skipCloud = req.query?.skipCloud === '1' || req.query?.skipCloud === 'true';
   let cloudSynced = false;
-  try {
-    const cloudPublic = await fsPullPublicSnapshot();
-    if (cloudPublic && Object.keys(cloudPublic).length > 0) {
-      store = mergeStorageSnapshots(store, cloudPublic);
-      writeServerData(store);
-      cloudSynced = true;
+  if (!skipCloud) {
+    try {
+      const cloudPublic = await fsPullPublicSnapshot();
+      if (cloudPublic && Object.keys(cloudPublic).length > 0) {
+        store = mergeStorageSnapshots(store, cloudPublic);
+        writeServerData(store);
+        cloudSynced = true;
+      }
+    } catch (err) {
+      console.warn('[GET /api/sync] Cloud pull warning:', err);
     }
-  } catch (err) {
-    console.warn('[GET /api/sync] Cloud pull warning:', err);
   }
   res.json({
     success: true,
@@ -1477,19 +1543,55 @@ app.post('/api/admin/users/:userId/role', requireMasterAdmin, (req, res) => {
 
 app.post('/api/admin/users/:userId/reset-password', requireMasterAdmin, (req, res) => {
   const userId = String(req.params.userId || '').trim();
+  const bodyEmail = String(req.body?.email || '').trim().toLowerCase();
   const priv = getOrInitializePrivateAccounts();
-  const target = priv.accounts.find((u) => u.id === userId || u.uid === userId);
-  if (!target) {
-    return res.status(404).json({ success: false, error: 'Không tìm thấy tài khoản!' });
-  }
+  let target = priv.accounts.find(
+    (u) =>
+      u.id === userId ||
+      u.uid === userId ||
+      (bodyEmail && u.email.toLowerCase() === bodyEmail)
+  );
 
   const requestedPwd = String(req.body?.customPassword || '').trim();
   const oneTimePassword = requestedPwd.length >= 6 ? requestedPwd : generateSecure8CharPassword();
-  target.passwordHash = hashPassword(oneTimePassword);
-  target.encryptedPassword = encryptVaultPassword(oneTimePassword);
-  target.pendingFirebaseActivation = true;
-  target.updatedAt = new Date().toISOString();
-  priv.updatedAt = target.updatedAt;
+  const nowIso = new Date().toISOString();
+
+  if (!target) {
+    if (!bodyEmail) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy tài khoản!' });
+    }
+    const uname = String(req.body?.username || bodyEmail.split('@')[0]).trim().toLowerCase();
+    const fullName = String(req.body?.fullName || uname).trim();
+    const role =
+      bodyEmail === MASTER_ADMIN_EMAIL.toLowerCase() || req.body?.role === 'teacher'
+        ? 'teacher'
+        : 'student';
+    target = {
+      id: userId || `usr_${Date.now()}`,
+      uid: userId || undefined,
+      email: bodyEmail,
+      username: uname,
+      fullName,
+      name: fullName,
+      role,
+      isMasterAdmin: bodyEmail === MASTER_ADMIN_EMAIL.toLowerCase(),
+      school: String(req.body?.school || 'Hệ thống EduTest'),
+      schoolOrOrg: String(req.body?.school || 'Hệ thống EduTest'),
+      studentCode: req.body?.studentCode ? String(req.body.studentCode).trim() : undefined,
+      passwordHash: hashPassword(oneTimePassword),
+      encryptedPassword: encryptVaultPassword(oneTimePassword),
+      pendingFirebaseActivation: false,
+      createdAt: nowIso.split('T')[0],
+      updatedAt: nowIso,
+    };
+    priv.accounts.unshift(target);
+  } else {
+    target.passwordHash = hashPassword(oneTimePassword);
+    target.encryptedPassword = encryptVaultPassword(oneTimePassword);
+    target.pendingFirebaseActivation = false;
+    target.updatedAt = nowIso;
+  }
+  priv.updatedAt = nowIso;
   writePrivateAccounts(priv);
 
   res.json({
@@ -1505,15 +1607,12 @@ app.delete('/api/admin/users/:userId', requireMasterAdmin, (req, res) => {
   const userId = String(req.params.userId || '').trim();
   const priv = getOrInitializePrivateAccounts();
   const target = priv.accounts.find((u) => u.id === userId || u.uid === userId);
-  if (!target) {
-    return res.status(404).json({ success: false, error: 'Không tìm thấy tài khoản!' });
-  }
-  if (target.isMasterAdmin || target.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase()) {
+  if (target && (target.isMasterAdmin || target.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase())) {
     return res.status(400).json({ success: false, error: 'Không thể xóa tài khoản Quản trị viên tối cao!' });
   }
 
-  priv.accounts = priv.accounts.filter((u) => u.id !== target.id && u.uid !== userId);
-  priv.deletedUserIds = Array.from(new Set([...(priv.deletedUserIds || []), target.id]));
+  priv.accounts = priv.accounts.filter((u) => u.id !== userId && u.uid !== userId && (!target || u.id !== target.id));
+  priv.deletedUserIds = Array.from(new Set([...(priv.deletedUserIds || []), userId, ...(target ? [target.id] : [])]));
   priv.updatedAt = new Date().toISOString();
   writePrivateAccounts(priv);
 
@@ -1526,8 +1625,8 @@ app.delete('/api/admin/users/:userId', requireMasterAdmin, (req, res) => {
       const prevLen = (c.students || []).length;
       const nextStudents = (c.students || []).filter(
         (s: any) =>
-          s.id !== target.id &&
-          (!target.email || !s.email || String(s.email).toLowerCase() !== target.email.toLowerCase())
+          s.id !== userId &&
+          (!target || (s.id !== target.id && (!target.email || !s.email || String(s.email).toLowerCase() !== target.email.toLowerCase())))
       );
       if (nextStudents.length !== prevLen) {
         changed = true;
@@ -1633,11 +1732,14 @@ app.post('/api/classrooms/:classId/students', requireAuth, (req: AuthenticatedRe
   const studentCode =
     String(req.body?.studentCode || '').trim() ||
     `SBD-${crypto.randomInt(1000, 9999)}`;
-  const rawUname = `hs_${studentCode.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+  const customUid = String(req.body?.customUid || '').trim();
+  const customUname = String(req.body?.customUsername || '').trim().toLowerCase();
+  const customPwd = String(req.body?.customPassword || '').trim();
+  const rawUname = customUname || `hs_${studentCode.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
   const rawEmail = String(req.body?.email || '').trim().toLowerCase() || `${rawUname}@edutest.vn`;
-  const oneTimePassword = generateSecure8CharPassword();
+  const oneTimePassword = customPwd.length >= 6 ? customPwd : generateSecure8CharPassword();
   const nowIso = new Date().toISOString();
-  const studentId = `hs_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+  const studentId = customUid || `hs_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
 
   const priv = getOrInitializePrivateAccounts();
   let existingAcc = priv.accounts.find(
@@ -1648,6 +1750,7 @@ app.post('/api/classrooms/:classId/students', requireAuth, (req: AuthenticatedRe
   if (!existingAcc) {
     existingAcc = {
       id: studentId,
+      ...(customUid ? { uid: customUid } : {}),
       email: rawEmail,
       username: accountUsername,
       fullName: name,
@@ -1659,7 +1762,7 @@ app.post('/api/classrooms/:classId/students', requireAuth, (req: AuthenticatedRe
       schoolOrOrg: cls?.name || String(req.body?.className || 'Lớp học EduTest'),
       passwordHash: hashPassword(oneTimePassword),
       encryptedPassword: encryptVaultPassword(oneTimePassword),
-      pendingFirebaseActivation: true,
+      pendingFirebaseActivation: !customPwd,
       createdAt: nowIso.split('T')[0],
       updatedAt: nowIso,
     };
@@ -1716,8 +1819,9 @@ app.post('/api/classrooms/:classId/students/:studentId/reset-password', requireA
   const bodyEmail = String(req.body?.studentEmail || '').trim().toLowerCase();
   const bodyCode = String(req.body?.studentCode || '').trim().toUpperCase();
   const bodyName = String(req.body?.studentName || '').trim();
+  const requestedPwd = String(req.body?.customPassword || '').trim();
 
-  if (cls && !studentInClass) {
+  if (cls && !studentInClass && !bodyEmail && !bodyCode) {
     return res.status(404).json({ success: false, error: 'Học sinh không thuộc lớp học này!' });
   }
 
@@ -1733,7 +1837,7 @@ app.post('/api/classrooms/:classId/students/:studentId/reset-password', requireA
       (targetCode && u.studentCode && u.studentCode.toUpperCase() === targetCode)
   );
 
-  const oneTimePassword = generateSecure8CharPassword();
+  const oneTimePassword = requestedPwd.length >= 6 ? requestedPwd : generateSecure8CharPassword();
   const nowIso = new Date().toISOString();
 
   if (!acc) {
@@ -1752,7 +1856,7 @@ app.post('/api/classrooms/:classId/students/:studentId/reset-password', requireA
       school: cls?.name || 'Lớp học EduTest',
       passwordHash: hashPassword(oneTimePassword),
       encryptedPassword: encryptVaultPassword(oneTimePassword),
-      pendingFirebaseActivation: true,
+      pendingFirebaseActivation: false,
       createdAt: nowIso.split('T')[0],
       updatedAt: nowIso,
     };
@@ -1760,7 +1864,7 @@ app.post('/api/classrooms/:classId/students/:studentId/reset-password', requireA
   } else {
     acc.passwordHash = hashPassword(oneTimePassword);
     acc.encryptedPassword = encryptVaultPassword(oneTimePassword);
-    acc.pendingFirebaseActivation = true;
+    acc.pendingFirebaseActivation = false;
     acc.updatedAt = nowIso;
   }
   priv.updatedAt = nowIso;

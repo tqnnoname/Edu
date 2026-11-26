@@ -77,7 +77,10 @@ import {
   clearTrackedJoinRequestForClass,
   getUserAttemptCountForExam,
   getUserAttemptCountForBundle,
+  fetchExistingStudentDirectory,
+  addExistingStudentsToClassroom,
 } from '../utils/storage';
+import { publishCloudNotification } from '../utils/notificationsFirestore';
 import { ConfirmModal } from './ConfirmModal';
 import { ClassroomHomeworkTab } from './ClassroomHomeworkTab';
 import type { UnsavedNavigationGuard } from './UnsavedChangesModal';
@@ -221,6 +224,12 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
 
   // Modal add student state
   const [isAddStudentOpen, setIsAddStudentOpen] = useState(false);
+  const [addStudentMode, setAddStudentMode] = useState<'existing' | 'create'>('existing');
+  const [existingStudentDirectory, setExistingStudentDirectory] = useState<UserAccount[]>([]);
+  const [isLoadingStudentDirectory, setIsLoadingStudentDirectory] = useState(false);
+  const [existingStudentSearch, setExistingStudentSearch] = useState('');
+  const [selectedExistingStudentIds, setSelectedExistingStudentIds] = useState<string[]>([]);
+  const [isAddingExistingStudents, setIsAddingExistingStudents] = useState(false);
   const [newStudentName, setNewStudentName] = useState('');
   const [newStudentCode, setNewStudentCode] = useState('');
   const [newStudentEmail, setNewStudentEmail] = useState('');
@@ -263,7 +272,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
     } else {
       setAllUsersList([]);
     }
-  }, [isMasterAdmin]);
+  }, [isMasterAdmin, activeTab === 'all_accounts']);
 
   const refreshClassRosterFromBackend = async (classId: string) => {
     if (!isTeacher || !classId) return;
@@ -283,7 +292,68 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
       setClassTeacherIds([]);
       setClassTeacherEmails([]);
     }
-  }, [isTeacher, currentClass?.id]);
+  }, [isTeacher, currentClass?.id, currentClass?.students?.length, activeTab === 'students']);
+
+  const getActivePendingRequests = (cls: Classroom | null | undefined): ClassJoinRequest[] => {
+    if (!cls || !Array.isArray(cls.pendingRequests)) return [];
+    const memberIds = new Set((cls.students || []).map((s) => String(s?.id || '').trim()).filter(Boolean));
+    const memberEmails = new Set(
+      (cls.students || []).map((s) => String(s?.email || '').trim().toLowerCase()).filter(Boolean)
+    );
+    const memberCodes = new Set(
+      (cls.students || []).map((s) => String(s?.studentCode || '').trim().toUpperCase()).filter(Boolean)
+    );
+    return cls.pendingRequests.filter((r) => {
+      if (!r) return false;
+      if (r.status && r.status !== 'pending') return false;
+      const rId = String(r.studentId || '').trim();
+      const rEmail = String(r.studentEmail || '').trim().toLowerCase();
+      const rCode = String(r.studentCode || '').trim().toUpperCase();
+      if (rId && memberIds.has(rId)) return false;
+      if (rEmail && memberEmails.has(rEmail)) return false;
+      if (rCode && memberCodes.has(rCode)) return false;
+      return true;
+    });
+  };
+
+  // Load existing student directory whenever "Thêm học sinh" modal opens
+  useEffect(() => {
+    if (!isAddStudentOpen || !isTeacher) return;
+    let active = true;
+    setIsLoadingStudentDirectory(true);
+    void fetchExistingStudentDirectory()
+      .then((list) => {
+        if (active) {
+          setExistingStudentDirectory(list);
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoadingStudentDirectory(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isAddStudentOpen, isTeacher]);
+
+  // Instant realtime refresh whenever Firestore users / userCredentials change on any device
+  useEffect(() => {
+    if (!isTeacher && !isMasterAdmin) return;
+    const handleAccountsUpdated = () => {
+      if (isMasterAdmin) {
+        void refreshAdminUsersFromBackend();
+      }
+      if (isTeacher && currentClass?.id) {
+        void refreshClassRosterFromBackend(currentClass.id);
+      }
+      if (isAddStudentOpen && isTeacher) {
+        void fetchExistingStudentDirectory().then((list) => setExistingStudentDirectory(list));
+      }
+    };
+    window.addEventListener('edutest-accounts-updated', handleAccountsUpdated);
+    return () => {
+      window.removeEventListener('edutest-accounts-updated', handleAccountsUpdated);
+    };
+  }, [isTeacher, isMasterAdmin, currentClass?.id, isAddStudentOpen]);
 
   const handleSaveClassroomData = () => {
     if (currentClass) {
@@ -393,9 +463,10 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
           const rawProg = getStudentCourseProgress(course.id, progressOwnerId);
           const synced = syncCourseScormState(course, rawProg);
           const pct = calculateCourseProgressPercentage(course, synced);
-          const totalLessons = course.chapters
-            ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
-            : course.lessons?.length || 0;
+          const totalLessons =
+            course.chapters && course.chapters.length > 0
+              ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
+              : course.lessonCount ?? course.lessons?.length ?? 0;
           const status = synced.scormData?.lessonStatus || 'not attempted';
           const statusLabel =
             status === 'passed'
@@ -646,6 +717,23 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
           setActiveClassId(res.classroom.id);
           onSelectClass(res.classroom.id);
           setJoinCodeInput('');
+          if (res.classroom.teacherEmail && !isStudentMemberOfClass(res.classroom, user)) {
+            void publishCloudNotification({
+              title: `Yêu cầu xin vào lớp ${res.classroom.name}`,
+              message: `${user.fullName} (${user.email}) vừa gửi yêu cầu tham gia lớp ${res.classroom.name}.`,
+              category: 'classroom',
+              targetType: 'classroom_requests',
+              targetId: res.classroom.id,
+              secondaryId: 'requests',
+              targetLabel: `Duyệt yêu cầu · ${res.classroom.name}`,
+              classId: res.classroom.id,
+              className: res.classroom.name,
+              recipientScope: 'user',
+              recipientEmails: [res.classroom.teacherEmail.trim().toLowerCase()],
+              senderName: user.fullName || user.username,
+              senderEmail: user.email,
+            }).catch(() => {});
+          }
         }
       } else {
         setJoinMessage({ text: res.message, isError: true });
@@ -658,7 +746,25 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
 
   const handleReviewJoin = (requestId: string, action: 'approve' | 'reject') => {
     if (!currentClass) return;
+    const targetReq = (currentClass.pendingRequests || []).find((r) => r.id === requestId);
     const res = reviewClassJoinRequest(currentClass.id, requestId, action);
+    if (res.success && action === 'approve' && targetReq?.studentEmail) {
+      void publishCloudNotification({
+        title: `Đã được duyệt vào lớp ${currentClass.name}`,
+        message: `Giáo viên đã phê duyệt yêu cầu tham gia lớp ${currentClass.name}. Nhấn để mở danh sách đề thi và bài tập của lớp.`,
+        category: 'classroom',
+        targetType: 'classroom',
+        targetId: currentClass.id,
+        secondaryId: 'exams',
+        targetLabel: `Mở lớp ${currentClass.name}`,
+        classId: currentClass.id,
+        className: currentClass.name,
+        recipientScope: 'user',
+        recipientEmails: [targetReq.studentEmail.trim().toLowerCase()],
+        senderName: user?.fullName || currentClass.teacherName || 'Giáo viên',
+        senderEmail: user?.email || currentClass.teacherEmail || '',
+      }).catch(() => {});
+    }
     onRefreshData();
     setJoinMessage({ text: res.message });
     setTimeout(() => setJoinMessage(null), 4000);
@@ -770,6 +876,30 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
         },
       }));
     }
+    if (isMasterAdmin && res.email) {
+      const targetEmailLower = res.email.toLowerCase();
+      setAllUsersList((prev) => {
+        const idx = prev.findIndex((u) => u.email.toLowerCase() === targetEmailLower);
+        const entry: UserAccount = {
+          id: newStudent.id,
+          uid: newStudent.id,
+          email: targetEmailLower,
+          username: res.accountUsername || targetEmailLower.split('@')[0],
+          fullName: newStudent.name,
+          name: newStudent.name,
+          studentCode: newStudent.studentCode,
+          role: 'student',
+          school: currentClass.name,
+          visiblePassword: res.oneTimePassword,
+          createdAt: newStudent.joinedAt,
+          updatedAt: new Date().toISOString(),
+        };
+        if (idx === -1) return [entry, ...prev];
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...entry };
+        return next;
+      });
+    }
     void refreshClassRosterFromBackend(currentClass.id);
     if (isMasterAdmin) void refreshAdminUsersFromBackend();
     onRefreshData();
@@ -789,6 +919,53 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
     setSaveToast(`✓ Đã thêm học sinh "${newStudent.name}" (${res.accountUsername || newStudent.studentCode}) vào lớp!`);
     setTimeout(() => setSaveToast(null), 4500);
     return true;
+  };
+
+  const handleAddExistingStudents = async (accountsOverride?: UserAccount[]): Promise<boolean> => {
+    if (!currentClass) return false;
+    const targets =
+      accountsOverride && accountsOverride.length > 0
+        ? accountsOverride
+        : existingStudentDirectory.filter((acc) =>
+            selectedExistingStudentIds.includes(acc.uid || acc.id)
+          );
+
+    if (targets.length === 0) {
+      setSaveToast('⚠️ Vui lòng chọn ít nhất 1 học sinh để thêm vào lớp!');
+      setTimeout(() => setSaveToast(null), 3500);
+      return false;
+    }
+
+    setIsAddingExistingStudents(true);
+    try {
+      const res = await addExistingStudentsToClassroom(currentClass.id, targets);
+      if (!res.success) {
+        setSaveToast(`⚠️ ${res.message}`);
+        setTimeout(() => setSaveToast(null), 4000);
+        return false;
+      }
+
+      if (Object.keys(res.linkedCredentials).length > 0) {
+        setRosterAccountsByStudentId((prev) => ({
+          ...prev,
+          ...res.linkedCredentials,
+        }));
+      }
+
+      const addedIdSet = new Set(targets.map((t) => t.uid || t.id));
+      setSelectedExistingStudentIds((prev) => prev.filter((id) => !addedIdSet.has(id)));
+      if (!accountsOverride) {
+        setIsAddStudentOpen(false);
+        setExistingStudentSearch('');
+      }
+      onRefreshData();
+      void refreshClassRosterFromBackend(currentClass.id);
+      setSaveToast(res.message);
+      setTimeout(() => setSaveToast(null), 4500);
+      return true;
+    } finally {
+      setIsAddingExistingStudents(false);
+    }
   };
 
   useEffect(() => {
@@ -840,12 +1017,19 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleQuickResetStudentPassword = async (student: StudentMember) => {
+  const handleQuickResetStudentPassword = async (student: StudentMember, currentVisiblePwd?: string) => {
     if (!currentClass) return;
-    const res = await resetClassStudentPasswordOnBackend(currentClass.id, student);
+    const fallbackRoster =
+      rosterAccountsByStudentId[student.id] ||
+      Object.values(rosterAccountsByStudentId).find(
+        (r) => student.email && r.email && r.email.toLowerCase() === student.email.toLowerCase()
+      );
+    const prevPwd = currentVisiblePwd || fallbackRoster?.visiblePassword;
+
+    const res = await resetClassStudentPasswordOnBackend(currentClass.id, student, prevPwd);
     if (!res.success || !res.oneTimePassword) {
       setSaveToast(`⚠️ ${res.error || 'Không thể cấp lại mật khẩu cho học sinh!'}`);
-      setTimeout(() => setSaveToast(null), 4000);
+      setTimeout(() => setSaveToast(null), 4500);
       return;
     }
 
@@ -858,26 +1042,63 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
           visiblePassword: res.oneTimePassword,
         },
       }));
+      if (isMasterAdmin) {
+        const targetEmailLower = String(res.email || student.email || '').toLowerCase();
+        setAllUsersList((prev) =>
+          prev.map((u) =>
+            u.id === student.id ||
+            u.uid === student.id ||
+            (targetEmailLower && u.email.toLowerCase() === targetEmailLower)
+              ? { ...u, visiblePassword: res.oneTimePassword, updatedAt: new Date().toISOString() }
+              : u
+          )
+        );
+      }
     }
+    void refreshClassRosterFromBackend(currentClass.id);
     if (isMasterAdmin) void refreshAdminUsersFromBackend();
     setIssuedCredentialNotice({
       title: `Mật khẩu mới cấp một lần cho "${student.name}"`,
-      username: res.accountUsername || rosterAccountsByStudentId[student.id]?.username || '',
+      username: res.accountUsername || fallbackRoster?.username || '',
       email: res.email || student.email || '',
       oneTimePassword: res.oneTimePassword,
     });
-    setSaveToast(`✓ Đã cấp lại mật khẩu 8 ký tự mới (bảo mật backend) cho học sinh ${student.name}!`);
+    setSaveToast(`✓ Đã cấp lại mật khẩu 8 ký tự mới (đồng bộ tức thì) cho học sinh ${student.name}!`);
     setTimeout(() => setSaveToast(null), 5000);
   };
 
   const handleAdminResetAccountPassword = async (acc: UserAccount) => {
-    const res = await adminResetUserPasswordOnBackend(acc.id, undefined, acc.email);
+    const res = await adminResetUserPasswordOnBackend(acc.id, undefined, acc.email, {
+      username: acc.username,
+      fullName: acc.fullName || acc.name,
+      role: acc.role,
+      studentCode: acc.studentCode,
+      school: acc.school || acc.schoolOrOrg,
+      previousPassword: acc.visiblePassword,
+    });
     if (!res.success || !res.oneTimePassword) {
       setSaveToast(`⚠️ ${res.error || 'Không thể cấp lại mật khẩu tài khoản!'}`);
-      setTimeout(() => setSaveToast(null), 4000);
+      setTimeout(() => setSaveToast(null), 4500);
       return;
     }
-    await refreshAdminUsersFromBackend();
+    // Update UI password immediately without waiting for any extra network fetch
+    const targetEmailLower = String(res.email || acc.email || '').toLowerCase();
+    setAllUsersList((prev) =>
+      prev.map((u) =>
+        u.id === acc.id ||
+        u.uid === acc.id ||
+        (targetEmailLower && u.email.toLowerCase() === targetEmailLower)
+          ? {
+              ...u,
+              visiblePassword: res.oneTimePassword,
+              isGoogleAuth: false,
+              updatedAt: new Date().toISOString(),
+            }
+          : u
+      )
+    );
+    void refreshAdminUsersFromBackend();
+    if (isTeacher && currentClass?.id) void refreshClassRosterFromBackend(currentClass.id);
     onRefreshData();
     setIssuedCredentialNotice({
       title: `Mật khẩu mới cấp một lần cho "${acc.fullName || acc.name || acc.email}"`,
@@ -885,7 +1106,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
       email: res.email || acc.email,
       oneTimePassword: res.oneTimePassword,
     });
-    setSaveToast(`✓ Đã đặt lại mật khẩu 8 ký tự cho tài khoản ${res.username || acc.email}!`);
+    setSaveToast(`✓ Đã đặt lại mật khẩu 8 ký tự (đồng bộ Cloud) cho tài khoản ${res.username || acc.email}!`);
     setTimeout(() => setSaveToast(null), 5000);
   };
 
@@ -1170,7 +1391,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
           ) : (
             visibleClassrooms.map((c) => {
               const isSelected = c.id === currentClass?.id;
-              const pendingReqCount = c.pendingRequests?.length || 0;
+              const pendingReqCount = getActivePendingRequests(c).length;
               return (
                 <button
                   key={c.id}
@@ -1394,24 +1615,27 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
               <span>Danh sách Học sinh ({currentClass.students?.length || 0})</span>
             </button>
 
-            {isTeacher && (
-              <button
-                onClick={() => setActiveTab('requests')}
-                className={`py-2.5 px-6 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer relative min-w-[190px] ${
-                  activeTab === 'requests'
-                    ? 'bg-slate-900 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                }`}
-              >
-                <Inbox className="w-4 h-4 text-amber-500" />
-                <span>Yêu cầu vào lớp ({currentClass.pendingRequests?.length || 0})</span>
-                {(currentClass.pendingRequests?.length || 0) > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[11px] bg-rose-500 text-white font-extrabold ml-1 animate-pulse">
-                    {currentClass.pendingRequests?.length}
-                  </span>
-                )}
-              </button>
-            )}
+            {isTeacher && (() => {
+              const activePendingCount = getActivePendingRequests(currentClass).length;
+              return (
+                <button
+                  onClick={() => setActiveTab('requests')}
+                  className={`py-2.5 px-6 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer relative min-w-[190px] ${
+                    activeTab === 'requests'
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                  }`}
+                >
+                  <Inbox className="w-4 h-4 text-amber-500" />
+                  <span>Yêu cầu vào lớp ({activePendingCount})</span>
+                  {activePendingCount > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[11px] bg-rose-500 text-white font-extrabold ml-1 animate-pulse">
+                      {activePendingCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })()}
 
             {isMasterAdmin && (
               <button
@@ -2052,9 +2276,10 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                     const currentUserId = user?.id || 'guest_user';
                     const prog = getStudentCourseProgress(course.id, currentUserId);
                     const pct = calculateCourseProgressPercentage(course, prog);
-                    const totalLessons = course.chapters 
-                      ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
-                      : course.lessons?.length || 0;
+                    const totalLessons =
+                      course.chapters && course.chapters.length > 0
+                        ? course.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
+                        : course.lessonCount ?? course.lessons?.length ?? 0;
                     const completedLessons = prog?.completedLessonIds?.length || 0;
                     const courseSched = isItemScheduleOpen(course, 'course');
                     const isCourseLockedForStudent = !isTeacher && !courseSched.isOpen;
@@ -2133,7 +2358,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                                 <span>Quy mô:</span>
                               </span>
                               <span className="font-semibold text-slate-800">
-                                {course.chapters?.length || 1} chương · {totalLessons} bài học
+                                {(course.chapters && course.chapters.length > 0 ? course.chapters.length : course.chapterCount) ?? 0} chương · {totalLessons} bài học
                               </span>
                             </div>
 
@@ -2305,11 +2530,23 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {currentClass.students?.map((s, idx) => {
-                      const rosterAcc = rosterAccountsByStudentId[s.id];
-                      const linkedAcc = allUsersList.find(u => 
-                        u.id === s.id ||
-                        (s.email && u.email.toLowerCase() === s.email.toLowerCase()) ||
-                        (s.studentCode && u.studentCode?.toUpperCase() === s.studentCode.toUpperCase())
+                      const rosterValues = Object.values(rosterAccountsByStudentId);
+                      const rosterAcc =
+                        rosterAccountsByStudentId[s.id] ||
+                        rosterValues.find(
+                          (r) =>
+                            (s.email && r.email && r.email.toLowerCase() === s.email.toLowerCase()) ||
+                            (s.studentCode &&
+                              r.username &&
+                              r.username.toLowerCase() ===
+                                `hs_${s.studentCode.toLowerCase().replace(/[^a-z0-9]/g, '')}`)
+                        );
+                      const linkedAcc = allUsersList.find(
+                        (u) =>
+                          u.id === s.id ||
+                          u.uid === s.id ||
+                          (s.email && u.email.toLowerCase() === s.email.toLowerCase()) ||
+                          (s.studentCode && u.studentCode?.toUpperCase() === s.studentCode.toUpperCase())
                       );
                       const displayUsername =
                         rosterAcc?.username ||
@@ -2317,7 +2554,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                         `hs_${s.studentCode.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
                       const visibleStudentPwd =
                         rosterAcc?.visiblePassword ||
-                        (isMasterAdmin ? linkedAcc?.visiblePassword : undefined);
+                        (isMasterAdmin || linkedAcc?.role !== 'teacher' ? linkedAcc?.visiblePassword : undefined);
                       const isPwdRevealed = showAllClassPasswords || Boolean(revealedStudentPasswordIds[s.id]);
                       const isSelfRow = Boolean(
                         user &&
@@ -2414,7 +2651,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                                   <>
                                     <button
                                       type="button"
-                                      onClick={() => handleQuickResetStudentPassword(s)}
+                                      onClick={() => handleQuickResetStudentPassword(s, visibleStudentPwd)}
                                       className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-[11px] font-semibold transition-colors flex items-center gap-1 cursor-pointer"
                                       title="Cấp mật khẩu 8 ký tự mới gồm Hoa, Thường, Số và Ký tự đặc biệt"
                                     >
@@ -2444,44 +2681,46 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
           )}
 
           {/* TAB 5: PENDING JOIN REQUESTS */}
-          {activeTab === 'requests' && (
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <Inbox className="w-4 h-4 text-amber-500" />
-                    <span>Danh sách Yêu cầu tham gia Lớp học ({currentClass.pendingRequests?.length || 0})</span>
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Học sinh cần được bạn phê duyệt thì mới có quyền nhìn thấy và truy cập vào nội dung lớp này.
-                  </p>
+          {activeTab === 'requests' && (() => {
+            const activePendingRequests = getActivePendingRequests(currentClass);
+            return (
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Inbox className="w-4 h-4 text-amber-500" />
+                      <span>Danh sách Yêu cầu tham gia Lớp học ({activePendingRequests.length})</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Học sinh chỉ cần được duyệt 1 lần; sau khi duyệt sẽ tự động vào lớp ngay lập tức.
+                    </p>
+                  </div>
                 </div>
-              </div>
 
-              {(!currentClass.pendingRequests || currentClass.pendingRequests.length === 0) ? (
-                <div className="py-12 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                  <Inbox className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                  <p className="font-semibold text-slate-700">Hiện không có yêu cầu nào đang chờ duyệt</p>
-                  <p className="text-slate-400 mt-1">
-                    Cung cấp mã lớp <span className="font-mono font-bold text-slate-800">{currentClass.code}</span> cho học sinh để họ gửi yêu cầu xin vào lớp.
-                  </p>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-600 uppercase font-semibold border-b border-slate-200">
-                      <tr>
-                        <th className="py-2.5 px-4">STT</th>
-                        <th className="py-2.5 px-4">Học sinh</th>
-                        <th className="py-2.5 px-4">Email</th>
-                        <th className="py-2.5 px-4">Thời gian gửi</th>
-                        <th className="py-2.5 px-4">Ghi chú từ học sinh</th>
-                        <th className="py-2.5 px-4">Trạng thái</th>
-                        <th className="py-2.5 px-4 text-right">Phê duyệt</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {currentClass.pendingRequests.map((req, idx) => (
+                {activePendingRequests.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                    <Inbox className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                    <p className="font-semibold text-slate-700">Hiện không có yêu cầu nào đang chờ duyệt</p>
+                    <p className="text-slate-400 mt-1">
+                      Cung cấp mã lớp <span className="font-mono font-bold text-slate-800">{currentClass.code}</span> cho học sinh hoặc dùng nút <strong>Thêm học sinh</strong> để thêm trực tiếp tài khoản có sẵn vào lớp.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 text-slate-600 uppercase font-semibold border-b border-slate-200">
+                        <tr>
+                          <th className="py-2.5 px-4">STT</th>
+                          <th className="py-2.5 px-4">Học sinh</th>
+                          <th className="py-2.5 px-4">Email</th>
+                          <th className="py-2.5 px-4">Thời gian gửi</th>
+                          <th className="py-2.5 px-4">Ghi chú từ học sinh</th>
+                          <th className="py-2.5 px-4">Trạng thái</th>
+                          <th className="py-2.5 px-4 text-right">Phê duyệt</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {activePendingRequests.map((req, idx) => (
                         <tr key={req.id} className="hover:bg-slate-50">
                           <td className="py-3 px-4 font-mono text-slate-400">{idx + 1}</td>
                           <td className="py-3 px-4">
@@ -2520,13 +2759,14 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                             </div>
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* TAB 6: ALL ACCOUNTS & PASSWORDS (MASTER ADMIN ONLY) */}
           {activeTab === 'all_accounts' && isMasterAdmin && (
@@ -3100,7 +3340,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                       <div className="flex-1">
                         <div className="font-bold text-slate-900">{course.title}</div>
                         <div className="text-[11px] text-slate-500 mt-0.5">
-                          {course.grade} · {course.chapters?.length || 1} chương · Giảng viên: {course.instructor}
+                          {course.grade} · {(course.chapters && course.chapters.length > 0 ? course.chapters.length : course.chapterCount) ?? 0} chương · Giảng viên: {course.instructor}
                         </div>
                       </div>
                     </label>
@@ -3129,68 +3369,308 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
         </div>
       )}
 
-      {/* MODAL: ADD STUDENT */}
-      {isAddStudentOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-slate-200 space-y-4">
-            <h3 className="text-base font-bold text-slate-900">
-              Thêm học sinh vào lớp
-            </h3>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Họ và tên học sinh <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={newStudentName}
-                onChange={(e) => setNewStudentName(e.target.value)}
-                placeholder="Nhập họ và tên học sinh..."
-                className="w-full px-3 py-2 text-xs border rounded-lg focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Số báo danh / Mã học sinh
-              </label>
-              <input
-                type="text"
-                value={newStudentCode}
-                onChange={(e) => setNewStudentCode(e.target.value)}
-                placeholder="Nhập SBD hoặc mã học sinh..."
-                className="w-full px-3 py-2 text-xs border rounded-lg font-mono focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Email (Tùy chọn)
-              </label>
-              <input
-                type="email"
-                value={newStudentEmail}
-                onChange={(e) => setNewStudentEmail(e.target.value)}
-                placeholder="Nhập email học sinh..."
-                className="w-full px-3 py-2 text-xs border rounded-lg focus:outline-none"
-              />
-            </div>
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setIsAddStudentOpen(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
-              >
-                Hủy
-              </button>
-              <button
-                type="button"
-                onClick={handleAddStudent}
-                className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg cursor-pointer"
-              >
-                Thêm vào lớp
-              </button>
+      {/* MODAL: ADD STUDENT (CHỌN TÀI KHOẢN CÓ SẴN HOẶC TẠO MỚI) */}
+      {isAddStudentOpen && currentClass && (() => {
+        const currentMemberIds = new Set(
+          (currentClass.students || []).map((s) => String(s?.id || '').trim()).filter(Boolean)
+        );
+        const currentMemberEmails = new Set(
+          (currentClass.students || []).map((s) => String(s?.email || '').trim().toLowerCase()).filter(Boolean)
+        );
+        const currentMemberCodes = new Set(
+          (currentClass.students || []).map((s) => String(s?.studentCode || '').trim().toUpperCase()).filter(Boolean)
+        );
+
+        const isAlreadyEnrolled = (acc: UserAccount) => {
+          const id = acc.uid || acc.id;
+          const email = (acc.email || '').trim().toLowerCase();
+          const code = (acc.studentCode || '').trim().toUpperCase();
+          return (
+            currentMemberIds.has(id) ||
+            (Boolean(email) && currentMemberEmails.has(email)) ||
+            (Boolean(code) && currentMemberCodes.has(code))
+          );
+        };
+
+        const searchQ = existingStudentSearch.trim().toLowerCase();
+        const filteredDirectory = existingStudentDirectory.filter((acc) => {
+          if (!searchQ) return true;
+          return (
+            (acc.fullName || '').toLowerCase().includes(searchQ) ||
+            (acc.name || '').toLowerCase().includes(searchQ) ||
+            (acc.email || '').toLowerCase().includes(searchQ) ||
+            (acc.username || '').toLowerCase().includes(searchQ) ||
+            (acc.studentCode || '').toLowerCase().includes(searchQ)
+          );
+        });
+
+        const selectableAccounts = filteredDirectory.filter((acc) => !isAlreadyEnrolled(acc));
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-2xl w-full p-5 sm:p-6 shadow-xl border border-slate-200 space-y-4 max-h-[90vh] flex flex-col">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Thêm học sinh vào lớp &quot;{currentClass.name}&quot;
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Chọn tài khoản học sinh có sẵn để vào lớp ngay lập tức, hoặc tạo tài khoản mới.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAddStudentOpen(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0"
+                >
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* 2 Mode Tabs */}
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAddStudentMode('existing')}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                    addStudentMode === 'existing'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <UserCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>Chọn tài khoản có sẵn ({existingStudentDirectory.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddStudentMode('create')}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                    addStudentMode === 'create'
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                  <span>Tạo tài khoản mới</span>
+                </button>
+              </div>
+
+              {addStudentMode === 'existing' ? (
+                <div className="flex-1 min-h-0 flex flex-col space-y-3">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <div className="relative flex-1 min-w-[200px]">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={existingStudentSearch}
+                        onChange={(e) => setExistingStudentSearch(e.target.value)}
+                        placeholder="Tìm theo họ tên, email, @username hoặc SBD..."
+                        className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      />
+                    </div>
+                    {selectableAccounts.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allSelectableIds = selectableAccounts.map((a) => a.uid || a.id);
+                          const allChosen = allSelectableIds.every((id) =>
+                            selectedExistingStudentIds.includes(id)
+                          );
+                          setSelectedExistingStudentIds(allChosen ? [] : allSelectableIds);
+                        }}
+                        className="px-3 py-2 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-xl border border-blue-200 cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        {selectableAccounts.every((a) =>
+                          selectedExistingStudentIds.includes(a.uid || a.id)
+                        )
+                          ? 'Bỏ chọn tất cả'
+                          : `Chọn tất cả (${selectableAccounts.length})`}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-h-[220px] max-h-[340px] overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 bg-slate-50/40">
+                    {isLoadingStudentDirectory && existingStudentDirectory.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-slate-500">
+                        Đang tải danh sách tài khoản học sinh từ Cloud...
+                      </div>
+                    ) : filteredDirectory.length === 0 ? (
+                      <div className="py-10 text-center text-xs text-slate-500 space-y-2 px-4">
+                        <p className="font-semibold text-slate-700">
+                          {existingStudentDirectory.length === 0
+                            ? 'Chưa tìm thấy tài khoản học sinh nào đã đăng ký.'
+                            : 'Không có tài khoản học sinh nào khớp với từ khóa tìm kiếm.'}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setAddStudentMode('create')}
+                          className="px-3 py-1.5 bg-blue-600 text-white font-bold rounded-lg text-xs cursor-pointer"
+                        >
+                          + Chuyển sang Tạo tài khoản mới
+                        </button>
+                      </div>
+                    ) : (
+                      filteredDirectory.map((acc) => {
+                        const accKey = acc.uid || acc.id;
+                        const enrolled = isAlreadyEnrolled(acc);
+                        const checked = selectedExistingStudentIds.includes(accKey);
+
+                        return (
+                          <div
+                            key={accKey}
+                            className={`p-3 flex items-center justify-between gap-3 transition-colors ${
+                              enrolled
+                                ? 'bg-emerald-50/40 opacity-80'
+                                : checked
+                                ? 'bg-blue-50/70'
+                                : 'bg-white hover:bg-slate-50'
+                            }`}
+                          >
+                            <label
+                              className={`flex items-center gap-3 flex-1 min-w-0 ${
+                                enrolled ? 'cursor-default' : 'cursor-pointer'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                disabled={enrolled}
+                                checked={enrolled || checked}
+                                onChange={() => {
+                                  if (enrolled) return;
+                                  setSelectedExistingStudentIds((prev) =>
+                                    prev.includes(accKey)
+                                      ? prev.filter((x) => x !== accKey)
+                                      : [...prev, accKey]
+                                  );
+                                }}
+                                className="w-4 h-4 rounded accent-blue-600 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-bold text-xs text-slate-900 truncate">
+                                    {acc.fullName || acc.name || acc.username}
+                                  </span>
+                                  {acc.studentCode && (
+                                    <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 font-mono text-[10px] font-semibold text-slate-700">
+                                      {acc.studentCode}
+                                    </span>
+                                  )}
+                                  <span className="font-mono text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                                    @{acc.username}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500 truncate mt-0.5">
+                                  {acc.email}
+                                </div>
+                              </div>
+                            </label>
+
+                            {enrolled ? (
+                              <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-bold whitespace-nowrap shrink-0 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>Đã trong lớp</span>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={isAddingExistingStudents}
+                                onClick={() => void handleAddExistingStudents([acc])}
+                                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                              >
+                                + Thêm ngay
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 shrink-0">
+                    <span className="text-[11px] text-slate-500">
+                      Đã chọn <strong className="text-blue-700">{selectedExistingStudentIds.length}</strong> học sinh (tự động vào lớp ngay)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsAddStudentOpen(false)}
+                        className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer whitespace-nowrap"
+                      >
+                        Đóng
+                      </button>
+                      <button
+                        type="button"
+                        disabled={selectedExistingStudentIds.length === 0 || isAddingExistingStudents}
+                        onClick={() => void handleAddExistingStudents()}
+                        className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg cursor-pointer whitespace-nowrap"
+                      >
+                        {isAddingExistingStudents
+                          ? 'Đang thêm...'
+                          : `Thêm ${selectedExistingStudentIds.length} học sinh vào lớp`}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Họ và tên học sinh <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newStudentName}
+                      onChange={(e) => setNewStudentName(e.target.value)}
+                      placeholder="Nhập họ và tên học sinh..."
+                      className="w-full px-3 py-2 text-xs border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Số báo danh / Mã học sinh
+                    </label>
+                    <input
+                      type="text"
+                      value={newStudentCode}
+                      onChange={(e) => setNewStudentCode(e.target.value)}
+                      placeholder="Nhập SBD hoặc mã học sinh..."
+                      className="w-full px-3 py-2 text-xs border rounded-lg font-mono focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Email (Tùy chọn)
+                    </label>
+                    <input
+                      type="email"
+                      value={newStudentEmail}
+                      onChange={(e) => setNewStudentEmail(e.target.value)}
+                      placeholder="Nhập email học sinh..."
+                      className="w-full px-3 py-2 text-xs border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setIsAddStudentOpen(false)}
+                      className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                    >
+                      Hủy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAddStudent}
+                      className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg cursor-pointer"
+                    >
+                      Tạo &amp; Thêm vào lớp
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Sticky Bottom Action Bar with In-Place Save */}
       <div className="sticky bottom-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 py-3 px-4 sm:px-6 shadow-lg flex items-center justify-between gap-4">

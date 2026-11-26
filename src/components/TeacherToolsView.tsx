@@ -16,10 +16,15 @@ import {
   saveScoreboard,
   deleteScoreboard,
   saveCustomExam,
+  markDirtyCloudEntity,
   triggerCloudSync,
   isExamHiddenFromStudents,
   isMasterAdminUser,
 } from '../utils/storage';
+import {
+  patchExamFieldsInFirestore,
+  patchScoreboardFieldsInFirestore,
+} from '../utils/firebase';
 import { ConfirmModal } from './ConfirmModal';
 import { UnsavedChangesModal, UnsavedNavigationGuard } from './UnsavedChangesModal';
 import {
@@ -480,8 +485,13 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
       specialMode: mode,
       updatedAt: new Date().toISOString(),
     };
-    saveScoreboard(updated);
-    void triggerCloudSync();
+    saveScoreboard(updated, { skipCloudSync: true });
+    void patchScoreboardFieldsInFirestore(updated.id, { specialMode: mode }).then((ok) => {
+      if (!ok) {
+        markDirtyCloudEntity('scoreboards', updated.id);
+        void triggerCloudSync();
+      }
+    });
     setScoreboards(getAllScoreboards());
     setUseRevealedLeaderboard(mode === 'presenting');
     if (mode === 'presenting') {
@@ -526,8 +536,13 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
       participants: updatedParticipants,
       updatedAt: new Date().toISOString(),
     };
-    saveScoreboard(updated);
-    void triggerCloudSync();
+    saveScoreboard(updated, { skipCloudSync: true });
+    void patchScoreboardFieldsInFirestore(updated.id, { participants: updatedParticipants }).then((ok) => {
+      if (!ok) {
+        markDirtyCloudEntity('scoreboards', updated.id);
+        void triggerCloudSync();
+      }
+    });
     setScoreboards(getAllScoreboards());
     return updated;
   };
@@ -559,8 +574,13 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
       participants: updatedParticipants,
       updatedAt: new Date().toISOString(),
     };
-    saveScoreboard(updated);
-    void triggerCloudSync();
+    saveScoreboard(updated, { skipCloudSync: true });
+    void patchScoreboardFieldsInFirestore(updated.id, { participants: updatedParticipants }).then((ok) => {
+      if (!ok) {
+        markDirtyCloudEntity('scoreboards', updated.id);
+        void triggerCloudSync();
+      }
+    });
     setScoreboards(getAllScoreboards());
     flashNotice('Đã lưu toàn bộ điểm các phần thi!');
   };
@@ -660,8 +680,13 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
         specialMode: 'presenting',
         updatedAt: new Date().toISOString(),
       };
-      saveScoreboard(syncedBoard);
-      void triggerCloudSync();
+      saveScoreboard(syncedBoard, { skipCloudSync: true });
+      void patchScoreboardFieldsInFirestore(syncedBoard.id, { specialMode: 'presenting' }).then((ok) => {
+        if (!ok) {
+          markDirtyCloudEntity('scoreboards', syncedBoard.id);
+          void triggerCloudSync();
+        }
+      });
       setScoreboards(getAllScoreboards());
     }
 
@@ -727,8 +752,13 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
         participants: updatedParticipants,
         updatedAt: nowIso,
       };
-      saveScoreboard(finalBoard);
-      void triggerCloudSync();
+      saveScoreboard(finalBoard, { skipCloudSync: true });
+      void patchScoreboardFieldsInFirestore(finalBoard.id, { participants: updatedParticipants }).then((ok) => {
+        if (!ok) {
+          markDirtyCloudEntity('scoreboards', finalBoard.id);
+          void triggerCloudSync();
+        }
+      });
       setScoreboards(getAllScoreboards());
       setRollingParticipantId(null);
       revealTimeoutRef.current = null;
@@ -743,19 +773,25 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
     }
     stopRevealAudio();
     captureRowRects();
+    const updatedParticipants = selectedBoard.participants.map((p) => ({
+      ...p,
+      revealedScores: {},
+      lastAnnouncedRoundId: undefined,
+      lastAnnouncedDelta: undefined,
+      lastAnnouncedAt: undefined,
+    }));
     const updated: Scoreboard = {
       ...selectedBoard,
-      participants: selectedBoard.participants.map((p) => ({
-        ...p,
-        revealedScores: {},
-        lastAnnouncedRoundId: undefined,
-        lastAnnouncedDelta: undefined,
-        lastAnnouncedAt: undefined,
-      })),
+      participants: updatedParticipants,
       updatedAt: new Date().toISOString(),
     };
-    saveScoreboard(updated);
-    void triggerCloudSync();
+    saveScoreboard(updated, { skipCloudSync: true });
+    void patchScoreboardFieldsInFirestore(updated.id, { participants: updatedParticipants }).then((ok) => {
+      if (!ok) {
+        markDirtyCloudEntity('scoreboards', updated.id);
+        void triggerCloudSync();
+      }
+    });
     setScoreboards(getAllScoreboards());
     setSpotlightParticipantId(null);
     setUseRevealedLeaderboard(true);
@@ -794,8 +830,22 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
       visibility: nextVisibility,
       updatedAt: new Date().toISOString(),
     };
-    saveCustomExam(updated);
-    void triggerCloudSync();
+    void patchExamFieldsInFirestore(updated.id, {
+      teacherMode: mode,
+      isCreatorOnlyMode: isCreator,
+      visibility: nextVisibility,
+    }).then((patched) => {
+      if (!patched) {
+        saveCustomExam(updated);
+      } else {
+        try {
+          const raw = localStorage.getItem('edutest_custom_exams_v1');
+          const list: Exam[] = raw ? JSON.parse(raw) : [];
+          const next = [updated, ...list.filter((e) => e.id !== updated.id)];
+          localStorage.setItem('edutest_custom_exams_v1', JSON.stringify(next));
+        } catch {}
+      }
+    });
     if (onExamsChanged) onExamsChanged();
     flashNotice(
       isCreator

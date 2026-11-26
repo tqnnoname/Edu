@@ -219,7 +219,8 @@ service cloud.firestore {
     function isValidCourse(data) {
       return data.keys().hasAll(['id', 'title', 'subject', 'visibility', 'status', 'creatorUid', 'creatorEmail', 'updatedAt'])
         && data.keys().hasOnly([
-          'id', 'title', 'subject', 'grade', 'description', 'instructor', 'chapters', 'lessons',
+          'id', 'title', 'subject', 'grade', 'description', 'coverImageUrl', 'inlineImages', 'instructor',
+          'schemaVersion', 'chapterCount', 'lessonCount', 'chapterIndex', 'chapters', 'lessons',
           'finalExamId', 'finalExamTitle', 'status', 'openTime', 'closeTime',
           'visibility', 'assignedClassId', 'assignedClassName', 'allowedEmails',
           'creatorId', 'creatorUid', 'creatorEmail', 'creatorName',
@@ -230,7 +231,13 @@ service cloud.firestore {
         && isValidString(data.subject, 1, 64)
         && (!('grade' in data) || isValidString(data.grade, 0, 64))
         && (!('description' in data) || isValidString(data.description, 0, 4000))
+        && (!('coverImageUrl' in data) || isValidString(data.coverImageUrl, 0, 2000))
+        && (!('inlineImages' in data) || data.inlineImages is map)
         && (!('instructor' in data) || isValidString(data.instructor, 0, 150))
+        && (!('schemaVersion' in data) || (data.schemaVersion is number && data.schemaVersion >= 1 && data.schemaVersion <= 20))
+        && (!('chapterCount' in data) || (data.chapterCount is number && data.chapterCount >= 0 && data.chapterCount <= 200))
+        && (!('lessonCount' in data) || (data.lessonCount is number && data.lessonCount >= 0 && data.lessonCount <= 1000))
+        && (!('chapterIndex' in data) || isValidMapList(data.chapterIndex, 100))
         && (!('chapters' in data) || isValidMapList(data.chapters, 100))
         && (!('lessons' in data) || isValidMapList(data.lessons, 200))
         && (!('finalExamId' in data) || isValidString(data.finalExamId, 0, 128))
@@ -249,6 +256,88 @@ service cloud.firestore {
         && (!('isScormEnabled' in data) || data.isScormEnabled is bool)
         && (!('scormVersion' in data) || data.scormVersion in ['1.2', '2004'])
         && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourseChapter(data, courseId) {
+      return data.keys().hasAll(['id', 'courseId', 'title', 'order', 'creatorUid', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'courseId', 'title', 'description', 'inlineImages', 'order',
+          'lessonIds', 'chapterExamId', 'chapterExamTitle',
+          'creatorUid', 'creatorEmail', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.courseId == courseId
+        && isValidString(data.title, 1, 300)
+        && (!('description' in data) || isValidString(data.description, 0, 4000))
+        && (!('inlineImages' in data) || data.inlineImages is map)
+        && data.order is number
+        && (!('lessonIds' in data) || isValidStringList(data.lessonIds, 200))
+        && (!('chapterExamId' in data) || isValidString(data.chapterExamId, 0, 128))
+        && (!('chapterExamTitle' in data) || isValidString(data.chapterExamTitle, 0, 300))
+        && isValidString(data.creatorUid, 1, 128)
+        && (!('creatorEmail' in data) || isValidString(data.creatorEmail, 3, 180))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourseLesson(data, courseId) {
+      return data.keys().hasAll(['id', 'courseId', 'chapterId', 'title', 'order', 'creatorUid', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'courseId', 'chapterId', 'title', 'order', 'durationMinutes', 'summary',
+          'contentMarkdown', 'inlineImages', 'sections', 'attachments', 'blockIds',
+          'practiceExamId', 'practiceExamTitle', 'homework',
+          'creatorUid', 'creatorEmail', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.courseId == courseId
+        && isValidString(data.chapterId, 1, 128)
+        && isValidString(data.title, 1, 300)
+        && data.order is number
+        && (!('durationMinutes' in data) || (data.durationMinutes is number && data.durationMinutes >= 0 && data.durationMinutes <= 10000))
+        && (!('summary' in data) || isValidString(data.summary, 0, 20000))
+        && (!('contentMarkdown' in data) || isValidString(data.contentMarkdown, 0, 100000))
+        && (!('inlineImages' in data) || data.inlineImages is map)
+        && (!('sections' in data) || isValidMapList(data.sections, 100))
+        && (!('attachments' in data) || isValidMapList(data.attachments, 40))
+        && (!('blockIds' in data) || isValidStringList(data.blockIds, 300))
+        && (!('practiceExamId' in data) || isValidString(data.practiceExamId, 0, 128))
+        && (!('practiceExamTitle' in data) || isValidString(data.practiceExamTitle, 0, 300))
+        && (!('homework' in data) || data.homework is map)
+        && isValidString(data.creatorUid, 1, 128)
+        && (!('creatorEmail' in data) || isValidString(data.creatorEmail, 3, 180))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourseBlock(data, courseId) {
+      return data.keys().hasAll(['id', 'courseId', 'chapterId', 'lessonId', 'type', 'order', 'creatorUid', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'courseId', 'chapterId', 'lessonId', 'order', 'type', 'sectionId', 'title',
+          'contentMarkdown', 'imageUrl', 'caption', 'inlineImages', 'calloutType',
+          'attachments', 'question', 'practiceExamId', 'practiceExamTitle',
+          'creatorUid', 'creatorEmail', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.courseId == courseId
+        && isValidString(data.chapterId, 1, 128)
+        && isValidString(data.lessonId, 1, 128)
+        && data.order is number
+        && data.type in ['theory', 'question', 'callout', 'image', 'file', 'practice_link']
+        && (!('sectionId' in data) || isValidString(data.sectionId, 0, 128))
+        && (!('title' in data) || isValidString(data.title, 0, 300))
+        && (!('contentMarkdown' in data) || isValidString(data.contentMarkdown, 0, 100000))
+        && (!('imageUrl' in data) || isValidString(data.imageUrl, 0, 2000))
+        && (!('caption' in data) || isValidString(data.caption, 0, 1000))
+        && (!('inlineImages' in data) || data.inlineImages is map)
+        && (!('calloutType' in data) || data.calloutType in ['info', 'tip', 'warning', 'formula'])
+        && (!('attachments' in data) || isValidMapList(data.attachments, 40))
+        && (!('question' in data) || data.question is map)
+        && (!('practiceExamId' in data) || isValidString(data.practiceExamId, 0, 128))
+        && (!('practiceExamTitle' in data) || isValidString(data.practiceExamTitle, 0, 300))
+        && isValidString(data.creatorUid, 1, 128)
+        && (!('creatorEmail' in data) || isValidString(data.creatorEmail, 3, 180))
         && (!('createdAt' in data) || data.createdAt is timestamp)
         && data.updatedAt is timestamp;
     }
@@ -326,7 +415,7 @@ service cloud.firestore {
           'earnedPoints', 'totalPoints', 'scoreOnTenScale', 'score', 'percentage',
           'correctCount', 'partialCount', 'wrongCount', 'skippedCount', 'totalQuestions',
           'timeSpentSeconds', 'totalDurationSeconds', 'completedAt', 'examCode',
-          'submissionReason', 'tabSwitchCount', 'answers', 'questions', 'scoreDetails',
+          'submissionReason', 'tabSwitchCount', 'answers', 'inlineImages', 'questions', 'scoreDetails',
           'topicBreakdown', 'partBreakdowns', 'showScoreAfterExam', 'showAnswersAfterExam',
           'showOnlyStudentAnswersAfterExam', 'createdAt', 'updatedAt'
         ])
@@ -350,6 +439,7 @@ service cloud.firestore {
         && (!('examCode' in data) || isValidString(data.examCode, 0, 32))
         && (!('submissionReason' in data) || isValidString(data.submissionReason, 0, 500))
         && (!('answers' in data) || data.answers is map)
+        && (!('inlineImages' in data) || data.inlineImages is map)
         && (!('questions' in data) || isValidMapList(data.questions, 300))
         && (!('scoreDetails' in data) || data.scoreDetails is map)
         && (!('topicBreakdown' in data) || data.topicBreakdown is map)
@@ -388,7 +478,7 @@ service cloud.firestore {
     function isValidClassroomHomework(data) {
       return data.keys().hasAll(['id', 'classId', 'title', 'teacherUid', 'teacherEmail', 'updatedAt'])
         && data.keys().hasOnly([
-          'id', 'classId', 'title', 'instructions', 'attachments', 'openTime', 'closeTime',
+          'id', 'classId', 'title', 'instructions', 'inlineImages', 'attachments', 'openTime', 'closeTime',
           'maxScore', 'createdBy', 'teacherUid', 'teacherEmail', 'allowedEmails',
           'createdAtStr', 'createdAt', 'updatedAt'
         ])
@@ -396,6 +486,7 @@ service cloud.firestore {
         && isValidString(data.classId, 1, 128)
         && isValidString(data.title, 1, 300)
         && (!('instructions' in data) || isValidString(data.instructions, 0, 20000))
+        && (!('inlineImages' in data) || data.inlineImages is map)
         && (!('attachments' in data) || isValidMapList(data.attachments, 20))
         && (!('openTime' in data) || isValidString(data.openTime, 0, 64))
         && (!('closeTime' in data) || isValidString(data.closeTime, 0, 64))
@@ -414,7 +505,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'classId', 'homeworkId', 'homeworkTitle', 'courseId', 'courseTitle',
           'lessonId', 'lessonTitle', 'studentUid', 'studentId', 'studentName', 'studentEmail',
-          'studentCode', 'teacherEmail', 'imageUrls', 'attachments', 'textAnswer', 'note',
+          'studentCode', 'teacherEmail', 'imageUrls', 'attachments', 'textAnswer', 'inlineImages', 'note',
           'submittedAt', 'score', 'maxScore', 'teacherFeedback', 'gradedAt', 'gradedBy',
           'createdAt', 'updatedAt'
         ])
@@ -435,6 +526,7 @@ service cloud.firestore {
         && isValidStringList(data.imageUrls, 20)
         && (!('attachments' in data) || isValidMapList(data.attachments, 20))
         && (!('textAnswer' in data) || isValidString(data.textAnswer, 0, 50000))
+        && (!('inlineImages' in data) || data.inlineImages is map)
         && (!('note' in data) || isValidString(data.note, 0, 2000))
         && isValidString(data.submittedAt, 1, 64)
         && (!('score' in data) || data.score is number)
@@ -540,6 +632,139 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidUserCredentialVault(data) {
+      return data.keys().hasAll(['id', 'uid', 'email', 'username', 'fullName', 'role', 'teacherEmails', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'uid', 'email', 'username', 'fullName', 'studentCode', 'role',
+          'isMasterAdmin', 'school', 'classId', 'teacherEmails', 'visiblePassword',
+          'isGoogleAuth', 'pendingActivation', 'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.uid, 1, 128)
+        && isValidString(data.email, 3, 180)
+        && isValidString(data.username, 1, 100)
+        && isValidString(data.fullName, 1, 150)
+        && (!('studentCode' in data) || isValidString(data.studentCode, 0, 60))
+        && data.role in ['student', 'teacher']
+        && (!('isMasterAdmin' in data) || data.isMasterAdmin is bool)
+        && (!('school' in data) || isValidString(data.school, 0, 200))
+        && (!('classId' in data) || isValidString(data.classId, 0, 128))
+        && isValidStringList(data.teacherEmails, 100)
+        && (!('visiblePassword' in data) || isValidString(data.visiblePassword, 0, 128))
+        && (!('isGoogleAuth' in data) || data.isGoogleAuth is bool)
+        && (!('pendingActivation' in data) || data.pendingActivation is bool)
+        && (!('createdAtStr' in data) || isValidString(data.createdAtStr, 0, 64))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGameRoomCode(code) {
+      return code is string && code.matches('^[A-Z0-9]{6}$');
+    }
+
+    function isValidGameRoom(data) {
+      return data.keys().hasAll(['id', 'code', 'hostUid', 'hostName', 'hostIsSpectator', 'status', 'config', 'questions', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'code', 'hostUid', 'hostName', 'hostEmail', 'hostIsSpectator',
+          'status', 'config', 'questions', 'startedAtMs', 'endsAtMs',
+          'finishedAtMs', 'finishReason', 'createdAt', 'updatedAt'
+        ])
+        && isValidGameRoomCode(data.id)
+        && isValidGameRoomCode(data.code)
+        && isValidString(data.hostUid, 1, 128)
+        && isValidString(data.hostName, 1, 100)
+        && (!('hostEmail' in data) || isValidString(data.hostEmail, 0, 180))
+        && data.hostIsSpectator is bool
+        && data.status in ['WAITING', 'PLAYING', 'FINISHED']
+        && data.config is map
+        && isValidMapList(data.questions, 60)
+        && (!('startedAtMs' in data) || data.startedAtMs is number)
+        && (!('endsAtMs' in data) || data.endsAtMs is number)
+        && (!('finishedAtMs' in data) || data.finishedAtMs is number)
+        && (!('finishReason' in data) || isValidString(data.finishReason, 0, 120))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGameRoomPlayer(data) {
+      return data.keys().hasAll([
+          'id', 'uid', 'roomCode', 'name', 'petId', 'isHost',
+          'stageIndex', 'score', 'lives',
+          'correctQuestionsCount', 'wrongQuestionsCount',
+          'totalCorrectAttempts', 'totalWrongAttempts',
+          'finished', 'eliminated', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'uid', 'roomCode', 'name', 'petId', 'isHost',
+          'stageIndex', 'score', 'lives',
+          'correctQuestionsCount', 'wrongQuestionsCount',
+          'totalCorrectAttempts', 'totalWrongAttempts',
+          'correctQuestionIds', 'wrongQuestionIds',
+          'bonusTimeSec', 'cooldownUntilMs', 'questionStartedAtMs',
+          'lastAnsweredAtMs', 'finished', 'eliminated',
+          'finishedAtMs', 'joinedAtMs', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.uid, 1, 128)
+        && isValidGameRoomCode(data.roomCode)
+        && isValidString(data.name, 2, 20)
+        && isValidString(data.petId, 1, 40)
+        && data.isHost is bool
+        && data.stageIndex is number && data.stageIndex >= 0 && data.stageIndex <= 100
+        && data.score is number && data.score >= 0 && data.score <= 1000000
+        && data.lives is number && data.lives >= 0 && data.lives <= 50
+        && data.correctQuestionsCount is number && data.correctQuestionsCount >= 0 && data.correctQuestionsCount <= 200
+        && data.wrongQuestionsCount is number && data.wrongQuestionsCount >= 0 && data.wrongQuestionsCount <= 200
+        && data.totalCorrectAttempts is number && data.totalCorrectAttempts >= 0 && data.totalCorrectAttempts <= 2000
+        && data.totalWrongAttempts is number && data.totalWrongAttempts >= 0 && data.totalWrongAttempts <= 2000
+        && (!('correctQuestionIds' in data) || isValidStringList(data.correctQuestionIds, 200))
+        && (!('wrongQuestionIds' in data) || isValidStringList(data.wrongQuestionIds, 200))
+        && (!('bonusTimeSec' in data) || data.bonusTimeSec is number)
+        && (!('cooldownUntilMs' in data) || data.cooldownUntilMs is number)
+        && (!('questionStartedAtMs' in data) || data.questionStartedAtMs is number)
+        && (!('lastAnsweredAtMs' in data) || data.lastAnsweredAtMs is number)
+        && data.finished is bool
+        && data.eliminated is bool
+        && (!('finishedAtMs' in data) || data.finishedAtMs is number)
+        && (!('joinedAtMs' in data) || data.joinedAtMs is number)
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'message', 'category', 'targetType',
+          'recipientScope', 'senderUid', 'senderName', 'senderEmail',
+          'createdAtStr', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'title', 'message', 'category', 'targetType',
+          'targetId', 'secondaryId', 'targetLabel', 'classId', 'className',
+          'actionPath', 'recipientScope', 'recipientEmails',
+          'senderUid', 'senderName', 'senderEmail',
+          'createdAtStr', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.title, 1, 200)
+        && isValidString(data.message, 1, 1000)
+        && data.category in ['exam', 'bundle', 'course', 'homework', 'grade', 'classroom', 'game', 'teacher_request', 'system']
+        && data.targetType in ['none', 'exam', 'bundle', 'course', 'classroom', 'homework', 'grade', 'classroom_requests', 'game_room', 'teacher_requests']
+        && (!('targetId' in data) || isValidString(data.targetId, 0, 128))
+        && (!('secondaryId' in data) || isValidString(data.secondaryId, 0, 128))
+        && (!('targetLabel' in data) || isValidString(data.targetLabel, 0, 200))
+        && (!('classId' in data) || isValidString(data.classId, 0, 128))
+        && (!('className' in data) || isValidString(data.className, 0, 200))
+        && (!('actionPath' in data) || isValidString(data.actionPath, 0, 300))
+        && data.recipientScope in ['all', 'teachers', 'students', 'class', 'user']
+        && (!('recipientEmails' in data) || isValidStringList(data.recipientEmails, 500))
+        && isValidString(data.senderUid, 1, 128)
+        && isValidString(data.senderName, 1, 150)
+        && isValidString(data.senderEmail, 3, 180)
+        && isValidString(data.createdAtStr, 1, 64)
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
     // 4. Collection Match Rules
 
     // Connection Probe
@@ -604,6 +829,70 @@ service cloud.firestore {
       }
     }
 
+    // Strictly Access-Controlled Cross-Device Credential Vault (Owner, Assigned Class Teachers, Master Admin only)
+    match /userCredentials/{credId} {
+      allow get, list: if isSignedIn() && (
+        isAdmin() ||
+        existing().uid == request.auth.uid ||
+        existing().email == userEmail() ||
+        (userEmail() != '' && 'teacherEmails' in existing() && userEmail() in existing().teacherEmails)
+      );
+      allow create: if isSignedIn()
+        && isValidId(credId)
+        && isValidUserCredentialVault(incoming())
+        && incoming().id == credId
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            incoming().uid == request.auth.uid &&
+            incoming().email == userEmail() &&
+            (!('isMasterAdmin' in incoming()) || incoming().isMasterAdmin == false)
+          ) ||
+          (
+            incoming().role == 'student' &&
+            (!('isMasterAdmin' in incoming()) || incoming().isMasterAdmin == false) &&
+            userEmail() != '' &&
+            userEmail() in incoming().teacherEmails &&
+            'classId' in incoming() &&
+            isValidId(incoming().classId) &&
+            exists(/databases/$(database)/documents/classrooms/$(incoming().classId)) &&
+            get(/databases/$(database)/documents/classrooms/$(incoming().classId)).data.teacherEmail == userEmail()
+          )
+        );
+      allow update: if isSignedIn()
+        && isValidId(credId)
+        && isValidUserCredentialVault(incoming())
+        && incoming().id == existing().id
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          (
+            (credId == request.auth.uid || existing().uid == request.auth.uid || existing().email == userEmail()) &&
+            incoming().email == existing().email &&
+            (!('isMasterAdmin' in incoming()) || !('isMasterAdmin' in existing()) || incoming().isMasterAdmin == existing().isMasterAdmin) &&
+            (incoming().role == existing().role || existing().role == 'teacher')
+          ) ||
+          (
+            existing().role == 'student' &&
+            incoming().role == 'student' &&
+            (!('isMasterAdmin' in incoming()) || incoming().isMasterAdmin == false) &&
+            userEmail() != '' &&
+            (
+              ('teacherEmails' in existing() && userEmail() in existing().teacherEmails) ||
+              (
+                'classId' in incoming() &&
+                isValidId(incoming().classId) &&
+                exists(/databases/$(database)/documents/classrooms/$(incoming().classId)) &&
+                get(/databases/$(database)/documents/classrooms/$(incoming().classId)).data.teacherEmail == userEmail() &&
+                userEmail() in incoming().teacherEmails
+              )
+            )
+          )
+        );
+      allow delete: if isAdmin();
+    }
+
     // Exams
     match /exams/{examId} {
       allow get, list: if isSignedIn() || existing().visibility in ['public', 'bundle_only', 'exam_only'];
@@ -662,8 +951,19 @@ service cloud.firestore {
       );
     }
 
-    // Courses
+    // Courses & Subcollections
     match /courses/{courseId} {
+      function isParentCourseManager() {
+        return isAdmin() ||
+          get(/databases/$(database)/documents/courses/$(courseId)).data.creatorUid == request.auth.uid ||
+          get(/databases/$(database)/documents/courses/$(courseId)).data.creatorEmail == userEmail();
+      }
+
+      function canReadParentCourse() {
+        return isSignedIn() ||
+          get(/databases/$(database)/documents/courses/$(courseId)).data.visibility == 'public';
+      }
+
       allow get, list: if isSignedIn() || existing().visibility == 'public';
       allow create: if isSignedIn()
         && isValidId(courseId)
@@ -684,6 +984,51 @@ service cloud.firestore {
         existing().creatorUid == request.auth.uid ||
         existing().creatorEmail == userEmail()
       );
+
+      match /chapters/{chapterId} {
+        allow get, list: if canReadParentCourse();
+        allow create: if isSignedIn()
+          && isValidId(chapterId)
+          && isValidCourseChapter(incoming(), courseId)
+          && incoming().updatedAt == request.time
+          && isParentCourseManager();
+        allow update: if isSignedIn()
+          && isValidId(chapterId)
+          && isValidCourseChapter(incoming(), courseId)
+          && isValidUpdateTimestamp(incoming())
+          && isParentCourseManager();
+        allow delete: if isSignedIn() && isValidId(chapterId) && isParentCourseManager();
+      }
+
+      match /lessons/{lessonId} {
+        allow get, list: if canReadParentCourse();
+        allow create: if isSignedIn()
+          && isValidId(lessonId)
+          && isValidCourseLesson(incoming(), courseId)
+          && incoming().updatedAt == request.time
+          && isParentCourseManager();
+        allow update: if isSignedIn()
+          && isValidId(lessonId)
+          && isValidCourseLesson(incoming(), courseId)
+          && isValidUpdateTimestamp(incoming())
+          && isParentCourseManager();
+        allow delete: if isSignedIn() && isValidId(lessonId) && isParentCourseManager();
+      }
+
+      match /blocks/{blockId} {
+        allow get, list: if canReadParentCourse();
+        allow create: if isSignedIn()
+          && isValidId(blockId)
+          && isValidCourseBlock(incoming(), courseId)
+          && incoming().updatedAt == request.time
+          && isParentCourseManager();
+        allow update: if isSignedIn()
+          && isValidId(blockId)
+          && isValidCourseBlock(incoming(), courseId)
+          && isValidUpdateTimestamp(incoming())
+          && isParentCourseManager();
+        allow delete: if isSignedIn() && isValidId(blockId) && isParentCourseManager();
+      }
     }
 
     // Classrooms & Join Requests
@@ -963,6 +1308,101 @@ service cloud.firestore {
         isAdmin() ||
         existing().creatorUid == request.auth.uid ||
         existing().creatorEmail == userEmail()
+      );
+    }
+
+    // Mountain Climb Interactive Quiz Game Rooms
+    match /gameRooms/{roomCode} {
+      allow get: if isSignedIn() && isValidGameRoomCode(roomCode);
+      allow list: if isSignedIn() && (isAdmin() || existing().hostUid == request.auth.uid);
+      allow create: if isSignedIn()
+        && isValidGameRoomCode(roomCode)
+        && isValidGameRoom(incoming())
+        && incoming().id == roomCode
+        && incoming().code == roomCode
+        && incoming().status == 'WAITING'
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().hostUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidGameRoomCode(roomCode)
+        && isValidGameRoom(incoming())
+        && incoming().id == existing().id
+        && incoming().code == existing().code
+        && incoming().hostUid == existing().hostUid
+        && isValidUpdateTimestamp(incoming())
+        && (
+          isAdmin() ||
+          existing().hostUid == request.auth.uid ||
+          (
+            existing().status == 'PLAYING' &&
+            incoming().status == 'FINISHED' &&
+            incoming().config == existing().config &&
+            incoming().questions == existing().questions &&
+            incoming().hostIsSpectator == existing().hostIsSpectator
+          )
+        );
+      allow delete: if isSignedIn() && isValidGameRoomCode(roomCode) && (
+        isAdmin() ||
+        existing().hostUid == request.auth.uid
+      );
+
+      match /players/{playerId} {
+        allow get, list: if isSignedIn() && isValidGameRoomCode(roomCode);
+        allow create: if isSignedIn()
+          && isValidGameRoomCode(roomCode)
+          && isValidId(playerId)
+          && isValidGameRoomPlayer(incoming())
+          && incoming().id == playerId
+          && incoming().roomCode == roomCode
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/gameRooms/$(roomCode))
+          && get(/databases/$(database)/documents/gameRooms/$(roomCode)).data.status == 'WAITING'
+          && (isAdmin() || incoming().uid == request.auth.uid);
+        allow update: if isSignedIn()
+          && isValidGameRoomCode(roomCode)
+          && isValidId(playerId)
+          && isValidGameRoomPlayer(incoming())
+          && incoming().id == existing().id
+          && incoming().roomCode == existing().roomCode
+          && incoming().uid == existing().uid
+          && isValidUpdateTimestamp(incoming())
+          && (
+            isAdmin() ||
+            existing().uid == request.auth.uid ||
+            get(/databases/$(database)/documents/gameRooms/$(roomCode)).data.hostUid == request.auth.uid
+          );
+        allow delete: if isSignedIn() && isValidGameRoomCode(roomCode) && isValidId(playerId) && (
+          isAdmin() ||
+          existing().uid == request.auth.uid ||
+          get(/databases/$(database)/documents/gameRooms/$(roomCode)).data.hostUid == request.auth.uid
+        );
+      }
+    }
+
+    // In-App Notifications with Deep-Link Targets
+    match /notifications/{notificationId} {
+      allow get, list: if isSignedIn() && (
+        isAdmin() ||
+        existing().senderUid == request.auth.uid ||
+        existing().recipientScope in ['all', 'teachers', 'students'] ||
+        (hasEmail() && 'recipientEmails' in existing() && userEmail() in existing().recipientEmails)
+      );
+      allow create: if isSignedIn()
+        && isValidId(notificationId)
+        && isValidNotification(incoming())
+        && incoming().id == notificationId
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().senderUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(notificationId)
+        && isValidNotification(incoming())
+        && incoming().id == existing().id
+        && incoming().senderUid == existing().senderUid
+        && isValidUpdateTimestamp(incoming())
+        && (isAdmin() || existing().senderUid == request.auth.uid);
+      allow delete: if isSignedIn() && isValidId(notificationId) && (
+        isAdmin() ||
+        existing().senderUid == request.auth.uid
       );
     }
   }

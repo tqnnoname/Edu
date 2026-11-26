@@ -24,16 +24,32 @@ import {
 import { PRESET_EXAMS, PRESET_BUNDLES, SAMPLE_DEMO_EXAM } from '../data/presetExams';
 import {
   clearCloudSyncCursor,
+  clearCoursesFromCloudTombstones,
+  computeStudentTeacherEmails,
+  DirtyPushScope,
+  fetchAllUsersAndCredentialsFromFirestore,
+  fetchLiveUsersForDirectoryFromFirestore,
+  fetchTeacherStudentCredentialsFromFirestore,
+  FirestoreSyncSnapshot,
   getFirebaseAuthProviderIds,
   getFirebaseAuthUser,
+  invalidateCourseDetailsCache,
+  isCourseLegacyOrBloated,
+  linkExistingStudentToTeacherCredentialsFirestore,
   linkGoogleAccountFirebase,
+  loadCourseFullDetailsFromFirestore,
   lookupClassroomCodeInFirestore,
+  migrateLegacyCourseToSubcollections,
+  patchHomeworkSubmissionGradeInFirestore,
+  provisionOrUpdateStudentFirebaseAuth,
   pullAuthenticatedDataFromFirestore,
   pullPublicDataFromFirestore,
   pushAuthorizedDataToFirestore,
   resolveEmailByIdentifierInFirestore,
   resolveOrCreateUnifiedUserProfile,
   safeDeleteFirestoreDoc,
+  sanitizeDocId,
+  scanRecoverableCloudCourses,
   sendPasswordResetEmailFirebase,
   signInWithEmailPasswordFirebase,
   signInWithGooglePopup,
@@ -41,7 +57,9 @@ import {
   signUpWithEmailPasswordFirebase,
   submitJoinRequestToFirestore,
   syncJoinRequestDecisionToFirestore,
+  syncSingleClassroomToFirestoreNow,
   syncSingleExamToFirestoreNow,
+  syncUserCredentialToFirestore,
   updatePasswordFirebase,
 } from './firebase';
 
@@ -315,6 +333,7 @@ export function getCandidateProfile(): CandidateProfile {
 export function saveCandidateProfile(profile: CandidateProfile): void {
   try {
     localStorage.setItem(STORAGE_KEY_CANDIDATE_PROFILE, JSON.stringify(profile));
+    markDirtyUserProfile();
     scheduleCloudSync();
   } catch (err) {
     console.error('Error saving candidate profile', err);
@@ -436,6 +455,7 @@ export function deleteAllExams(): void {
     const curr = getDeletedExamIds();
     const updated = Array.from(new Set([...curr, ...allPresetIds]));
     localStorage.setItem(STORAGE_KEY_DELETED_EXAMS, JSON.stringify(updated));
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error deleting all exams', err);
@@ -444,7 +464,11 @@ export function deleteAllExams(): void {
 
 export function saveCustomExam(newExam: Exam): void {
   try {
-    removeDeletedIdByKey(STORAGE_KEY_DELETED_EXAMS, newExam.id);
+    const wasDeleted = getDeletedExamIds().includes(newExam.id);
+    if (wasDeleted) {
+      removeDeletedIdByKey(STORAGE_KEY_DELETED_EXAMS, newExam.id);
+      markDirtySiteConfig('tombstones');
+    }
     const curUser = getCurrentUser();
     const stampedExam: Exam = {
       ...newExam,
@@ -458,8 +482,18 @@ export function saveCustomExam(newExam: Exam): void {
     const customExams: Exam[] = raw ? JSON.parse(raw) : [];
     const updated = [stampedExam, ...customExams.filter((e) => e.id !== stampedExam.id)];
     localStorage.setItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(updated));
-    void syncSingleExamToFirestoreNow(stampedExam, getAllClassrooms(), curUser);
-    scheduleCloudSync();
+    if (getFirebaseAuthUser()) {
+      void syncSingleExamToFirestoreNow(stampedExam, getAllClassrooms(), curUser);
+      try {
+        saveSnapshotToIndexedDB(buildFullSyncPayload());
+      } catch {}
+      if (wasDeleted) {
+        scheduleCloudSync();
+      }
+    } else {
+      markDirtyCloudEntity('exams', stampedExam.id);
+      scheduleCloudSync();
+    }
   } catch (err) {
     console.error('Error saving custom exam', err);
   }
@@ -477,6 +511,7 @@ export function deleteCustomExam(examId: string): void {
       localStorage.setItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(updated));
     }
     void safeDeleteFirestoreDoc('exams', examId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error deleting custom exam', err);
@@ -510,7 +545,11 @@ export function getBundleByCode(code: string): ExamBundle | undefined {
 
 export function saveCustomBundle(newBundle: ExamBundle): void {
   try {
-    removeDeletedIdByKey(STORAGE_KEY_DELETED_BUNDLES, newBundle.id);
+    const wasDeleted = getDeletedBundleIds().includes(newBundle.id);
+    if (wasDeleted) {
+      removeDeletedIdByKey(STORAGE_KEY_DELETED_BUNDLES, newBundle.id);
+      markDirtySiteConfig('tombstones');
+    }
     const curUser = getCurrentUser();
     const stampedBundle: ExamBundle = {
       ...newBundle,
@@ -524,6 +563,7 @@ export function saveCustomBundle(newBundle: ExamBundle): void {
     const customBundles: ExamBundle[] = raw ? JSON.parse(raw) : [];
     const updated = [stampedBundle, ...customBundles.filter((b) => b.id !== stampedBundle.id)];
     localStorage.setItem(STORAGE_KEY_CUSTOM_BUNDLES, JSON.stringify(updated));
+    markDirtyCloudEntity('bundles', stampedBundle.id);
     scheduleCloudSync();
   } catch (err) {
     console.error('Error saving custom bundle', err);
@@ -542,6 +582,7 @@ export function deleteCustomBundle(bundleId: string): void {
       localStorage.setItem(STORAGE_KEY_CUSTOM_BUNDLES, JSON.stringify(updated));
     }
     void safeDeleteFirestoreDoc('bundles', bundleId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error deleting custom bundle', err);
@@ -563,13 +604,18 @@ export function getExamResults(): ExamResult[] {
 
 export function saveExamResult(result: ExamResult): void {
   try {
-    removeDeletedIdByKey(STORAGE_KEY_DELETED_RESULTS, result.id);
+    const wasDeleted = getDeletedResultIds().includes(result.id);
+    if (wasDeleted) {
+      removeDeletedIdByKey(STORAGE_KEY_DELETED_RESULTS, result.id);
+      markDirtySiteConfig('tombstones');
+    }
     const stamped: ExamResult = {
       ...result,
       updatedAt: new Date().toISOString(),
     };
     const results = getExamResults();
     localStorage.setItem(STORAGE_KEY_RESULTS, JSON.stringify([stamped, ...results.filter((r) => r.id !== stamped.id)]));
+    markDirtyCloudEntity('results', stamped.id);
     scheduleCloudSync();
   } catch (err) {
     console.error('Error saving exam result', err);
@@ -583,6 +629,7 @@ export function deleteExamResult(resultId: string): void {
     const updated = results.filter((r) => r.id !== resultId);
     localStorage.setItem(STORAGE_KEY_RESULTS, JSON.stringify(updated));
     void safeDeleteFirestoreDoc('results', resultId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error deleting exam result', err);
@@ -594,6 +641,7 @@ export function clearExamResults(): void {
     const existing = getExamResults();
     existing.forEach((r) => addDeletedIdByKey(STORAGE_KEY_DELETED_RESULTS, r.id));
     localStorage.removeItem(STORAGE_KEY_RESULTS);
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error clearing results', err);
@@ -653,7 +701,11 @@ export function getAllSubjects(): CustomSubject[] {
 
 export function saveSubject(subject: CustomSubject): void {
   try {
-    removeDeletedIdByKey(STORAGE_KEY_DELETED_SUBJECTS, subject.id);
+    const wasDeleted = getDeletedSubjectIds().includes(subject.id);
+    if (wasDeleted) {
+      removeDeletedIdByKey(STORAGE_KEY_DELETED_SUBJECTS, subject.id);
+      markDirtySiteConfig('tombstones');
+    }
     const list = getAllSubjects();
     const stamped: CustomSubject = {
       ...subject,
@@ -661,6 +713,7 @@ export function saveSubject(subject: CustomSubject): void {
     };
     const updated = [stamped, ...list.filter((s) => s.id !== subject.id)];
     localStorage.setItem(STORAGE_KEY_CUSTOM_SUBJECTS, JSON.stringify(updated));
+    markDirtySiteConfig('subjects');
     scheduleCloudSync();
   } catch (e) {
     console.error(e);
@@ -673,6 +726,7 @@ export function updateSubjectName(subjectId: string, newName: string): void {
     const list = getAllSubjects();
     const updated = list.map((s) => (s.id === subjectId ? { ...s, name: newName, updatedAt: nowIso } : s));
     localStorage.setItem(STORAGE_KEY_CUSTOM_SUBJECTS, JSON.stringify(updated));
+    markDirtySiteConfig('subjects');
     scheduleCloudSync();
   } catch (e) {
     console.error(e);
@@ -685,6 +739,8 @@ export function deleteSubject(subjectId: string): void {
     const list = getAllSubjects();
     const updated = list.filter((s) => s.id !== subjectId);
     localStorage.setItem(STORAGE_KEY_CUSTOM_SUBJECTS, JSON.stringify(updated));
+    markDirtySiteConfig('subjects');
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
     console.error(e);
@@ -699,7 +755,6 @@ export const DEFAULT_NAV_TABS: NavTabItem[] = [
   { id: 'tab_bundle', label: 'Tổ hợp liên môn', iconName: 'layers', targetView: 'bundle', isDefault: true },
   { id: 'tab_classes', label: 'Lớp học & Xếp hạng', iconName: 'users', targetView: 'classrooms', isDefault: true },
   { id: 'tab_courses', label: 'Khóa học lý thuyết', iconName: 'graduation', targetView: 'courses', isDefault: true },
-  { id: 'tab_battle', label: 'Đấu trường 1v1', iconName: 'swords', targetView: 'battle', badgeText: 'HOT', isDefault: true },
   { id: 'tab_games', label: 'Trò chơi', iconName: 'gamepad', targetView: 'games', badgeText: 'MỚI', isDefault: true },
   { id: 'tab_analytics', label: 'Năng lực cá nhân', iconName: 'chart', targetView: 'analytics', isDefault: true },
   { id: 'tab_history', label: 'Lịch sử thi', iconName: 'clock', targetView: 'history', isDefault: true },
@@ -723,9 +778,9 @@ function injectGamesTabIfNeeded(tabs: NavTabItem[]): { tabs: NavTabItem[]; injec
     return { tabs, injected: false };
   }
   const next = [...tabs];
-  const battleIdx = next.findIndex((t) => t.targetView === 'battle' || t.id === 'tab_battle');
-  if (battleIdx >= 0) {
-    next.splice(battleIdx + 1, 0, DEFAULT_GAMES_TAB);
+  const coursesIdx = next.findIndex((t) => t.targetView === 'courses' || t.id === 'tab_courses');
+  if (coursesIdx >= 0) {
+    next.splice(coursesIdx + 1, 0, DEFAULT_GAMES_TAB);
   } else {
     next.push(DEFAULT_GAMES_TAB);
   }
@@ -742,11 +797,12 @@ export function getNavTabs(): NavTabItem[] {
       return DEFAULT_NAV_TABS;
     }
     const parsed: NavTabItem[] = JSON.parse(raw);
-    // Bỏ cái lập trình thi đấu (oj) và cập nhật tên tab Năng lực cá nhân nếu đang dùng tên cũ
+    // Bỏ lập trình thi đấu (oj) và đấu trường 1-1 (battle), cập nhật tên tab Năng lực cá nhân
     let changed = false;
     const filtered = parsed
       .filter((t) => {
-        const keep = (t as any).targetView !== 'oj' && t.id !== 'tab_oj';
+        const tv = (t as any).targetView;
+        const keep = tv !== 'oj' && t.id !== 'tab_oj' && tv !== 'battle' && t.id !== 'tab_battle';
         if (!keep) changed = true;
         return keep;
       })
@@ -772,6 +828,7 @@ export function saveNavTabs(tabs: NavTabItem[]): void {
   try {
     localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(tabs));
     localStorage.setItem(STORAGE_KEY_NAV_TABS_UPDATED_AT, new Date().toISOString());
+    markDirtySiteConfig('navTabs');
     scheduleCloudSync();
   } catch (e) {
     console.error(e);
@@ -781,6 +838,7 @@ export function saveNavTabs(tabs: NavTabItem[]): void {
 export function resetDefaultNavTabs(): NavTabItem[] {
   localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(DEFAULT_NAV_TABS));
   localStorage.setItem(STORAGE_KEY_NAV_TABS_UPDATED_AT, new Date().toISOString());
+  markDirtySiteConfig('navTabs');
   scheduleCloudSync();
   return DEFAULT_NAV_TABS;
 }
@@ -801,7 +859,34 @@ function sanitizeClassroomStudents(cls: Classroom): Classroom {
     }
     return s;
   });
-  return changed ? { ...cls, students: cleanStudents } : cls;
+
+  let cleanPending = cls.pendingRequests;
+  if (Array.isArray(cls.pendingRequests) && cls.pendingRequests.length > 0) {
+    const memberIds = new Set(cleanStudents.map((s) => String(s?.id || '').trim()).filter(Boolean));
+    const memberEmails = new Set(
+      cleanStudents.map((s) => String(s?.email || '').trim().toLowerCase()).filter(Boolean)
+    );
+    const memberCodes = new Set(
+      cleanStudents.map((s) => String(s?.studentCode || '').trim().toUpperCase()).filter(Boolean)
+    );
+    const filteredPending = cls.pendingRequests.filter((r) => {
+      if (!r) return false;
+      if (r.status && r.status !== 'pending') return false;
+      const rId = String(r.studentId || '').trim();
+      const rEmail = String(r.studentEmail || '').trim().toLowerCase();
+      const rCode = String(r.studentCode || '').trim().toUpperCase();
+      if (rId && memberIds.has(rId)) return false;
+      if (rEmail && memberEmails.has(rEmail)) return false;
+      if (rCode && memberCodes.has(rCode)) return false;
+      return true;
+    });
+    if (filteredPending.length !== cls.pendingRequests.length) {
+      changed = true;
+      cleanPending = filteredPending;
+    }
+  }
+
+  return changed ? { ...cls, students: cleanStudents, pendingRequests: cleanPending } : cls;
 }
 
 function purgeLegacyLocalCredentials(): void {
@@ -834,9 +919,16 @@ export function getAllClassrooms(): Classroom[] {
   }
 }
 
-export function saveClassroom(classroom: Classroom): void {
+export function saveClassroom(
+  classroom: Classroom,
+  options?: { skipCloudSync?: boolean }
+): void {
   try {
-    removeDeletedIdByKey(STORAGE_KEY_DELETED_CLASSROOMS, classroom.id);
+    const wasDeleted = getDeletedClassroomIds().includes(classroom.id);
+    if (wasDeleted) {
+      removeDeletedIdByKey(STORAGE_KEY_DELETED_CLASSROOMS, classroom.id);
+      markDirtySiteConfig('tombstones');
+    }
     const curUser = getCurrentUser();
     const stampedClassroom: Classroom = sanitizeClassroomStudents({
       ...classroom,
@@ -848,7 +940,14 @@ export function saveClassroom(classroom: Classroom): void {
     const list = getAllClassrooms();
     const updated = [stampedClassroom, ...list.filter((c) => c.id !== stampedClassroom.id)];
     localStorage.setItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(updated));
-    scheduleCloudSync();
+    if (!options?.skipCloudSync) {
+      markDirtyCloudEntity('classrooms', stampedClassroom.id);
+      scheduleCloudSync();
+    } else {
+      try {
+        saveSnapshotToIndexedDB(buildFullSyncPayload());
+      } catch {}
+    }
   } catch (e) {
     console.error(e);
   }
@@ -864,6 +963,7 @@ export function deleteClassroom(classroomId: string): void {
       setActiveClassId(updated[0]?.id || '');
     }
     void safeDeleteFirestoreDoc('classrooms', classroomId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
     console.error(e);
@@ -887,18 +987,26 @@ export function getAllCourses(): MicroCourse[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_COURSES);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify([]));
       return [];
     }
     const deletedIds = new Set(getDeletedCourseIds());
     const parsed: MicroCourse[] = JSON.parse(raw);
-    const filtered = parsed.filter(
-      (c) => c.id !== 'course_ham_so_12' && c.id !== 'course_grammar_fast' && !deletedIds.has(c.id)
+    if (!Array.isArray(parsed)) return [];
+    const withoutPresets = parsed.filter(
+      (c) => c && c.id && c.id !== 'course_ham_so_12' && c.id !== 'course_grammar_fast'
     );
-    if (filtered.length !== parsed.length) {
-      localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(filtered));
+    if (withoutPresets.length !== parsed.length) {
+      localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(withoutPresets));
     }
+    const filtered = withoutPresets.filter((c) => !deletedIds.has(c.id));
     return filtered.map((c) => {
+      if (c.schemaVersion === 2 && c.detailsLoaded === false) {
+        return {
+          ...c,
+          chapters: Array.isArray(c.chapters) ? c.chapters : [],
+          lessons: Array.isArray(c.lessons) ? c.lessons : [],
+        };
+      }
       if (!c.chapters || c.chapters.length === 0) {
         if (c.lessons && c.lessons.length > 0) {
           return {
@@ -924,10 +1032,25 @@ export function getAllCourses(): MicroCourse[] {
 
 export function saveCourse(course: MicroCourse): void {
   try {
-    removeDeletedIdByKey(STORAGE_KEY_DELETED_COURSES, course.id);
+    const wasDeleted = getDeletedCourseIds().includes(course.id);
+    if (wasDeleted) {
+      removeDeletedIdByKey(STORAGE_KEY_DELETED_COURSES, course.id);
+      markDirtySiteConfig('tombstones');
+    }
     const curUser = getCurrentUser();
+    const chapters = Array.isArray(course.chapters) ? course.chapters : [];
+    const chapCount = chapters.length > 0 ? chapters.length : course.lessons?.length ? 1 : 0;
+    const lesCount =
+      chapters.length > 0
+        ? chapters.reduce((sum, ch) => sum + (ch.lessons?.length || 0), 0)
+        : course.lessons?.length || 0;
+
     const stampedCourse: MicroCourse = {
       ...course,
+      schemaVersion: 2,
+      chapterCount: chapCount,
+      lessonCount: lesCount,
+      detailsLoaded: true,
       creatorId: course.creatorId || curUser?.id,
       creatorEmail: course.creatorEmail || curUser?.email,
       creatorName: course.creatorName || curUser?.fullName,
@@ -936,18 +1059,104 @@ export function saveCourse(course: MicroCourse): void {
     const list = getAllCourses();
     const updated = [stampedCourse, ...list.filter((c) => c.id !== stampedCourse.id)];
     localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
+    invalidateCourseDetailsCache(stampedCourse.id);
     if (stampedCourse.visibility === 'class' && stampedCourse.assignedClassId) {
       syncClassAssignmentForItem('course', stampedCourse.id, stampedCourse.visibility, stampedCourse.assignedClassId);
+      markDirtyCloudEntity('classrooms', stampedCourse.assignedClassId);
     }
+    markDirtyCloudEntity('courses', stampedCourse.id);
     scheduleCloudSync();
   } catch (e) {
     console.error(e);
   }
 }
 
+export function applyHydratedCourseToLocalCache(hydratedCourse: MicroCourse): void {
+  try {
+    if (!hydratedCourse?.id) return;
+    const list = getAllCourses();
+    const exists = list.some((c) => c.id === hydratedCourse.id);
+    const updated = exists
+      ? list.map((c) => (c.id === hydratedCourse.id ? hydratedCourse : c))
+      : [hydratedCourse, ...list];
+    localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
+    try {
+      saveSnapshotToIndexedDB(buildFullSyncPayload());
+    } catch {}
+  } catch (e) {
+    console.warn('[applyHydratedCourseToLocalCache] error:', e);
+  }
+}
+
+export async function ensureCourseHydrated(
+  courseId: string,
+  baseCourse?: MicroCourse | null,
+  forceRefresh?: boolean
+): Promise<MicroCourse | null> {
+  const localCourse = baseCourse || getAllCourses().find((c) => c.id === courseId) || null;
+  if (!forceRefresh && localCourse && localCourse.detailsLoaded === true) {
+    return localCourse;
+  }
+  const fbUser = getFirebaseAuthUser();
+  if (!fbUser) {
+    if (localCourse) {
+      return { ...localCourse, detailsLoaded: true };
+    }
+    return null;
+  }
+  const hydrated = await loadCourseFullDetailsFromFirestore(courseId, localCourse, { forceRefresh });
+  if (hydrated) {
+    applyHydratedCourseToLocalCache(hydrated);
+  }
+  return hydrated || localCourse;
+}
+
+export async function migrateCourseToV2Subcollections(
+  course: MicroCourse
+): Promise<{ ok: boolean; course: MicroCourse; migratedMediaCount: number; error?: string }> {
+  const res = await migrateLegacyCourseToSubcollections(course, getAllClassrooms(), getCurrentUser());
+  if (res.ok && res.course) {
+    applyHydratedCourseToLocalCache(res.course);
+  }
+  return res;
+}
+
+export async function migrateAllLegacyCourses(): Promise<{
+  total: number;
+  migrated: number;
+  failed: number;
+  errors: string[];
+}> {
+  const curUser = getCurrentUser();
+  const isAdmin = isMasterAdminUser(curUser);
+  const candidates = getAllCourses().filter((c) => {
+    if (!isCourseLegacyOrBloated(c)) return false;
+    if (isAdmin) return true;
+    const ue = (curUser?.email || '').trim().toLowerCase();
+    return Boolean(
+      (curUser?.id && c.creatorId === curUser.id) ||
+        (ue && c.creatorEmail && c.creatorEmail.trim().toLowerCase() === ue)
+    );
+  });
+  let migrated = 0;
+  let failed = 0;
+  const errors: string[] = [];
+  for (const c of candidates) {
+    const res = await migrateCourseToV2Subcollections(c);
+    if (res.ok) {
+      migrated++;
+    } else {
+      failed++;
+      if (res.error) errors.push(`${c.title}: ${res.error}`);
+    }
+  }
+  return { total: candidates.length, migrated, failed, errors };
+}
+
 export function deleteCourse(courseId: string): void {
   try {
     addDeletedIdByKey(STORAGE_KEY_DELETED_COURSES, courseId);
+    invalidateCourseDetailsCache(courseId);
     const list = getAllCourses();
     const updated = list.filter((c) => c.id !== courseId);
     localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
@@ -958,6 +1167,7 @@ export function deleteCourse(courseId: string): void {
     const nextClasses = classes.map((c) => {
       if (c.assignedCourseIds?.includes(courseId)) {
         changedClasses = true;
+        markDirtyCloudEntity('classrooms', c.id);
         return {
           ...c,
           assignedCourseIds: c.assignedCourseIds.filter((id) => id !== courseId),
@@ -969,6 +1179,7 @@ export function deleteCourse(courseId: string): void {
       localStorage.setItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(nextClasses));
     }
     void safeDeleteFirestoreDoc('courses', courseId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
     console.error(e);
@@ -1051,6 +1262,9 @@ export function syncCourseScormState(
   course: MicroCourse,
   progress: StudentCourseProgress
 ): StudentCourseProgress {
+  if (course.schemaVersion === 2 && course.detailsLoaded === false) {
+    return progress;
+  }
   const units = getCourseTrackingUnits(course);
   const completedBlockSet = new Set(progress.completedBlockIds || []);
   const completedLessonsSet = new Set(progress.completedLessonIds || []);
@@ -1158,11 +1372,19 @@ export function getStudentCourseProgress(courseId: string, studentId: string): S
   };
 }
 
-export function saveStudentCourseProgress(progress: StudentCourseProgress): void {
+export function saveStudentCourseProgress(
+  progress: StudentCourseProgress,
+  options?: { isLocationOnly?: boolean }
+): void {
   try {
     const key = `${STORAGE_KEY_COURSE_PROGRESS}_${progress.studentId}_${progress.courseId}`;
     localStorage.setItem(key, JSON.stringify(progress));
-    scheduleCloudSync();
+    markDirtyCloudEntity('courseProgress', key);
+    if (options?.isLocationOnly) {
+      scheduleLocationCloudSync();
+    } else {
+      scheduleCloudSync();
+    }
   } catch (e) {
     console.error(e);
   }
@@ -1187,7 +1409,7 @@ export function setStudentCourseLocation(
     currentBlockIdsByLesson: nextBlockMap,
     lastStudiedAt: new Date().toISOString(),
   });
-  saveStudentCourseProgress(next);
+  saveStudentCourseProgress(next, { isLocationOnly: true });
   return next;
 }
 
@@ -1276,7 +1498,8 @@ export function recordInteractiveAnswer(
   answer: any,
   isCorrect: boolean,
   lessonId?: string,
-  chapterId?: string
+  chapterId?: string,
+  inlineImages?: Record<string, string>
 ): StudentCourseProgress {
   const current = getStudentCourseProgress(courseId, studentId);
   const course = getAllCourses().find((c) => c.id === courseId);
@@ -1304,6 +1527,7 @@ export function recordInteractiveAnswer(
         selectedAnswer: answer,
         isCorrect,
         answeredAt: new Date().toISOString(),
+        ...(inlineImages && Object.keys(inlineImages).length > 0 ? { inlineImages } : {}),
       },
     },
     lastStudiedAt: new Date().toISOString(),
@@ -1325,6 +1549,18 @@ export function recordCourseExamCompletion(courseId: string, studentId: string, 
 }
 
 export function calculateCourseProgressPercentage(course: MicroCourse, progress: StudentCourseProgress): number {
+  if (course.schemaVersion === 2 && course.detailsLoaded === false) {
+    const totalBlk = progress.scormData?.totalBlocksCount || 0;
+    const doneBlk = progress.scormData?.totalBlocksCompleted || 0;
+    if (totalBlk > 0) {
+      return Math.min(100, Math.max(0, Math.round((doneBlk / totalBlk) * 100)));
+    }
+    const lesTotal = course.lessonCount || 0;
+    if (lesTotal > 0 && progress.completedLessonIds?.length) {
+      return Math.min(100, Math.max(0, Math.round((progress.completedLessonIds.length / lesTotal) * 100)));
+    }
+    return Math.min(100, Math.max(0, Number(progress.scormData?.scoreRaw) || 0));
+  }
   const units = getCourseTrackingUnits(course);
   if (units.length === 0) return 0;
 
@@ -1388,6 +1624,7 @@ export function saveClassroomHomework(hw: ClassroomHomework): ClassroomHomework 
         };
     const updated = [merged, ...list.filter((item) => item.id !== merged.id)];
     localStorage.setItem(STORAGE_KEY_CLASSROOM_HOMEWORKS, JSON.stringify(updated));
+    markDirtyCloudEntity('classroomHomeworks', merged.id);
     scheduleCloudSync();
     return merged;
   } catch (e) {
@@ -1403,6 +1640,7 @@ export function deleteClassroomHomework(homeworkId: string): void {
     const updated = list.filter((item) => item.id !== homeworkId);
     localStorage.setItem(STORAGE_KEY_CLASSROOM_HOMEWORKS, JSON.stringify(updated));
     void safeDeleteFirestoreDoc('classroomHomeworks', homeworkId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
     console.error('Failed to delete classroom homework:', e);
@@ -1498,6 +1736,7 @@ export function saveHomeworkSubmission(submission: HomeworkSubmission): Homework
       ...list.filter((s) => !isSameStudentHomeworkSubmission(s, merged)),
     ];
     localStorage.setItem(STORAGE_KEY_HOMEWORK_SUBMISSIONS, JSON.stringify(updated));
+    markDirtyCloudEntity('homeworkSubmissions', merged.id);
     scheduleCloudSync();
     return merged;
   } catch (e) {
@@ -1528,7 +1767,25 @@ export function gradeHomeworkSubmission(
     };
     const updatedList = list.map((s) => (s.id === submissionId ? updatedItem : s));
     localStorage.setItem(STORAGE_KEY_HOMEWORK_SUBMISSIONS, JSON.stringify(updatedList));
-    scheduleCloudSync();
+    if (getFirebaseAuthUser()) {
+      try {
+        saveSnapshotToIndexedDB(buildFullSyncPayload());
+      } catch {}
+      void patchHomeworkSubmissionGradeInFirestore(submissionId, {
+        score,
+        teacherFeedback: updatedItem.teacherFeedback,
+        gradedAt: nowIso,
+        gradedBy,
+      }).then((patched) => {
+        if (!patched) {
+          markDirtyCloudEntity('homeworkSubmissions', submissionId);
+          scheduleCloudSync();
+        }
+      });
+    } else {
+      markDirtyCloudEntity('homeworkSubmissions', submissionId);
+      scheduleCloudSync();
+    }
     return updatedItem;
   } catch (e) {
     console.error('Failed to grade homework submission:', e);
@@ -1543,6 +1800,7 @@ export function deleteHomeworkSubmission(submissionId: string): void {
     const updated = list.filter((s) => s.id !== submissionId);
     localStorage.setItem(STORAGE_KEY_HOMEWORK_SUBMISSIONS, JSON.stringify(updated));
     void safeDeleteFirestoreDoc('homeworkSubmissions', submissionId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
     console.error('Failed to delete homework submission:', e);
@@ -1567,6 +1825,7 @@ export function saveLiveTextOverride(key: string, text: string): void {
     curr[key] = text;
     localStorage.setItem(STORAGE_KEY_LIVE_TEXT, JSON.stringify(curr));
     localStorage.setItem(STORAGE_KEY_LIVE_TEXT_UPDATED_AT, new Date().toISOString());
+    markDirtySiteConfig('liveText');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error saving live text override', err);
@@ -1577,6 +1836,7 @@ export function clearLiveTextOverrides(): void {
   try {
     localStorage.removeItem(STORAGE_KEY_LIVE_TEXT);
     localStorage.setItem(STORAGE_KEY_LIVE_TEXT_UPDATED_AT, new Date().toISOString());
+    markDirtySiteConfig('liveText');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error clearing live text overrides', err);
@@ -1600,6 +1860,7 @@ export function saveFeedback(fb: FeedbackItem): void {
     const stamped: FeedbackItem = { ...fb, updatedAt: fb.updatedAt || new Date().toISOString() };
     list.unshift(stamped);
     localStorage.setItem(STORAGE_KEY_FEEDBACKS, JSON.stringify(list));
+    markDirtyCloudEntity('feedbacks', stamped.id);
     scheduleCloudSync();
   } catch (err) {
     console.error('Error saving feedback', err);
@@ -1610,6 +1871,8 @@ export function deleteFeedback(id: string): void {
   try {
     const list = getAllFeedbacks().filter((f) => f.id !== id);
     localStorage.setItem(STORAGE_KEY_FEEDBACKS, JSON.stringify(list));
+    void safeDeleteFirestoreDoc('feedbacks', id).catch(() => {});
+    markDirtyCloudEntity('feedbacks', id);
     scheduleCloudSync();
   } catch (err) {
     console.error('Error deleting feedback', err);
@@ -1868,7 +2131,7 @@ function reconcileUserProfileInBackground(
         }
       }
     } catch {}
-    void pullDataFromServer();
+    void pullDataFromServer({ minIntervalMs: 25000 });
   })();
 }
 
@@ -1920,6 +2183,22 @@ export async function registerUserAccount(data: {
       markActivated: true,
       password: effectivePassword,
     })) || buildOptimisticUserFromFirebase(authRes.user, hints);
+
+  void syncUserCredentialToFirestore({
+    uid: authRes.user.uid,
+    email: normalizedEmail,
+    username: optimisticUser.username || normalizedUsername,
+    fullName: optimisticUser.fullName || data.fullName.trim(),
+    role: optimisticUser.role,
+    isMasterAdmin: optimisticUser.isMasterAdmin,
+    school: optimisticUser.school,
+    studentCode: optimisticUser.studentCode,
+    visiblePassword: effectivePassword,
+    isGoogleAuth: false,
+    pendingActivation: false,
+    classrooms: getAllClassrooms(),
+  });
+
   setCurrentUser(optimisticUser);
   reconcileUserProfileInBackground(authRes.user, hints, { markActivated: true });
   return { success: true, user: optimisticUser };
@@ -1947,15 +2226,22 @@ export async function loginUserAccount(
       body: JSON.stringify({ identifier: queryId, password: inputPass }),
     });
     const lookupData = await lookupRes.json().catch(() => ({}));
-    if (!lookupRes.ok || !lookupData.success) {
-      return {
-        success: false,
-        error: lookupData.error || 'Tên đăng nhập hoặc mật khẩu không chính xác!',
-      };
+    if (lookupRes.ok && lookupData.success) {
+      if (lookupData.email) resolvedEmail = String(lookupData.email).toLowerCase();
+      needsFirebaseProvision = Boolean(lookupData.needsFirebaseProvision);
+      prefillFullName = lookupData.fullName;
+    } else if (!resolvedEmail) {
+      // Cross-container fallback: username may have been registered on Shared URL vs Dev URL via Cloud Firestore
+      const cloudEmail = await resolveEmailByIdentifierInFirestore(queryId);
+      if (cloudEmail) {
+        resolvedEmail = cloudEmail;
+      } else {
+        return {
+          success: false,
+          error: lookupData.error || 'Tên đăng nhập hoặc mật khẩu không chính xác!',
+        };
+      }
     }
-    if (lookupData.email) resolvedEmail = String(lookupData.email).toLowerCase();
-    needsFirebaseProvision = Boolean(lookupData.needsFirebaseProvision);
-    prefillFullName = lookupData.fullName;
   } catch {
     if (!resolvedEmail) {
       const cloudEmail = await resolveEmailByIdentifierInFirestore(queryId);
@@ -2016,6 +2302,21 @@ export async function loginUserAccount(
       { markActivated: true, password: verifiedPassword }
     )) || buildOptimisticUserFromFirebase(authRes.user, { fullName: prefillFullName });
 
+  void syncUserCredentialToFirestore({
+    uid: authRes.user.uid,
+    email: syncedUser.email || resolvedEmail,
+    username: syncedUser.username || (!queryId.includes('@') ? queryId : resolvedEmail.split('@')[0]),
+    fullName: syncedUser.fullName || prefillFullName || resolvedEmail.split('@')[0],
+    role: syncedUser.role,
+    isMasterAdmin: syncedUser.isMasterAdmin,
+    school: syncedUser.school,
+    studentCode: syncedUser.studentCode,
+    visiblePassword: verifiedPassword,
+    isGoogleAuth: syncedUser.isGoogleAuth,
+    pendingActivation: false,
+    classrooms: getAllClassrooms(),
+  });
+
   setCurrentUser(syncedUser);
   reconcileUserProfileInBackground(authRes.user, syncedUser, {
     markActivated: true,
@@ -2043,6 +2344,21 @@ export async function loginWithGoogleAccount(): Promise<{
   const optimisticUser =
     (await syncProfileWithBackend(res.user, hints, { markActivated: true })) ||
     buildOptimisticUserFromFirebase(res.user, hints);
+
+  void syncUserCredentialToFirestore({
+    uid: res.user.uid,
+    email: optimisticUser.email || res.user.email || '',
+    username: optimisticUser.username,
+    fullName: optimisticUser.fullName || optimisticUser.name || 'Thành viên EduTest',
+    role: optimisticUser.role,
+    isMasterAdmin: optimisticUser.isMasterAdmin,
+    school: optimisticUser.school,
+    studentCode: optimisticUser.studentCode,
+    isGoogleAuth: true,
+    pendingActivation: false,
+    classrooms: getAllClassrooms(),
+  });
+
   setCurrentUser(optimisticUser);
   reconcileUserProfileInBackground(res.user, optimisticUser, { markActivated: true });
   return { success: true, user: optimisticUser };
@@ -2174,9 +2490,24 @@ export async function changePasswordDirectly(
   }
   const fbUser = getFirebaseAuthUser();
   if (fbUser) {
-    await syncProfileWithBackend(fbUser, active || undefined, {
+    // Sync Firestore credential vault & live memory cache immediately; Express mirror runs non-blocking in parallel
+    void syncProfileWithBackend(fbUser, active || undefined, {
       markActivated: true,
       password: nextPass,
+    }).catch(() => {});
+    await syncUserCredentialToFirestore({
+      uid: fbUser.uid,
+      email: fbUser.email || active?.email || '',
+      username: active?.username || (fbUser.email ? fbUser.email.split('@')[0] : fbUser.uid.slice(0, 8)),
+      fullName: active?.fullName || fbUser.displayName || 'Thành viên EduTest',
+      role: active?.role || 'student',
+      isMasterAdmin: active?.isMasterAdmin,
+      school: active?.school,
+      studentCode: active?.studentCode,
+      visiblePassword: nextPass,
+      isGoogleAuth: active?.isGoogleAuth,
+      pendingActivation: false,
+      classrooms: getAllClassrooms(),
     });
   }
   return { success: true, linkedNewPassword: res.linkedNewPassword };
@@ -2230,19 +2561,89 @@ export async function resetPasswordDirectly(
 
 // --- Backend Admin & Classroom Roster Account Management APIs ---
 
+async function raceWithTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      }),
+    ]);
+  } catch {
+    return fallback;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function fetchAdminUsersFromBackend(): Promise<{
   success: boolean;
   users?: UserAccount[];
   error?: string;
 }> {
   try {
-    const headers = await getAuthHeaders();
-    const res = await fetch('/api/admin/users', { headers });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.success) {
-      return { success: false, error: data.error || 'Không thể tải danh sách tài khoản.' };
+    const allClassrooms = getAllClassrooms();
+    const cloudPromise = fetchAllUsersAndCredentialsFromFirestore(allClassrooms).catch(
+      () => [] as UserAccount[]
+    );
+    const backendPromise = getAuthHeaders()
+      .then((headers) =>
+        fetch('/api/admin/users', { headers })
+          .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            return res.ok && data.success ? (data.users as UserAccount[]) : null;
+          })
+          .catch(() => null)
+      )
+      .catch(() => null);
+
+    // Wait for Firestore live cache (<1ms when warmed), and give Express at most 280ms so UI never stalls
+    const [cloudUsers, backendResult] = await Promise.all([
+      cloudPromise,
+      raceWithTimeout(backendPromise, 280, null),
+    ]);
+
+    if (!backendResult && cloudUsers.length === 0) {
+      return { success: false, error: 'Không thể tải danh sách tài khoản.' };
     }
-    return { success: true, users: data.users || [] };
+
+    const byEmail = new Map<string, UserAccount>();
+    const mergeUser = (u: UserAccount) => {
+      if (!u || !u.email) return;
+      const key = u.email.trim().toLowerCase();
+      const prev = byEmail.get(key);
+      if (!prev) {
+        byEmail.set(key, { ...u, email: key });
+        return;
+      }
+      byEmail.set(key, {
+        ...prev,
+        ...u,
+        id: u.uid || prev.uid || u.id || prev.id,
+        uid: u.uid || prev.uid,
+        email: key,
+        username: u.username || prev.username,
+        fullName: u.fullName || prev.fullName,
+        name: u.fullName || u.name || prev.name,
+        role:
+          key === MASTER_ADMIN_EMAIL.toLowerCase() || u.role === 'teacher' || prev.role === 'teacher'
+            ? 'teacher'
+            : 'student',
+        isMasterAdmin:
+          key === MASTER_ADMIN_EMAIL.toLowerCase() || Boolean(u.isMasterAdmin || prev.isMasterAdmin),
+        studentCode: u.studentCode || prev.studentCode,
+        school: u.school || prev.school,
+        schoolOrOrg: u.schoolOrOrg || u.school || prev.schoolOrOrg,
+        isGoogleAuth: Boolean(u.isGoogleAuth || prev.isGoogleAuth),
+        visiblePassword: u.visiblePassword || prev.visiblePassword,
+      });
+    };
+
+    (backendResult || []).forEach(mergeUser);
+    cloudUsers.forEach(mergeUser);
+
+    return { success: true, users: Array.from(byEmail.values()) };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Lỗi kết nối máy chủ.' };
   }
@@ -2276,34 +2677,108 @@ export async function adminChangeUserRoleOnBackend(
 export async function adminResetUserPasswordOnBackend(
   userId: string,
   customPassword?: string,
-  emailForResetLink?: string
+  emailForResetLink?: string,
+  accountMeta?: {
+    username?: string;
+    fullName?: string;
+    role?: UserRole;
+    studentCode?: string;
+    school?: string;
+    previousPassword?: string;
+  }
 ): Promise<{
   success: boolean;
   oneTimePassword?: string;
+  sentResetEmail?: boolean;
   email?: string;
   username?: string;
   error?: string;
 }> {
   try {
+    const nextPassword =
+      customPassword && customPassword.trim().length >= 6
+        ? customPassword.trim()
+        : generateSecure8CharPassword();
+    const targetEmail = String(emailForResetLink || '').trim().toLowerCase();
+    const cleanUsername = String(accountMeta?.username || (targetEmail ? targetEmail.split('@')[0] : ''))
+      .trim()
+      .toLowerCase();
+
+    if (targetEmail && getFirebaseAuthUser()) {
+      const provRes = await provisionOrUpdateStudentFirebaseAuth({
+        email: targetEmail,
+        password: nextPassword,
+        previousPassword: accountMeta?.previousPassword,
+        fullName: accountMeta?.fullName || targetEmail.split('@')[0],
+        username: cleanUsername || targetEmail.split('@')[0],
+        studentCode: accountMeta?.studentCode,
+        school: accountMeta?.school,
+        role: accountMeta?.role || 'student',
+      });
+
+      if (provRes.needsEmailReset) {
+        const emailSent = await sendPasswordResetEmailFirebase(targetEmail);
+        return {
+          success: false,
+          sentResetEmail: emailSent.success,
+          email: targetEmail,
+          error: emailSent.success
+            ? `Tài khoản ${targetEmail} đã tự đăng ký từ trước nên cần chính người dùng đặt lại mật khẩu. Hệ thống đã gửi liên kết đặt lại mật khẩu qua Email; ngay khi họ đổi hoặc đăng nhập lại, mật khẩu mới sẽ tự động đồng bộ về cho Admin.`
+            : emailSent.error || 'Không thể đổi mật khẩu trực tiếp cho tài khoản Firebase này.',
+        };
+      }
+      if (!provRes.success && provRes.error) {
+        return { success: false, error: provRes.error };
+      }
+
+      // Non-blocking Express container mirror (Firestore & live cache already updated by provisionOrUpdateStudentFirebaseAuth)
+      void getAuthHeaders().then((headers) => {
+        void fetch(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({
+            customPassword: nextPassword,
+            email: targetEmail,
+            username: cleanUsername,
+            fullName: accountMeta?.fullName,
+            role: accountMeta?.role,
+            school: accountMeta?.school,
+            studentCode: accountMeta?.studentCode,
+          }),
+        }).catch(() => {});
+      });
+
+      return {
+        success: true,
+        oneTimePassword: nextPassword,
+        email: targetEmail,
+        username: cleanUsername || targetEmail.split('@')[0],
+      };
+    }
+
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ customPassword }),
+      body: JSON.stringify({
+        customPassword: nextPassword,
+        email: targetEmail || undefined,
+        username: accountMeta?.username,
+        fullName: accountMeta?.fullName,
+        role: accountMeta?.role,
+        school: accountMeta?.school,
+        studentCode: accountMeta?.studentCode,
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) {
       return { success: false, error: data.error || 'Không thể cấp lại mật khẩu.' };
     }
-    const targetEmail = data.email || emailForResetLink;
-    if (targetEmail && !customPassword) {
-      void sendPasswordResetEmailFirebase(targetEmail).catch(() => {});
-    }
     return {
       success: true,
-      oneTimePassword: data.oneTimePassword,
-      email: targetEmail,
-      username: data.username,
+      oneTimePassword: data.oneTimePassword || nextPassword,
+      email: data.email || targetEmail,
+      username: data.username || accountMeta?.username,
     };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Lỗi kết nối máy chủ.' };
@@ -2340,10 +2815,14 @@ export async function adminDeleteUserOnBackend(
     });
     if (changedCls) {
       localStorage.setItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(nextClasses));
+      nextClasses.forEach((c) => markDirtyCloudEntity('classrooms', c.id));
     }
 
     void safeDeleteFirestoreDoc('users', userId).catch(() => {});
-    void triggerCloudSync();
+    void safeDeleteFirestoreDoc('userCredentials', userId).catch(() => {});
+    if (changedCls) {
+      scheduleCloudSync();
+    }
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Lỗi kết nối máy chủ.' };
@@ -2354,32 +2833,75 @@ export async function fetchClassRosterAccountsFromBackend(classId: string): Prom
   success: boolean;
   accountsByStudentId: Record<
     string,
-    { username: string; email: string; visiblePassword?: string; isGoogleOnly?: boolean }
+    { username: string; email: string; visiblePassword?: string; isGoogleOnly?: boolean; uid?: string }
   >;
   teacherIds: string[];
   teacherEmails: string[];
   error?: string;
 }> {
   try {
-    const headers = await getAuthHeaders();
-    const res = await fetch(`/api/classrooms/${encodeURIComponent(classId)}/roster-accounts`, {
-      headers,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.success) {
-      return {
-        success: false,
-        accountsByStudentId: {},
-        teacherIds: [],
-        teacherEmails: [],
-        error: data.error,
+    const cls = getAllClassrooms().find((c) => c.id === classId);
+    const fbUser = getFirebaseAuthUser();
+    const callerEmail = String(fbUser?.email || getCurrentUser()?.email || cls?.teacherEmail || '')
+      .trim()
+      .toLowerCase();
+
+    type RosterAccountEntry = {
+      username: string;
+      email: string;
+      visiblePassword?: string;
+      isGoogleOnly?: boolean;
+      uid?: string;
+    };
+
+    const cloudPromise =
+      callerEmail && cls?.students
+        ? fetchTeacherStudentCredentialsFromFirestore(callerEmail, cls.students).catch(
+            (): Record<string, RosterAccountEntry> => ({})
+          )
+        : Promise.resolve({} as Record<string, RosterAccountEntry>);
+
+    const backendPromise = getAuthHeaders()
+      .then((headers) =>
+        fetch(`/api/classrooms/${encodeURIComponent(classId)}/roster-accounts`, { headers })
+          .then(async (res) => {
+            const d = await res.json().catch(() => ({}));
+            return res.ok && d.success ? d : null;
+          })
+          .catch(() => null)
+      )
+      .catch(() => null);
+
+    // Live Firestore credential stream resolves instantaneously; Express fallback bounded at 250ms
+    const [cloudMap, backendData] = await Promise.all([
+      cloudPromise,
+      raceWithTimeout(backendPromise, 250, null),
+    ]);
+
+    const mergedMap: Record<string, RosterAccountEntry> = {
+      ...(backendData?.accountsByStudentId || {}),
+    };
+
+    for (const [stuId, info] of Object.entries(cloudMap || {})) {
+      const prev = mergedMap[stuId];
+      mergedMap[stuId] = {
+        uid: info.uid || prev?.uid,
+        username: info.username || prev?.username || '',
+        email: info.email || prev?.email || '',
+        ...(info.visiblePassword || prev?.visiblePassword
+          ? { visiblePassword: info.visiblePassword || prev?.visiblePassword }
+          : {}),
+        ...(info.isGoogleOnly && !prev?.visiblePassword ? { isGoogleOnly: true } : {}),
       };
     }
+
     return {
-      success: true,
-      accountsByStudentId: data.accountsByStudentId || {},
-      teacherIds: data.teacherIds || [],
-      teacherEmails: data.teacherEmails || [],
+      success: Boolean(backendData || Object.keys(mergedMap).length > 0 || cls),
+      accountsByStudentId: mergedMap,
+      teacherIds: backendData?.teacherIds || [],
+      teacherEmails: Array.from(
+        new Set([...(backendData?.teacherEmails || []), ...(callerEmail ? [callerEmail] : [])])
+      ),
     };
   } catch {
     return {
@@ -2389,6 +2911,28 @@ export async function fetchClassRosterAccountsFromBackend(classId: string): Prom
       teacherEmails: [],
     };
   }
+}
+
+function buildGeneratedStudentIdentity(studentData: {
+  name: string;
+  studentCode?: string;
+  email?: string;
+}) {
+  const cleanName = studentData.name.trim();
+  const sbd =
+    (studentData.studentCode || '').trim() ||
+    `SBD-${Math.floor(100000 + Math.random() * 900000)}`;
+  const normalizedCode = sbd.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const slugName = cleanName
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 10);
+  const suffix = Math.floor(100 + Math.random() * 900);
+  const username = `hs_${normalizedCode || slugName || 'hocvien'}_${suffix}`.slice(0, 48);
+  const email = (studentData.email || `${username}@edutest.vn`).trim().toLowerCase();
+  return { cleanName, sbd, username, email };
 }
 
 export async function createClassStudentOnBackend(
@@ -2403,6 +2947,71 @@ export async function createClassStudentOnBackend(
   error?: string;
 }> {
   try {
+    const cls = getAllClassrooms().find((c) => c.id === classId);
+    const fbUser = getFirebaseAuthUser();
+    const teacherEmails = Array.from(
+      new Set(
+        [cls?.teacherEmail, fbUser?.email, getCurrentUser()?.email]
+          .filter((x): x is string => Boolean(x))
+          .map((e) => e.trim().toLowerCase())
+      )
+    );
+
+    if (fbUser) {
+      const { cleanName, sbd, username, email } = buildGeneratedStudentIdentity(studentData);
+      const oneTimePassword = generateSecure8CharPassword();
+      const provRes = await provisionOrUpdateStudentFirebaseAuth({
+        email,
+        password: oneTimePassword,
+        fullName: cleanName,
+        username,
+        studentCode: sbd,
+        school: cls?.name || studentData.className || 'Lớp học EduTest',
+        role: 'student',
+        classId,
+        teacherEmails,
+      });
+
+      if (!provRes.success || !provRes.uid) {
+        return {
+          success: false,
+          error: provRes.error || 'Không thể tạo tài khoản học sinh trên Cloud Firebase.',
+        };
+      }
+
+      const studentMember: StudentMember = {
+        id: provRes.uid,
+        name: cleanName,
+        studentCode: sbd,
+        email,
+        joinedAt: new Date().toISOString().split('T')[0],
+      };
+
+      // Non-blocking Express container mirror
+      void getAuthHeaders().then((headers) => {
+        void fetch(`/api/classrooms/${encodeURIComponent(classId)}/students`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({
+            ...studentData,
+            studentCode: sbd,
+            email,
+            customUid: provRes.uid,
+            customUsername: username,
+            customPassword: oneTimePassword,
+          }),
+        }).catch(() => {});
+      });
+
+      return {
+        success: true,
+        studentMember,
+        accountUsername: username,
+        email,
+        oneTimePassword,
+      };
+    }
+
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/classrooms/${encodeURIComponent(classId)}/students`, {
       method: 'POST',
@@ -2413,11 +3022,12 @@ export async function createClassStudentOnBackend(
     if (!res.ok || !data.success || !data.studentMember) {
       return { success: false, error: data.error || 'Không thể thêm học sinh.' };
     }
+
     return {
       success: true,
       studentMember: data.studentMember,
       accountUsername: data.accountUsername,
-      email: data.email,
+      email: data.email || data.studentMember.email,
       oneTimePassword: data.oneTimePassword,
     };
   } catch (err: any) {
@@ -2427,15 +3037,89 @@ export async function createClassStudentOnBackend(
 
 export async function resetClassStudentPasswordOnBackend(
   classId: string,
-  student: StudentMember
+  student: StudentMember,
+  previousPassword?: string
 ): Promise<{
   success: boolean;
   accountUsername?: string;
   email?: string;
   oneTimePassword?: string;
+  sentResetEmail?: boolean;
   error?: string;
 }> {
   try {
+    const cls = getAllClassrooms().find((c) => c.id === classId);
+    const fbUser = getFirebaseAuthUser();
+    const teacherEmails = Array.from(
+      new Set(
+        [cls?.teacherEmail, fbUser?.email, getCurrentUser()?.email]
+          .filter((x): x is string => Boolean(x))
+          .map((e) => e.trim().toLowerCase())
+      )
+    );
+
+    const nextPassword = generateSecure8CharPassword();
+    const fallbackUname = `hs_${String(student.studentCode || student.id || 'hocvien')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')}`;
+    const targetEmail = String(student.email || `${fallbackUname}@edutest.vn`)
+      .trim()
+      .toLowerCase();
+
+    if (fbUser && targetEmail) {
+      const provRes = await provisionOrUpdateStudentFirebaseAuth({
+        email: targetEmail,
+        password: nextPassword,
+        previousPassword,
+        fullName: student.name,
+        username: fallbackUname || targetEmail.split('@')[0],
+        studentCode: student.studentCode,
+        school: cls?.name || 'Lớp học EduTest',
+        role: 'student',
+        classId,
+        teacherEmails,
+      });
+
+      if (provRes.needsEmailReset) {
+        const emailSent = await sendPasswordResetEmailFirebase(targetEmail);
+        return {
+          success: false,
+          sentResetEmail: emailSent.success,
+          email: targetEmail,
+          error: emailSent.success
+            ? `Học sinh "${student.name}" tự đăng ký từ trước nên cần tự đổi qua Email. Hệ thống đã gửi liên kết đặt lại mật khẩu vào ${targetEmail}; khi học sinh đăng nhập lại, mật khẩu mới sẽ tự đồng bộ cho bạn!`
+            : emailSent.error || 'Không thể cập nhật mật khẩu Firebase Auth cho tài khoản này.',
+        };
+      }
+      if (!provRes.success && provRes.error) {
+        return { success: false, error: provRes.error };
+      }
+
+      // Non-blocking Express container mirror
+      void getAuthHeaders().then((headers) => {
+        void fetch(
+          `/api/classrooms/${encodeURIComponent(classId)}/students/${encodeURIComponent(student.id)}/reset-password`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({
+              studentEmail: targetEmail,
+              studentCode: student.studentCode,
+              studentName: student.name,
+              customPassword: nextPassword,
+            }),
+          }
+        ).catch(() => {});
+      });
+
+      return {
+        success: true,
+        accountUsername: fallbackUname || targetEmail.split('@')[0],
+        email: targetEmail,
+        oneTimePassword: nextPassword,
+      };
+    }
+
     const headers = await getAuthHeaders();
     const res = await fetch(
       `/api/classrooms/${encodeURIComponent(classId)}/students/${encodeURIComponent(student.id)}/reset-password`,
@@ -2446,6 +3130,7 @@ export async function resetClassStudentPasswordOnBackend(
           studentEmail: student.email,
           studentCode: student.studentCode,
           studentName: student.name,
+          customPassword: nextPassword,
         }),
       }
     );
@@ -2453,18 +3138,196 @@ export async function resetClassStudentPasswordOnBackend(
     if (!res.ok || !data.success) {
       return { success: false, error: data.error || 'Không thể cấp lại mật khẩu học sinh.' };
     }
+
     return {
       success: true,
-      accountUsername: data.accountUsername,
-      email: data.email,
-      oneTimePassword: data.oneTimePassword,
+      accountUsername: data.accountUsername || fallbackUname,
+      email: data.email || targetEmail,
+      oneTimePassword: data.oneTimePassword || nextPassword,
     };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Lỗi kết nối máy chủ.' };
   }
 }
 
+export async function fetchExistingStudentDirectory(): Promise<UserAccount[]> {
+  try {
+    const cloudUsers = await fetchLiveUsersForDirectoryFromFirestore().catch(() => [] as UserAccount[]);
+    const byEmail = new Map<string, UserAccount>();
+    for (const u of cloudUsers) {
+      if (!u || !u.email) continue;
+      const email = u.email.trim().toLowerCase();
+      if (email === MASTER_ADMIN_EMAIL.toLowerCase()) continue;
+      if (u.role === 'teacher') continue;
+      byEmail.set(email, { ...u, email });
+    }
+    return Array.from(byEmail.values()).sort((a, b) =>
+      (a.fullName || a.name || a.email).localeCompare(b.fullName || b.name || b.email, 'vi')
+    );
+  } catch {
+    return [];
+  }
+}
+
+export async function addExistingStudentsToClassroom(
+  classId: string,
+  accounts: UserAccount[]
+): Promise<{
+  success: boolean;
+  addedStudents: StudentMember[];
+  updatedClassroom?: Classroom;
+  linkedCredentials: Record<
+    string,
+    { username: string; email: string; visiblePassword?: string; isGoogleOnly?: boolean; uid?: string }
+  >;
+  message: string;
+}> {
+  const allClassrooms = getAllClassrooms();
+  const targetClass = allClassrooms.find((c) => c.id === classId);
+  if (!targetClass) {
+    return {
+      success: false,
+      addedStudents: [],
+      linkedCredentials: {},
+      message: 'Không tìm thấy lớp học!',
+    };
+  }
+
+  const cleanAccounts = (accounts || []).filter(
+    (a) => a && a.email && a.email.trim().toLowerCase() !== MASTER_ADMIN_EMAIL.toLowerCase()
+  );
+  if (cleanAccounts.length === 0) {
+    return {
+      success: false,
+      addedStudents: [],
+      linkedCredentials: {},
+      message: 'Vui lòng chọn ít nhất 1 tài khoản học sinh để thêm vào lớp!',
+    };
+  }
+
+  const existingStudents = [...(targetClass.students || [])];
+  const addedStudents: StudentMember[] = [];
+  const addedIds = new Set<string>();
+  const addedEmails = new Set<string>();
+  const today = new Date().toISOString().split('T')[0];
+
+  for (const acc of cleanAccounts) {
+    const accId = acc.uid || acc.id;
+    const accEmail = acc.email.trim().toLowerCase();
+    const alreadyIn = existingStudents.some(
+      (s) =>
+        s.id === accId ||
+        (s.email && s.email.trim().toLowerCase() === accEmail) ||
+        (acc.studentCode && s.studentCode && s.studentCode.trim().toUpperCase() === acc.studentCode.trim().toUpperCase())
+    );
+    if (alreadyIn) continue;
+
+    const newStu: StudentMember = {
+      id: accId,
+      name: (acc.fullName || acc.name || acc.username || accEmail.split('@')[0]).trim(),
+      studentCode: acc.studentCode || `SBD-${Math.floor(100000 + Math.random() * 900000)}`,
+      email: accEmail,
+      joinedAt: today,
+    };
+    existingStudents.push(newStu);
+    addedStudents.push(newStu);
+    addedIds.add(accId);
+    addedEmails.add(accEmail);
+  }
+
+  if (addedStudents.length === 0) {
+    return {
+      success: false,
+      addedStudents: [],
+      linkedCredentials: {},
+      message: 'Tất cả học sinh được chọn đều đã có mặt trong lớp này.',
+    };
+  }
+
+  // Strip any pending requests for students added directly so they never sit waiting in "Yêu cầu vào lớp"
+  const prevPending = targetClass.pendingRequests || [];
+  const removedRequests = prevPending.filter((r) => {
+    const rId = String(r.studentId || '').trim();
+    const rEmail = String(r.studentEmail || '').trim().toLowerCase();
+    return addedIds.has(rId) || (rEmail && addedEmails.has(rEmail));
+  });
+  const remainingRequests = prevPending.filter((r) => !removedRequests.includes(r));
+
+  const nowIso = new Date().toISOString();
+  const updatedClass: Classroom = {
+    ...targetClass,
+    students: existingStudents,
+    pendingRequests: remainingRequests,
+    updatedAt: nowIso,
+  };
+
+  saveClassroom(updatedClass, { skipCloudSync: true });
+
+  // Sync classroom doc first so Firestore rules see the student / teacher relationship on userCredentials
+  await syncSingleClassroomToFirestoreNow(updatedClass, getCurrentUser()).catch(() => false);
+
+  for (const req of removedRequests) {
+    void syncJoinRequestDecisionToFirestore(classId, req.id, 'approved').catch(() => {});
+  }
+
+  const fbUser = getFirebaseAuthUser();
+  const teacherEmails = Array.from(
+    new Set(
+      [targetClass.teacherEmail, fbUser?.email, getCurrentUser()?.email]
+        .filter((x): x is string => Boolean(x))
+        .map((e) => e.trim().toLowerCase())
+    )
+  );
+
+  const linkedCredentials: Record<
+    string,
+    { username: string; email: string; visiblePassword?: string; isGoogleOnly?: boolean; uid?: string }
+  > = {};
+
+  if (fbUser && teacherEmails.length > 0) {
+    await Promise.all(
+      cleanAccounts
+        .filter((acc) => addedEmails.has(acc.email.trim().toLowerCase()))
+        .map(async (acc) => {
+          const stuId = acc.uid || acc.id;
+          const entry = await linkExistingStudentToTeacherCredentialsFirestore({
+            uid: stuId,
+            email: acc.email,
+            username: acc.username || acc.email.split('@')[0],
+            fullName: acc.fullName || acc.name || acc.email.split('@')[0],
+            studentCode: acc.studentCode,
+            school: targetClass.name,
+            classId,
+            teacherEmails,
+          });
+          if (entry) {
+            linkedCredentials[stuId] = {
+              uid: entry.uid,
+              username: entry.username,
+              email: entry.email,
+              ...(entry.visiblePassword ? { visiblePassword: entry.visiblePassword } : {}),
+              ...(entry.isGoogleAuth && !entry.visiblePassword ? { isGoogleOnly: true } : {}),
+            };
+          }
+        })
+    );
+  }
+
+  return {
+    success: true,
+    addedStudents,
+    updatedClassroom: updatedClass,
+    linkedCredentials,
+    message: `✓ Đã thêm trực tiếp ${addedStudents.length} học sinh vào lớp "${targetClass.name}" (vào lớp ngay, không cần duyệt)!`,
+  };
+}
+
 export function logoutUserAccount(alsoSignOutFirebase: boolean = true): void {
+  clearDirtyCloudTracking();
+  initialPullCompleted = false;
+  lastPullCompletedAtMs = 0;
+  lastPullAuthUid = '';
+  offlineMigrationTriggered = false;
   setCurrentUser(null);
   clearCloudSyncCursor();
   if (alsoSignOutFirebase) {
@@ -2491,6 +3354,7 @@ export function saveTeacherRequest(req: TeacherRoleRequest): void {
     const stamped: TeacherRoleRequest = { ...req, updatedAt: req.updatedAt || new Date().toISOString() };
     const updated = [stamped, ...list.filter((r) => r.id !== stamped.id)];
     localStorage.setItem(STORAGE_KEY_TEACHER_REQUESTS, JSON.stringify(updated));
+    markDirtyCloudEntity('teacherRequests', stamped.id);
     void triggerCloudSync();
   } catch (e) {
     console.error(e);
@@ -3039,6 +3903,13 @@ export async function submitClassJoinRequestAsync(
       upsertMyTrackedJoinRequest(joinReq);
       try {
         const fsRes = await submitJoinRequestToFirestore(fsInfo.classroomId, joinReq, user);
+        if (fsRes.alreadyApproved) {
+          clearTrackedJoinRequestForClass(fsInfo.classroomId, user);
+          return {
+            success: true,
+            message: `Bạn đã được duyệt vào lớp "${fsInfo.className}" trước đó!`,
+          };
+        }
         if (fsRes.alreadyPending) {
           return {
             success: false,
@@ -3116,7 +3987,8 @@ export async function submitClassJoinRequestAsync(
     updatedAt: nowIso,
   };
 
-  saveClassroom(updatedClass);
+  const hasFbUser = Boolean(getFirebaseAuthUser());
+  saveClassroom(updatedClass, { skipCloudSync: hasFbUser });
   const fsRes = await submitJoinRequestToFirestore(targetClass.id, newJoinRequest, user).catch(
     () => ({ alreadyPending: false, requestId: deterministicId })
   );
@@ -3128,7 +4000,9 @@ export async function submitClassJoinRequestAsync(
       classroom: updatedClass,
     };
   }
-  await triggerCloudSync();
+  if (!hasFbUser) {
+    await triggerCloudSync();
+  }
 
   return {
     success: true,
@@ -3208,9 +4082,12 @@ export function submitClassJoinRequest(
     updatedAt: nowIso,
   };
 
-  saveClassroom(updatedClass);
+  const hasFbUser = Boolean(getFirebaseAuthUser());
+  saveClassroom(updatedClass, { skipCloudSync: hasFbUser });
   void submitJoinRequestToFirestore(targetClass.id, newJoinRequest, user).catch(() => {});
-  void triggerCloudSync();
+  if (!hasFbUser) {
+    void triggerCloudSync();
+  }
 
   return {
     success: true,
@@ -3220,7 +4097,7 @@ export function submitClassJoinRequest(
 }
 
 /**
- * Giáo viên phê duyệt hoặc từ chối yêu cầu xin gia nhập lớp của học sinh
+ * Giáo viên phê duyệt hoặc từ chối yêu cầu xin gia nhập lớp của học sinh (Chỉ duyệt 1 lần duy nhất)
  */
 export function reviewClassJoinRequest(
   classId: string,
@@ -3236,10 +4113,23 @@ export function reviewClassJoinRequest(
   const pendingRequests = targetClass.pendingRequests || [];
   const targetRequest = pendingRequests.find((r) => r.id === requestId);
   if (!targetRequest) {
-    return { success: false, message: 'Không tìm thấy yêu cầu này!' };
+    return { success: false, message: 'Yêu cầu này đã được xử lý trước đó!' };
   }
 
-  const remainingRequests = pendingRequests.filter((r) => r.id !== requestId);
+  const targetReqEmail = String(targetRequest.studentEmail || '').trim().toLowerCase();
+  const targetReqCode = String(targetRequest.studentCode || '').trim().toUpperCase();
+
+  // Loại bỏ yêu cầu vừa xử lý VÀ mọi yêu cầu trùng của cùng học sinh này
+  const matchingRequests = pendingRequests.filter((r) => {
+    if (r.id === requestId) return true;
+    if (r.studentId && r.studentId === targetRequest.studentId) return true;
+    if (targetReqEmail && r.studentEmail && r.studentEmail.trim().toLowerCase() === targetReqEmail) return true;
+    if (targetReqCode && r.studentCode && r.studentCode.trim().toUpperCase() === targetReqCode) return true;
+    return false;
+  });
+  const matchingIds = new Set(matchingRequests.map((r) => r.id));
+  const remainingRequests = pendingRequests.filter((r) => !matchingIds.has(r.id));
+
   let updatedStudents = targetClass.students || [];
 
   if (action === 'approve') {
@@ -3251,7 +4141,13 @@ export function reviewClassJoinRequest(
       joinedAt: new Date().toISOString().split('T')[0],
     };
 
-    if (!updatedStudents.some((s) => s.id === newStudent.id || (s.email && s.email === newStudent.email))) {
+    if (
+      !updatedStudents.some(
+        (s) =>
+          s.id === newStudent.id ||
+          (targetReqEmail && s.email && s.email.trim().toLowerCase() === targetReqEmail)
+      )
+    ) {
       updatedStudents = [...updatedStudents, newStudent];
     }
   }
@@ -3264,26 +4160,49 @@ export function reviewClassJoinRequest(
     updatedAt: nowIso,
   };
 
-  // Cập nhật trạng thái yêu cầu cục bộ nếu có
   upsertMyTrackedJoinRequest({
     ...targetRequest,
     status: action === 'approve' ? 'approved' : 'rejected',
     updatedAt: nowIso,
   });
 
-  saveClassroom(updatedClass);
-  void syncJoinRequestDecisionToFirestore(
-    classId,
-    requestId,
-    action === 'approve' ? 'approved' : 'rejected'
-  ).catch(() => {});
-  void triggerCloudSync();
+  saveClassroom(updatedClass, { skipCloudSync: Boolean(getFirebaseAuthUser()) });
+
+  // Sync updated parent classroom immediately + update subcollection requests so approved requests NEVER reappear
+  const nextStatus = action === 'approve' ? 'approved' : 'rejected';
+  void syncSingleClassroomToFirestoreNow(updatedClass, getCurrentUser()).then(() => {
+    if (action === 'approve' && targetRequest.studentId && targetRequest.studentEmail) {
+      const fbUser = getFirebaseAuthUser();
+      const teacherEmails = Array.from(
+        new Set(
+          [targetClass.teacherEmail, fbUser?.email, getCurrentUser()?.email]
+            .filter((x): x is string => Boolean(x))
+            .map((e) => e.trim().toLowerCase())
+        )
+      );
+      if (fbUser && teacherEmails.length > 0) {
+        void linkExistingStudentToTeacherCredentialsFirestore({
+          uid: targetRequest.studentId,
+          email: targetRequest.studentEmail,
+          username: targetRequest.studentEmail.split('@')[0],
+          fullName: targetRequest.studentName,
+          studentCode: targetRequest.studentCode,
+          school: targetClass.name,
+          classId,
+          teacherEmails,
+        }).catch(() => {});
+      }
+    }
+  });
+  matchingRequests.forEach((reqItem) => {
+    void syncJoinRequestDecisionToFirestore(classId, reqItem.id, nextStatus).catch(() => {});
+  });
 
   return {
     success: true,
     message:
       action === 'approve'
-        ? `Đã duyệt học sinh ${targetRequest.studentName} vào lớp!`
+        ? `Đã duyệt học sinh ${targetRequest.studentName} vào lớp (chỉ duyệt 1 lần)!`
         : `Đã từ chối yêu cầu của ${targetRequest.studentName}.`,
   };
 }
@@ -3303,9 +4222,13 @@ export function getAllScoreboards(): Scoreboard[] {
   }
 }
 
-export function saveScoreboard(sb: Scoreboard): void {
+export function saveScoreboard(sb: Scoreboard, options?: { skipCloudSync?: boolean }): void {
   try {
-    removeDeletedIdByKey(STORAGE_KEY_DELETED_SCOREBOARDS, sb.id);
+    const wasDeleted = getDeletedScoreboardIds().includes(sb.id);
+    if (wasDeleted) {
+      removeDeletedIdByKey(STORAGE_KEY_DELETED_SCOREBOARDS, sb.id);
+      markDirtySiteConfig('tombstones');
+    }
     const list = getAllScoreboards();
     const stamped: Scoreboard = {
       ...sb,
@@ -3313,7 +4236,14 @@ export function saveScoreboard(sb: Scoreboard): void {
     };
     const updated = [stamped, ...list.filter((item) => item.id !== stamped.id)];
     localStorage.setItem(STORAGE_KEY_SCOREBOARDS, JSON.stringify(updated));
-    scheduleCloudSync();
+    if (!options?.skipCloudSync) {
+      markDirtyCloudEntity('scoreboards', stamped.id);
+      scheduleCloudSync();
+    } else {
+      try {
+        saveSnapshotToIndexedDB(buildFullSyncPayload());
+      } catch {}
+    }
   } catch (e) {
     console.error('Failed to save scoreboard:', e);
   }
@@ -3325,6 +4255,7 @@ export function deleteScoreboard(scoreboardId: string): void {
     const updated = getAllScoreboards().filter((s) => s.id !== scoreboardId);
     localStorage.setItem(STORAGE_KEY_SCOREBOARDS, JSON.stringify(updated));
     void safeDeleteFirestoreDoc('scoreboards', scoreboardId).catch(() => {});
+    markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
     console.error('Failed to delete scoreboard:', e);
@@ -3358,7 +4289,7 @@ export function addStudentDirectlyToClass(
   };
 
   saveClassroom(updatedClass);
-  triggerCloudSync();
+  void triggerCloudSync();
 
   return { success: true, message: `Đã thêm học sinh "${newStudent.name}" vào lớp thành công!` };
 }
@@ -3439,6 +4370,8 @@ export function buildFullSyncPayload() {
   };
 }
 
+const IDB_COURSES_ARCHIVE_KEY = 'edutest_courses_archive_v1';
+
 function saveSnapshotToIndexedDB(payload: any): void {
   try {
     if (typeof indexedDB === 'undefined') return;
@@ -3453,7 +4386,41 @@ function saveSnapshotToIndexedDB(payload: any): void {
       try {
         const db = req.result;
         const tx = db.transaction(IDB_STORE, 'readwrite');
-        tx.objectStore(IDB_STORE).put(payload, IDB_KEY);
+        const store = tx.objectStore(IDB_STORE);
+        const coursesArr: MicroCourse[] = Array.isArray(payload?.courses) ? payload.courses : [];
+        if (coursesArr.length > 0) {
+          store.put(payload, IDB_KEY);
+          const archReq = store.get(IDB_COURSES_ARCHIVE_KEY);
+          archReq.onsuccess = () => {
+            try {
+              const prevArch: MicroCourse[] = Array.isArray(archReq.result) ? archReq.result : [];
+              const mergedMap = new Map<string, MicroCourse>();
+              prevArch.forEach((c) => {
+                if (c?.id) mergedMap.set(c.id, c);
+              });
+              coursesArr.forEach((c) => {
+                if (c?.id) mergedMap.set(c.id, c);
+              });
+              store.put(Array.from(mergedMap.values()), IDB_COURSES_ARCHIVE_KEY);
+            } catch {}
+          };
+        } else {
+          // Never erase existing courses inside IDB_KEY snapshot with an empty array
+          const prevReq = store.get(IDB_KEY);
+          prevReq.onsuccess = () => {
+            try {
+              const prevSnap = prevReq.result;
+              const prevCourses = Array.isArray(prevSnap?.courses) ? prevSnap.courses : [];
+              const nextPayload =
+                prevCourses.length > 0 && !initialPullCompleted
+                  ? { ...payload, courses: prevCourses }
+                  : payload;
+              store.put(nextPayload, IDB_KEY);
+            } catch {
+              store.put(payload, IDB_KEY);
+            }
+          };
+        }
       } catch {}
     };
   } catch {}
@@ -3491,6 +4458,62 @@ function loadSnapshotFromIndexedDB(): Promise<any | null> {
   });
 }
 
+export function loadCoursesArchiveFromIndexedDB(): Promise<MicroCourse[]> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === 'undefined') {
+        resolve([]);
+        return;
+      }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction(IDB_STORE, 'readonly');
+          const store = tx.objectStore(IDB_STORE);
+          const archReq = store.get(IDB_COURSES_ARCHIVE_KEY);
+          const snapReq = store.get(IDB_KEY);
+          let archCourses: MicroCourse[] = [];
+          let snapCourses: MicroCourse[] = [];
+          let done = 0;
+          const finish = () => {
+            done++;
+            if (done < 2) return;
+            const map = new Map<string, MicroCourse>();
+            [...snapCourses, ...archCourses].forEach((c) => {
+              if (c && c.id && c.id !== 'course_ham_so_12' && c.id !== 'course_grammar_fast') {
+                map.set(c.id, c);
+              }
+            });
+            resolve(Array.from(map.values()));
+          };
+          archReq.onsuccess = () => {
+            archCourses = Array.isArray(archReq.result) ? archReq.result : [];
+            finish();
+          };
+          archReq.onerror = finish;
+          snapReq.onsuccess = () => {
+            snapCourses = Array.isArray(snapReq.result?.courses) ? snapReq.result.courses : [];
+            finish();
+          };
+          snapReq.onerror = finish;
+        } catch {
+          resolve([]);
+        }
+      };
+      req.onerror = () => resolve([]);
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
 export interface CloudSyncState {
   status: 'idle' | 'syncing' | 'synced' | 'error';
   error?: string;
@@ -3522,25 +4545,111 @@ export function subscribeCloudSyncStatus(cb: (state: CloudSyncState) => void): (
 }
 
 let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let locationSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let autoSyncInitialized = false;
 let initialPullCompleted = false;
+let lastPullCompletedAtMs = 0;
+let lastPullAuthUid = '';
 let hasLocalMutations = false;
 let lastLocalMutationMs = 0;
+const dirtyEntityKeys = new Set<string>();
+const dirtySiteConfigKeys = new Set<string>();
+let dirtyUserProfile = false;
 
-export function hasLocalCachedLibraryData(): boolean {
-  try {
-    return Boolean(
-      localStorage.getItem(STORAGE_KEY_CUSTOM_EXAMS) ||
-        localStorage.getItem(STORAGE_KEY_CUSTOM_BUNDLES) ||
-        localStorage.getItem(STORAGE_KEY_COURSES) ||
-        localStorage.getItem(STORAGE_KEY_CLASSROOMS)
-    );
-  } catch {
-    return false;
+export function markDirtyCloudEntity(col: string, id: string): void {
+  if (!col || !id) return;
+  dirtyEntityKeys.add(`${col}/${id}`);
+  const sanitized = sanitizeDocId(id);
+  if (sanitized && sanitized !== id) {
+    dirtyEntityKeys.add(`${col}/${sanitized}`);
   }
 }
 
-export function scheduleCloudSync(): void {
+export function markDirtySiteConfig(key: 'tombstones' | 'subjects' | 'navTabs' | 'liveText'): void {
+  dirtySiteConfigKeys.add(key);
+}
+
+export function markDirtyUserProfile(): void {
+  dirtyUserProfile = true;
+}
+
+function clearDirtyCloudTracking(): void {
+  dirtyEntityKeys.clear();
+  dirtySiteConfigKeys.clear();
+  dirtyUserProfile = false;
+  if (syncDebounceTimer) {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = null;
+  }
+  if (locationSyncTimer) {
+    clearTimeout(locationSyncTimer);
+    locationSyncTimer = null;
+  }
+}
+
+function consumeDirtyCloudScope(): { scope: DirtyPushScope | null; hasAny: boolean } {
+  const hasAny =
+    dirtyEntityKeys.size > 0 || dirtySiteConfigKeys.size > 0 || dirtyUserProfile;
+  if (!hasAny) return { scope: null, hasAny: false };
+  const scope: DirtyPushScope = {
+    entities: Array.from(dirtyEntityKeys),
+    siteConfig: Array.from(dirtySiteConfigKeys),
+    userProfile: dirtyUserProfile,
+  };
+  dirtyEntityKeys.clear();
+  dirtySiteConfigKeys.clear();
+  dirtyUserProfile = false;
+  return { scope, hasAny: true };
+}
+
+function restoreDirtyCloudScope(scope: DirtyPushScope | null): void {
+  if (!scope) return;
+  scope.entities?.forEach((k) => dirtyEntityKeys.add(k));
+  scope.siteConfig?.forEach((k) => dirtySiteConfigKeys.add(k));
+  if (scope.userProfile) dirtyUserProfile = true;
+}
+
+let pushInFlightPromise: Promise<{
+  success: boolean;
+  lastSyncedAt?: string;
+  firestoreSynced?: boolean;
+  error?: string;
+}> | null = null;
+let pendingPushQueued = false;
+let pullInFlightPromise: Promise<{
+  success: boolean;
+  mergedCount?: number;
+  firestoreConnected?: boolean;
+  error?: string;
+}> | null = null;
+let pendingPullQueued = false;
+let offlineMigrationTriggered = false;
+
+function getStoredArrayCount(key: string): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return 0;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function hasLocalCoursesCached(): boolean {
+  return getStoredArrayCount(STORAGE_KEY_COURSES) > 0;
+}
+
+export function hasLocalCachedLibraryData(): boolean {
+  return (
+    getStoredArrayCount(STORAGE_KEY_CUSTOM_EXAMS) > 0 ||
+    getStoredArrayCount(STORAGE_KEY_CUSTOM_BUNDLES) > 0 ||
+    getStoredArrayCount(STORAGE_KEY_COURSES) > 0 ||
+    getStoredArrayCount(STORAGE_KEY_CLASSROOMS) > 0
+  );
+}
+
+export function scheduleCloudSync(debounceMs: number = 600): void {
   hasLocalMutations = true;
   lastLocalMutationMs = Date.now();
   try {
@@ -3548,17 +4657,38 @@ export function scheduleCloudSync(): void {
     saveSnapshotToIndexedDB(snapshot);
   } catch {}
 
+  if (locationSyncTimer) {
+    clearTimeout(locationSyncTimer);
+    locationSyncTimer = null;
+  }
   if (syncDebounceTimer) {
     clearTimeout(syncDebounceTimer);
   }
   syncDebounceTimer = setTimeout(() => {
     syncDebounceTimer = null;
     void triggerCloudSync();
-  }, 15);
+  }, Math.max(50, debounceMs));
+}
+
+function scheduleLocationCloudSync(): void {
+  hasLocalMutations = true;
+  lastLocalMutationMs = Date.now();
+  try {
+    const snapshot = buildFullSyncPayload();
+    saveSnapshotToIndexedDB(snapshot);
+  } catch {}
+
+  if (syncDebounceTimer) return; // A regular sync is already pending and will flush location too
+  if (locationSyncTimer) {
+    clearTimeout(locationSyncTimer);
+  }
+  locationSyncTimer = setTimeout(() => {
+    locationSyncTimer = null;
+    void triggerCloudSync();
+  }, 4000);
 }
 
 export function flushCloudSyncBeacon(): void {
-  // Không đẩy dữ liệu rỗng lên server nếu phiên làm việc mới mở và chưa kéo xong dữ liệu từ Cloud
   if (!initialPullCompleted || !hasLocalMutations) return;
   try {
     const payload = buildFullSyncPayload();
@@ -3587,84 +4717,136 @@ export function initAutoSyncLifecycle(): void {
   });
 }
 
-export async function triggerCloudSync(): Promise<{
+export async function triggerCloudSync(options?: { forceFull?: boolean }): Promise<{
   success: boolean;
   lastSyncedAt?: string;
   firestoreSynced?: boolean;
   error?: string;
 }> {
-  let serverOk = false;
-  let firestoreOk = false;
-  let lastSyncedAt: string | undefined;
-  let errorMsg: string | undefined;
-
-  const payload = buildFullSyncPayload();
-  saveSnapshotToIndexedDB(payload);
-
-  const fbUser = getFirebaseAuthUser();
-  const currentWebUser = getCurrentUser();
-  const hasCloudSession = Boolean(fbUser && !fbUser.isAnonymous);
-
-  updateSyncState({ status: 'syncing', lastSyncedAt: currentSyncState.lastSyncedAt });
-
-  if (hasCloudSession) {
-    try {
-      const authHeaders = await getAuthHeaders();
-      const res = await fetch('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        keepalive: true,
-        body: JSON.stringify(payload),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        serverOk = true;
-        lastSyncedAt = data.lastSyncedAt;
-      }
-    } catch {}
+  if (pushInFlightPromise) {
+    pendingPushQueued = true;
+    return await pushInFlightPromise;
   }
 
-  if (hasCloudSession) {
-    try {
-      const pushRes = await pushAuthorizedDataToFirestore(payload, currentWebUser, {
-        lastLocalMutationMs: hasLocalMutations ? lastLocalMutationMs : 0,
-      });
-      if (pushRes.ok) {
+  const runPush = async (): Promise<{
+    success: boolean;
+    lastSyncedAt?: string;
+    firestoreSynced?: boolean;
+    error?: string;
+  }> => {
+    let serverOk = false;
+    let firestoreOk = false;
+    let lastSyncedAt: string | undefined;
+    let errorMsg: string | undefined;
+
+    if (syncDebounceTimer) {
+      clearTimeout(syncDebounceTimer);
+      syncDebounceTimer = null;
+    }
+    if (locationSyncTimer) {
+      clearTimeout(locationSyncTimer);
+      locationSyncTimer = null;
+    }
+
+    const payload = buildFullSyncPayload();
+    saveSnapshotToIndexedDB(payload);
+
+    const fbUser = getFirebaseAuthUser();
+    const currentWebUser = getCurrentUser();
+    const hasCloudSession = Boolean(fbUser && !fbUser.isAnonymous);
+
+    const { scope: dirtySnapshot, hasAny } = consumeDirtyCloudScope();
+
+    // When nothing dirty exists in Firestore session and not forced, skip unnecessary cloud roundtrip
+    if (hasCloudSession && !options?.forceFull && !hasAny && !hasLocalMutations) {
+      return {
+        success: true,
+        firestoreSynced: true,
+        lastSyncedAt: currentSyncState.lastSyncedAt,
+      };
+    }
+
+    updateSyncState({ status: 'syncing', lastSyncedAt: currentSyncState.lastSyncedAt });
+
+    if (hasCloudSession) {
+      const mutationWindowMs = hasLocalMutations ? lastLocalMutationMs : 0;
+      const shouldPushToExpress = Boolean(options?.forceFull);
+      const [serverRes, firestoreRes] = await Promise.all([
+        shouldPushToExpress
+          ? (async () => {
+              try {
+                const authHeaders = await getAuthHeaders();
+                if (!authHeaders.Authorization) return null;
+                const res = await fetch('/api/sync', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', ...authHeaders },
+                  keepalive: true,
+                  body: JSON.stringify(payload),
+                });
+                return res.ok ? await res.json() : null;
+              } catch {
+                return null;
+              }
+            })()
+          : Promise.resolve(null),
+        pushAuthorizedDataToFirestore(payload, currentWebUser, {
+          lastLocalMutationMs: mutationWindowMs,
+          dirtyKeys: options?.forceFull ? undefined : dirtySnapshot || { entities: [], siteConfig: [], userProfile: false },
+          forceFull: options?.forceFull,
+          onCourseMediaOffloaded: (cleanCourse) => applyHydratedCourseToLocalCache(cleanCourse),
+        }).catch((err) => ({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        })),
+      ]);
+
+      if (serverRes) {
+        serverOk = true;
+        lastSyncedAt = serverRes.lastSyncedAt;
+      }
+      if (firestoreRes?.ok) {
         firestoreOk = true;
-        hasLocalMutations = false;
+        hasLocalMutations = dirtyEntityKeys.size > 0 || dirtySiteConfigKeys.size > 0 || dirtyUserProfile;
         lastSyncedAt = lastSyncedAt || payload.lastSyncedAt;
       } else {
-        errorMsg = pushRes.error || 'Không thể đẩy dữ liệu lên Cloud Firestore.';
+        restoreDirtyCloudScope(dirtySnapshot);
+        errorMsg = firestoreRes?.error || 'Không thể đẩy dữ liệu lên Cloud Firestore.';
       }
-    } catch (err) {
-      errorMsg = err instanceof Error ? err.message : String(err);
-      console.error('Firestore push failed:', errorMsg);
     }
-  }
 
-  if (hasCloudSession && !firestoreOk) {
-    const finalError = errorMsg || 'Không thể đẩy dữ liệu lên Cloud Firestore.';
-    updateSyncState({ status: 'error', error: finalError, lastSyncedAt });
+    if (hasCloudSession && !firestoreOk) {
+      const finalError = errorMsg || 'Không thể đẩy dữ liệu lên Cloud Firestore.';
+      updateSyncState({ status: 'error', error: finalError, lastSyncedAt });
+      return {
+        success: false,
+        lastSyncedAt,
+        firestoreSynced: false,
+        error: finalError,
+      };
+    }
+
+    const ok = hasCloudSession ? firestoreOk : serverOk;
+    updateSyncState({
+      status: ok ? 'synced' : 'idle',
+      lastSyncedAt: lastSyncedAt || currentSyncState.lastSyncedAt,
+    });
+
     return {
-      success: false,
+      success: ok,
       lastSyncedAt,
-      firestoreSynced: false,
-      error: finalError,
+      firestoreSynced: firestoreOk,
     };
-  }
+  };
 
-  const ok = hasCloudSession ? firestoreOk : serverOk;
-  updateSyncState({
-    status: ok ? 'synced' : 'idle',
-    lastSyncedAt: lastSyncedAt || currentSyncState.lastSyncedAt,
+  pushInFlightPromise = runPush().finally(() => {
+    pushInFlightPromise = null;
+    if (pendingPushQueued) {
+      pendingPushQueued = false;
+      void triggerCloudSync();
+    }
   });
 
-  return {
-    success: ok,
-    lastSyncedAt,
-    firestoreSynced: firestoreOk,
-  };
+  return await pushInFlightPromise;
 }
 
 function getSyncItemTs(item: any): number {
@@ -3702,6 +4884,61 @@ function mergeByTimestamp<T extends { id: string }>(
     }
     const prevTs = getSyncItemTs(prev);
     const nextTs = getSyncItemTs(item);
+    if (nextTs > prevTs || (nextTs === prevTs && preferIncomingOnTie)) {
+      map.set(item.id, item);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeCoursesByTimestamp(
+  incomingList: MicroCourse[],
+  localList: MicroCourse[],
+  deletedSet: Set<string>,
+  preferIncomingOnTie: boolean = true
+): MicroCourse[] {
+  const map = new Map<string, MicroCourse>();
+  for (const item of localList) {
+    if (item && item.id && !deletedSet.has(item.id)) {
+      map.set(item.id, item);
+    }
+  }
+  for (const item of incomingList) {
+    if (!item || !item.id || deletedSet.has(item.id)) continue;
+    const prev = map.get(item.id);
+    if (!prev) {
+      map.set(item.id, item);
+      continue;
+    }
+    const prevTs = getSyncItemTs(prev);
+    const nextTs = getSyncItemTs(item);
+    const incomingIsMetadataStub = item.schemaVersion === 2 && item.detailsLoaded === false;
+    const prevHasDetails =
+      prev.detailsLoaded !== false &&
+      ((prev.chapters && prev.chapters.length > 0) || (prev.lessons && prev.lessons.length > 0));
+
+    if (incomingIsMetadataStub && prevHasDetails) {
+      if (nextTs > prevTs) {
+        // Remote subcollections/metadata updated — mark detailsLoaded: false so view re-hydrates cleanly
+        map.set(item.id, { ...item, detailsLoaded: false });
+      } else {
+        // Keep local hydrated chapters while optionally updating metadata on timestamp tie
+        const base = preferIncomingOnTie && nextTs === prevTs ? { ...prev, ...item } : prev;
+        map.set(item.id, {
+          ...base,
+          chapters: prev.chapters,
+          lessons: prev.lessons,
+          chapterCount: prev.chapters?.length ?? item.chapterCount,
+          lessonCount:
+            prev.chapters && prev.chapters.length > 0
+              ? prev.chapters.reduce((s, ch) => s + (ch.lessons?.length || 0), 0)
+              : prev.lessons?.length ?? item.lessonCount,
+          detailsLoaded: true,
+        });
+      }
+      continue;
+    }
+
     if (nextTs > prevTs || (nextTs === prevTs && preferIncomingOnTie)) {
       map.set(item.id, item);
     }
@@ -3801,10 +5038,15 @@ function applyMergedSnapshotToLocalStorage(
     localStorage.setItem(STORAGE_KEY_CUSTOM_BUNDLES, JSON.stringify(merged));
   }
 
-  // 6. Merge courses
+  // 6. Merge courses (preserve hydrated v2 subcollection content locally when incoming is metadata-only)
   if (sourceData.courses && Array.isArray(sourceData.courses)) {
     const localCourses = getAllCourses();
-    const merged = mergeByTimestamp(sourceData.courses, localCourses, delCourseSet, preferIncomingOnTie);
+    const merged = mergeCoursesByTimestamp(
+      sourceData.courses,
+      localCourses,
+      delCourseSet,
+      preferIncomingOnTie
+    );
     localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(merged));
   }
 
@@ -3858,7 +5100,10 @@ function applyMergedSnapshotToLocalStorage(
     const incomingNavTs = new Date(sourceData.navTabsUpdatedAt || 0).getTime() || 0;
     const hasLocalTabs = Boolean(localStorage.getItem(STORAGE_KEY_NAV_TABS));
     if (!hasLocalTabs || incomingNavTs > localNavTs || (incomingNavTs === localNavTs && preferIncomingOnTie)) {
-      const filtered = sourceData.navTabs.filter((t: NavTabItem) => (t as any).targetView !== 'oj' && t.id !== 'tab_oj');
+      const filtered = sourceData.navTabs.filter((t: NavTabItem) => {
+        const tv = (t as any).targetView;
+        return tv !== 'oj' && t.id !== 'tab_oj' && tv !== 'battle' && t.id !== 'tab_battle';
+      });
       if (filtered.length > 0) {
         const migrated = injectGamesTabIfNeeded(filtered);
         localStorage.setItem(STORAGE_KEY_NAV_TABS, JSON.stringify(migrated.tabs));
@@ -3924,113 +5169,236 @@ function applyMergedSnapshotToLocalStorage(
   }
 }
 
+export function applyRealtimeCloudDelta(
+  delta: FirestoreSyncSnapshot,
+  removedByCollection: Record<string, string[]> = {}
+): void {
+  const removeMap: {
+    col: string;
+    storageKey: string;
+    delKey: string;
+  }[] = [
+    { col: 'exams', storageKey: STORAGE_KEY_CUSTOM_EXAMS, delKey: STORAGE_KEY_DELETED_EXAMS },
+    { col: 'bundles', storageKey: STORAGE_KEY_CUSTOM_BUNDLES, delKey: STORAGE_KEY_DELETED_BUNDLES },
+    { col: 'classrooms', storageKey: STORAGE_KEY_CLASSROOMS, delKey: STORAGE_KEY_DELETED_CLASSROOMS },
+    { col: 'courses', storageKey: STORAGE_KEY_COURSES, delKey: STORAGE_KEY_DELETED_COURSES },
+    { col: 'results', storageKey: STORAGE_KEY_RESULTS, delKey: STORAGE_KEY_DELETED_RESULTS },
+    { col: 'classroomHomeworks', storageKey: STORAGE_KEY_CLASSROOM_HOMEWORKS, delKey: STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS },
+    { col: 'homeworkSubmissions', storageKey: STORAGE_KEY_HOMEWORK_SUBMISSIONS, delKey: STORAGE_KEY_DELETED_HOMEWORK },
+    { col: 'scoreboards', storageKey: STORAGE_KEY_SCOREBOARDS, delKey: STORAGE_KEY_DELETED_SCOREBOARDS },
+  ];
+
+  for (const cfg of removeMap) {
+    const removedIds = removedByCollection[cfg.col];
+    if (removedIds && removedIds.length > 0) {
+      const remSet = new Set(removedIds);
+      try {
+        const raw = localStorage.getItem(cfg.storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            localStorage.setItem(
+              cfg.storageKey,
+              JSON.stringify(parsed.filter((item: any) => item && !remSet.has(item.id)))
+            );
+          }
+        }
+        // NOTE: Never add onSnapshot `removed` events into STORAGE_KEY_DELETED_* tombstones!
+        // Scoped queries fire `removed` when visibility/access/limit shifts, not just on deletion.
+      } catch {}
+    }
+  }
+
+  if (delta.joinRequestsByClassId && typeof delta.joinRequestsByClassId === 'object') {
+    const localClasses = getAllClassrooms();
+    let changedReqs = false;
+    const nextClasses = localClasses.map((cls) => {
+      const nextReqs = delta.joinRequestsByClassId?.[cls.id];
+      if (!nextReqs) return cls;
+      changedReqs = true;
+      return sanitizeClassroomStudents({ ...cls, pendingRequests: nextReqs });
+    });
+    if (changedReqs) {
+      localStorage.setItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(nextClasses));
+    }
+  }
+
+  applyMergedSnapshotToLocalStorage(delta, { preferIncomingOnTie: true });
+  updateSyncState({ status: 'synced', lastSyncedAt: new Date().toISOString() });
+  try {
+    saveSnapshotToIndexedDB(buildFullSyncPayload());
+  } catch {}
+}
+
 export async function pullDataFromServer(options?: {
   forceFull?: boolean;
+  minIntervalMs?: number;
+  activeClassId?: string;
 }): Promise<{
   success: boolean;
   mergedCount?: number;
   firestoreConnected?: boolean;
   error?: string;
 }> {
-  let anySuccess = false;
-  let firestoreConnected = false;
-  let firestorePullError: string | undefined;
+  const preFbUser = getFirebaseAuthUser();
+  const currentAuthUid = preFbUser && !preFbUser.isAnonymous ? preFbUser.uid : '';
+  const authChangedSinceLastPull = currentAuthUid !== lastPullAuthUid;
 
-  try {
-    const fbUser = getFirebaseAuthUser();
-    const currentWebUser = getCurrentUser();
-    const hasCloudUser = Boolean(fbUser && !fbUser.isAnonymous);
+  if (
+    !options?.forceFull &&
+    !authChangedSinceLastPull &&
+    options?.minIntervalMs &&
+    initialPullCompleted &&
+    lastPullCompletedAtMs > 0 &&
+    Date.now() - lastPullCompletedAtMs < options.minIntervalMs
+  ) {
+    return { success: true, firestoreConnected: Boolean(preFbUser) };
+  }
 
-    // 1. Hydrate IndexedDB local cache first for 0ms optimistic render
-    const idbBackup = await loadSnapshotFromIndexedDB().catch(() => null);
-    if (idbBackup) {
-      applyMergedSnapshotToLocalStorage(idbBackup, { preferIncomingOnTie: false });
-      anySuccess = true;
-    }
+  if (pullInFlightPromise) {
+    pendingPullQueued = true;
+    return await pullInFlightPromise;
+  }
 
-    // Check if there is unpushed legacy/local user data before cloud merge
-    const preMergeLocalPayload = buildFullSyncPayload();
-    const hasPreExistingLocalData = Boolean(
-      hasLocalMutations ||
-        preMergeLocalPayload.customExams.length > 0 ||
-        preMergeLocalPayload.customBundles.length > 0 ||
-        preMergeLocalPayload.courses.length > 0 ||
-        preMergeLocalPayload.classrooms.length > 0 ||
-        preMergeLocalPayload.results.length > 0
-    );
+  const executePull = async (): Promise<{
+    success: boolean;
+    mergedCount?: number;
+    firestoreConnected?: boolean;
+    error?: string;
+  }> => {
+    let anySuccess = false;
+    let firestoreConnected = false;
+    let firestorePullError: string | undefined;
 
-    if (hasCloudUser && hasPreExistingLocalData) {
-      // Auto-push any local items missing on Cloud BEFORE/WHILE merging so user data is never lost
-      try {
-        await pushAuthorizedDataToFirestore(preMergeLocalPayload, currentWebUser, {
-          lastLocalMutationMs: hasLocalMutations ? lastLocalMutationMs : 0,
-        });
-      } catch {}
-    }
+    try {
+      const fbUser = getFirebaseAuthUser();
+      const currentWebUser = getCurrentUser();
+      const hasCloudUser = Boolean(fbUser && !fbUser.isAnonymous);
 
-    // 2. Delta Sync (or full pull on clean browser) from Cloud Firestore & caller-scoped Node mirror
-    const forceFull = options?.forceFull ?? !hasLocalCachedLibraryData();
-    const authHeaders = hasCloudUser ? await getAuthHeaders() : {};
-    const [serverJson, firestoreSnapshot] = await Promise.all([
-      fetch('/api/sync', { headers: authHeaders })
-        .then((res) => (res.ok ? res.json() : null))
-        .catch(() => null),
-      (hasCloudUser
-        ? pullAuthenticatedDataFromFirestore(currentWebUser, { forceFull })
-        : pullPublicDataFromFirestore()
+      // 1. Hydrate IndexedDB local cache synchronously on initial boot only (0ms optimistic render)
+      if (!initialPullCompleted) {
+        const idbBackup = await loadSnapshotFromIndexedDB().catch(() => null);
+        if (idbBackup) {
+          applyMergedSnapshotToLocalStorage(idbBackup, { preferIncomingOnTie: false });
+          anySuccess = true;
+        }
+      }
+
+      // 2. Direct single-roundtrip Delta/Full Pull (skip redundant /api/sync when Cloud Auth is active)
+      const activeAuthUid = hasCloudUser && fbUser ? fbUser.uid : '';
+      const didAuthChange = activeAuthUid !== lastPullAuthUid;
+      const forceFull = options?.forceFull ?? (!hasLocalCachedLibraryData() || didAuthChange);
+      const forceCoursesFull = !hasLocalCoursesCached() || didAuthChange;
+      const activeCls = options?.activeClassId ?? getActiveClassId();
+      const firestorePromise = (
+        hasCloudUser
+          ? pullAuthenticatedDataFromFirestore(currentWebUser, {
+              forceFull,
+              forceCoursesFull,
+              activeClassId: activeCls || undefined,
+            })
+          : pullPublicDataFromFirestore()
       ).catch((fsErr) => {
         firestorePullError = fsErr instanceof Error ? fsErr.message : String(fsErr);
         console.warn('Firestore pull error:', firestorePullError);
         return null;
-      }),
-    ]);
+      });
 
-    if (serverJson && serverJson.success && serverJson.data) {
-      applyMergedSnapshotToLocalStorage(serverJson.data, { preferIncomingOnTie: true });
-      anySuccess = true;
-    }
+      const serverPromise = !hasCloudUser
+        ? fetch('/api/sync?skipCloud=1')
+            .then((res) => (res.ok ? res.json() : null))
+            .catch(() => null)
+        : Promise.resolve(null);
 
-    if (firestoreSnapshot !== null) {
-      firestoreConnected = hasCloudUser;
-      if (Object.keys(firestoreSnapshot).length > 0) {
-        applyMergedSnapshotToLocalStorage(firestoreSnapshot, { preferIncomingOnTie: true });
+      const [serverJson, firestoreSnapshot] = await Promise.all([serverPromise, firestorePromise]);
+
+      if (serverJson && serverJson.success && serverJson.data) {
+        applyMergedSnapshotToLocalStorage(serverJson.data, { preferIncomingOnTie: true });
         anySuccess = true;
+      }
 
-        if (hasCloudUser && authHeaders.Authorization) {
-          void fetch('/api/sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders },
-            body: JSON.stringify(buildFullSyncPayload()),
+      if (firestoreSnapshot !== null) {
+        firestoreConnected = hasCloudUser;
+        if (
+          Array.isArray(firestoreSnapshot.falselyTombstonedCourseIds) &&
+          firestoreSnapshot.falselyTombstonedCourseIds.length > 0
+        ) {
+          // Courses still exist on Cloud Firestore: clean false tombstones locally & on cloud
+          const falseSet = new Set(firestoreSnapshot.falselyTombstonedCourseIds);
+          const cleanedLocalDeleted = getDeletedCourseIds().filter((id) => !falseSet.has(id));
+          localStorage.setItem(STORAGE_KEY_DELETED_COURSES, JSON.stringify(cleanedLocalDeleted));
+          if (
+            currentWebUser &&
+            (currentWebUser.role === 'teacher' || isMasterAdminUser(currentWebUser))
+          ) {
+            void clearCoursesFromCloudTombstones(
+              firestoreSnapshot.falselyTombstonedCourseIds,
+              [],
+              getAllClassrooms(),
+              currentWebUser
+            ).catch(() => {});
+          }
+        }
+        if (Object.keys(firestoreSnapshot).length > 0) {
+          applyMergedSnapshotToLocalStorage(firestoreSnapshot, { preferIncomingOnTie: true });
+          anySuccess = true;
+        }
+        if (currentSyncState.status !== 'error') {
+          updateSyncState({ status: 'synced', lastSyncedAt: new Date().toISOString() });
+        }
+      } else if (firestorePullError) {
+        updateSyncState({ status: 'error', error: firestorePullError });
+      }
+
+      // 3. Non-blocking background push ONLY when real local mutations exist (never overwrite cloud tombstones)
+      if (hasCloudUser && hasLocalMutations) {
+        void triggerCloudSync();
+      } else if (hasCloudUser && !offlineMigrationTriggered) {
+        offlineMigrationTriggered = true;
+        const preLocal = buildFullSyncPayload();
+        const isTeacherOrAdmin =
+          currentWebUser?.role === 'teacher' || isMasterAdminUser(currentWebUser);
+        if (
+          isTeacherOrAdmin &&
+          (preLocal.customExams.length > 0 ||
+            preLocal.customBundles.length > 0 ||
+            preLocal.courses.length > 0 ||
+            preLocal.classrooms.length > 0)
+        ) {
+          const entitiesToCheck: string[] = [
+            ...preLocal.customExams.map((e) => `exams/${sanitizeDocId(e.id)}`),
+            ...preLocal.customBundles.map((b) => `bundles/${sanitizeDocId(b.id)}`),
+            ...preLocal.courses.map((c) => `courses/${sanitizeDocId(c.id)}`),
+            ...preLocal.classrooms.map((cls) => `classrooms/${sanitizeDocId(cls.id)}`),
+          ];
+          void pushAuthorizedDataToFirestore(preLocal, currentWebUser, {
+            lastLocalMutationMs: 0,
+            dirtyKeys: { entities: entitiesToCheck, siteConfig: [], userProfile: false },
           }).catch(() => {});
         }
       }
-      if (currentSyncState.status !== 'error') {
-        updateSyncState({ status: 'synced', lastSyncedAt: new Date().toISOString() });
-      }
-    } else if (firestorePullError) {
-      updateSyncState({ status: 'error', error: firestorePullError });
-    }
 
-    if (hasCloudUser && hasLocalMutations) {
-      try {
-        const pushRes = await pushAuthorizedDataToFirestore(buildFullSyncPayload(), currentWebUser, {
-          lastLocalMutationMs,
-        });
-        if (pushRes.ok) {
-          hasLocalMutations = false;
-          firestoreConnected = true;
-        }
-      } catch {}
+      saveSnapshotToIndexedDB(buildFullSyncPayload());
+      lastPullAuthUid = activeAuthUid;
+      lastPullCompletedAtMs = Date.now();
+      return { success: anySuccess, firestoreConnected, error: firestorePullError };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: anySuccess, firestoreConnected, error: msg };
+    } finally {
+      initialPullCompleted = true;
     }
+  };
 
-    saveSnapshotToIndexedDB(buildFullSyncPayload());
-    return { success: anySuccess, firestoreConnected, error: firestorePullError };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { success: anySuccess, firestoreConnected, error: msg };
-  } finally {
-    initialPullCompleted = true;
-  }
+  pullInFlightPromise = executePull().finally(() => {
+    pullInFlightPromise = null;
+    if (pendingPullQueued) {
+      pendingPullQueued = false;
+      void pullDataFromServer();
+    }
+  });
+
+  return await pullInFlightPromise;
 }
 
 export function exportAllDataAsJson(): string {
@@ -4093,11 +5461,131 @@ export function importAllDataFromJson(jsonStr: string): boolean {
     if (data.scoreboards && Array.isArray(data.scoreboards)) {
       localStorage.setItem(STORAGE_KEY_SCOREBOARDS, JSON.stringify(data.scoreboards));
     }
-    scheduleCloudSync();
+    hasLocalMutations = true;
+    lastLocalMutationMs = Date.now();
+    void triggerCloudSync({ forceFull: true });
     return true;
   } catch (err) {
     console.error('Failed to import backup data:', err);
     return false;
   }
 }
+
+export interface RecoverableCourseEntry {
+  course: MicroCourse;
+  source: 'cloud' | 'indexeddb' | 'local_hidden' | 'server_backup';
+  isTombstoned: boolean;
+}
+
+export interface FullCourseRecoveryReport {
+  entries: RecoverableCourseEntry[];
+  tombstonedCourseIds: string[];
+  orphanReferencedCourseIds: string[];
+  error?: string;
+}
+
+export async function scanAllRecoverableCourses(): Promise<FullCourseRecoveryReport> {
+  const curUser = getCurrentUser();
+  const [cloudRes, idbCourses, serverCourses] = await Promise.all([
+    scanRecoverableCloudCourses(curUser),
+    loadCoursesArchiveFromIndexedDB().catch(() => [] as MicroCourse[]),
+    fetch('/api/sync?skipCloud=1')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => (Array.isArray(j?.data?.courses) ? (j.data.courses as MicroCourse[]) : []))
+      .catch(() => [] as MicroCourse[]),
+  ]);
+
+  let rawLocalCourses: MicroCourse[] = [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_COURSES);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) rawLocalCourses = parsed;
+    }
+  } catch {}
+
+  const tombSet = new Set<string>([
+    ...getDeletedCourseIds(),
+    ...(cloudRes.tombstonedCourseIds || []),
+  ]);
+
+  const byId = new Map<string, RecoverableCourseEntry>();
+  const addEntry = (c: MicroCourse, source: RecoverableCourseEntry['source']) => {
+    if (!c || !c.id || c.id === 'course_ham_so_12' || c.id === 'course_grammar_fast') return;
+    const prev = byId.get(c.id);
+    if (!prev || getSyncItemTs(c) > getSyncItemTs(prev.course)) {
+      byId.set(c.id, {
+        course: c,
+        source,
+        isTombstoned: tombSet.has(c.id),
+      });
+    }
+  };
+
+  cloudRes.cloudCourses.forEach((c) => addEntry(c, 'cloud'));
+  idbCourses.forEach((c) => addEntry(c, 'indexeddb'));
+  serverCourses.forEach((c) => addEntry(c, 'server_backup'));
+  rawLocalCourses.forEach((c) => {
+    if (tombSet.has(c.id)) addEntry(c, 'local_hidden');
+  });
+
+  return {
+    entries: Array.from(byId.values()),
+    tombstonedCourseIds: Array.from(tombSet),
+    orphanReferencedCourseIds: cloudRes.orphanReferencedCourseIds || [],
+    error: cloudRes.error,
+  };
+}
+
+export async function restoreRecoveredCourses(
+  coursesToRestore: MicroCourse[],
+  extraTombstoneIdsToUnblock: string[] = []
+): Promise<{ ok: boolean; restoredCount: number; error?: string }> {
+  try {
+    const curUser = getCurrentUser();
+    const restoreIds = coursesToRestore.map((c) => c.id);
+    const unblockSet = new Set<string>([...restoreIds, ...extraTombstoneIdsToUnblock]);
+
+    // 1. Remove from local deletedCourseIds
+    const nextDeleted = getDeletedCourseIds().filter((id) => !unblockSet.has(id));
+    localStorage.setItem(STORAGE_KEY_DELETED_COURSES, JSON.stringify(nextDeleted));
+
+    // 2. Merge restored courses into localStorage & re-stamp updatedAt so they persist
+    const existingLocal = getAllCourses();
+    const mergedMap = new Map<string, MicroCourse>();
+    existingLocal.forEach((c) => mergedMap.set(c.id, c));
+    const nowIso = new Date().toISOString();
+    const stampedRestored = coursesToRestore.map((c) => ({
+      ...c,
+      updatedAt: c.updatedAt || nowIso,
+    }));
+    stampedRestored.forEach((c) => {
+      mergedMap.set(c.id, c);
+      markDirtyCloudEntity('courses', c.id);
+    });
+    const nextList = Array.from(mergedMap.values());
+    localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(nextList));
+    markDirtySiteConfig('tombstones');
+    saveSnapshotToIndexedDB(buildFullSyncPayload());
+
+    // 3. Clear cloud tombstones & re-upload courses if Firebase Auth is active
+    const fbUser = getFirebaseAuthUser();
+    if (fbUser && !fbUser.isAnonymous) {
+      const cloudRes = await clearCoursesFromCloudTombstones(
+        Array.from(unblockSet),
+        stampedRestored,
+        getAllClassrooms(),
+        curUser
+      );
+      if (!cloudRes.ok) {
+        return { ok: false, restoredCount: stampedRestored.length, error: cloudRes.error };
+      }
+    }
+
+    return { ok: true, restoredCount: stampedRestored.length };
+  } catch (err: any) {
+    return { ok: false, restoredCount: 0, error: err?.message || String(err) };
+  }
+}
+
 

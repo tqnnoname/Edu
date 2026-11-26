@@ -168,6 +168,8 @@ function buildScormScoHtml(course: MicroCourse): string {
   };
 
   const courseJson = JSON.stringify(normalizedCourse).replace(/<\//g, '<\\/');
+  const baseOrigin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '';
+  const baseOriginJson = JSON.stringify(baseOrigin);
 
   return `<!DOCTYPE html>
 <html lang="vi">
@@ -215,6 +217,12 @@ function buildScormScoHtml(course: MicroCourse): string {
   </div>
   <script>
     var COURSE = ${courseJson};
+    var BASE_ORIGIN = ${baseOriginJson};
+    function resolveMediaUrl(u) {
+      if (!u || typeof u !== 'string') return '';
+      if (u.indexOf('/api/files/') === 0 && BASE_ORIGIN) return BASE_ORIGIN + u;
+      return u;
+    }
     var completedBlocks = {};
     var answers = {};
     var activeLessonId = null;
@@ -266,13 +274,66 @@ function buildScormScoHtml(course: MicroCourse): string {
       }
     }
 
-    function renderText(txt) {
+    function renderText(txt, inlineMap) {
       var escaped = (txt || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      escaped = escaped.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(_, alt, src) {
-        if (/^javascript:/i.test(src || '')) return alt || '';
+      escaped = escaped.replace(/\[\[img:([a-zA-Z0-9_-]+)(?:\|([^\]]*))?\]\]/g, function(_, id, title) {
+        var src = resolveMediaUrl((inlineMap && inlineMap[id]) || '');
+        if (!src || /^javascript:/i.test(src)) {
+          return '<div style="margin:8px 0;padding:8px 10px;border:1px dashed #cbd5e1;border-radius:8px;font-size:12px;color:#64748b;">[Ảnh: ' + (title || id) + ']</div>';
+        }
+        var safeAlt = (title || 'image').replace(/"/g, '&quot;');
+        var cap = title ? '<div style="font-size:11px;color:#64748b;margin-top:4px;">' + title + '</div>' : '';
+        return '<div class="img-wrap" style="margin:12px 0;text-align:center;"><img src="' + src.replace(/"/g, '&quot;') + '" alt="' + safeAlt + '" />' + cap + '</div>';
+      });
+      escaped = escaped.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(_, alt, rawSrc) {
+        var src = resolveMediaUrl(rawSrc || '');
+        if (/^javascript:/i.test(src)) return alt || '';
         return '<div class="img-wrap" style="margin:12px 0;text-align:center;"><img src="' + src.replace(/"/g, '&quot;') + '" alt="' + (alt || 'image').replace(/"/g, '&quot;') + '" /></div>';
       });
       return escaped.replace(/\\n/g,'<br/>');
+    }
+
+    function getOrderedSections(sections) {
+      var list = Array.isArray(sections) ? sections.slice() : [];
+      var byParent = {};
+      var byId = {};
+      list.forEach(function(s) { byId[s.id] = s; });
+      list.forEach(function(s) {
+        var p = (s.parentSectionId && byId[s.parentSectionId] && s.parentSectionId !== s.id) ? s.parentSectionId : '__root__';
+        if (!byParent[p]) byParent[p] = [];
+        byParent[p].push(s);
+      });
+      Object.keys(byParent).forEach(function(k) {
+        byParent[k].sort(function(a, b) { return (a.order || 0) - (b.order || 0); });
+      });
+      var ordered = [];
+      var visited = {};
+      function walk(parentKey, depth) {
+        (byParent[parentKey] || []).forEach(function(sec) {
+          if (visited[sec.id]) return;
+          visited[sec.id] = true;
+          ordered.push({ section: sec, depth: depth });
+          walk(sec.id, depth + 1);
+        });
+      }
+      walk('__root__', 0);
+      list.forEach(function(s) { if (!visited[s.id]) ordered.push({ section: s, depth: 0 }); });
+      return ordered;
+    }
+
+    function getSectionBreadcrumb(sections, sectionId) {
+      if (!sectionId || !Array.isArray(sections)) return [];
+      var byId = {};
+      sections.forEach(function(s) { byId[s.id] = s; });
+      var chain = [];
+      var seen = {};
+      var cur = byId[sectionId];
+      while (cur && !seen[cur.id]) {
+        seen[cur.id] = true;
+        chain.unshift(cur);
+        cur = cur.parentSectionId ? byId[cur.parentSectionId] : null;
+      }
+      return chain;
     }
 
     function render() {
@@ -303,36 +364,73 @@ function buildScormScoHtml(course: MicroCourse): string {
       var lesson = currentObj.lesson;
       var header = document.createElement('div');
       header.className = 'card';
-      header.innerHTML = '<div style="font-size:12px;color:#2563eb;font-weight:700;">' + escapeHtml(currentObj.chapter) + '</div><h2 style="margin:6px 0 0;">' + escapeHtml(lesson.title) + '</h2>';
+      header.innerHTML = '<div style="font-size:12px;color:#2563eb;font-weight:700;">' + escapeHtml(currentObj.chapter) + '</div><h2 style="margin:6px 0 0;">' + escapeHtml(lesson.title) + '</h2>' +
+        (lesson.summary ? '<p style="margin:8px 0 0;font-size:13px;color:#475569;">' + escapeHtml(lesson.summary) + '</p>' : '');
       main.appendChild(header);
 
+      var orderedSections = getOrderedSections(lesson.sections || []);
+      if (orderedSections.length > 0) {
+        var outline = document.createElement('div');
+        outline.className = 'card';
+        outline.style.cssText = 'padding:14px 18px;background:#f8fafc;';
+        var outlineItems = orderedSections.map(function(node) {
+          var indent = node.depth * 14;
+          return '<div style="padding:3px 0 3px ' + indent + 'px;font-size:12px;color:#334155;">• <strong>' + escapeHtml(node.section.title) + '</strong>' +
+            (node.section.summary ? ' <span style="color:#64748b;">— ' + escapeHtml(node.section.summary) + '</span>' : '') + '</div>';
+        }).join('');
+        outline.innerHTML = '<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;margin-bottom:6px;">Cấu trúc phân mục trong bài</div>' + outlineItems;
+        main.appendChild(outline);
+      }
+
+      var courseInline = COURSE.inlineImages || {};
+      var lastRenderedSectionId = null;
+
       (lesson.blocks || []).forEach(function(blk, idx) {
+        var secChain = getSectionBreadcrumb(lesson.sections || [], blk.sectionId);
+        if (blk.sectionId && blk.sectionId !== lastRenderedSectionId && secChain.length > 0) {
+          lastRenderedSectionId = blk.sectionId;
+          var secBanner = document.createElement('div');
+          secBanner.style.cssText = 'margin:14px 0 8px;padding:8px 12px;border-radius:10px;background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px;font-weight:700;';
+          secBanner.textContent = secChain.map(function(s) { return s.title; }).join(' › ');
+          main.appendChild(secBanner);
+        }
+
+        var blkInline = Object.assign({}, courseInline, blk.inlineImages || {}, (blk.question && blk.question.inlineImages) || {});
         var card = document.createElement('div');
         card.className = 'card';
+        var crumbHtml = secChain.length > 0
+          ? '<div style="font-size:11px;font-weight:600;color:#4f46e5;margin-bottom:6px;">' + secChain.map(function(s) { return escapeHtml(s.title); }).join(' › ') + '</div>'
+          : '';
         if (blk.type === 'theory' || blk.type === 'callout') {
           var theoryBody = blk.contentMarkdown || blk.content || '';
-          card.innerHTML = (blk.title ? '<h3 style="margin-top:0;">' + escapeHtml(blk.title) + '</h3>' : '') +
-            '<div style="line-height:1.7;font-size:14px;">' + renderText(theoryBody) + '</div>' +
-            (blk.imageUrl ? '<div class="img-wrap" style="margin-top:12px;"><img src="' + blk.imageUrl + '" alt="image" /></div>' : '');
+          var blkImg = resolveMediaUrl(blk.imageUrl || '');
+          card.innerHTML = crumbHtml +
+            (blk.title ? '<h3 style="margin-top:0;">' + escapeHtml(blk.title) + '</h3>' : '') +
+            '<div style="line-height:1.7;font-size:14px;">' + renderText(theoryBody, blkInline) + '</div>' +
+            (blkImg ? '<div class="img-wrap" style="margin-top:12px;"><img src="' + blkImg.replace(/"/g, '&quot;') + '" alt="image" /></div>' : '');
         } else if (blk.type === 'image') {
-          card.innerHTML = (blk.title ? '<h3 style="margin-top:0;">' + escapeHtml(blk.title) + '</h3>' : '') +
-            (blk.imageUrl ? '<div class="img-wrap"><img src="' + blk.imageUrl + '" alt="image" /></div>' : '') +
+          var imgUrl = resolveMediaUrl(blk.imageUrl || '');
+          card.innerHTML = crumbHtml +
+            (blk.title ? '<h3 style="margin-top:0;">' + escapeHtml(blk.title) + '</h3>' : '') +
+            (imgUrl ? '<div class="img-wrap"><img src="' + imgUrl.replace(/"/g, '&quot;') + '" alt="image" /></div>' : '') +
             (blk.caption ? '<p style="font-size:12px;color:#475569;margin-top:8px;">' + escapeHtml(blk.caption) + '</p>' : '');
         } else if (blk.type === 'file') {
           var filesHtml = (blk.attachments || []).map(function(att) {
-            var href = att.dataUrl || att.url || '#';
+            var href = resolveMediaUrl(att.url || att.dataUrl || '#');
             var dl = att.dataUrl ? ' download="' + escapeHtml(att.name) + '"' : ' target="_blank" rel="noopener noreferrer"';
             return '<div style="margin:6px 0;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;display:flex;justify-content:space-between;align-items:center;"><span>' + escapeHtml(att.name) + '</span><a class="btn btn-primary" href="' + href + '"' + dl + '>Tải / Mở tệp</a></div>';
           }).join('');
-          card.innerHTML = (blk.title ? '<h3 style="margin-top:0;">' + escapeHtml(blk.title) + '</h3>' : '') +
-            (blk.contentMarkdown ? '<div style="line-height:1.6;font-size:13px;margin-bottom:8px;">' + renderText(blk.contentMarkdown) + '</div>' : '') +
+          card.innerHTML = crumbHtml +
+            (blk.title ? '<h3 style="margin-top:0;">' + escapeHtml(blk.title) + '</h3>' : '') +
+            (blk.contentMarkdown ? '<div style="line-height:1.6;font-size:13px;margin-bottom:8px;">' + renderText(blk.contentMarkdown, blkInline) + '</div>' : '') +
             filesHtml;
         } else if (blk.type === 'question' && blk.question) {
           var q = blk.question;
-          var html = '<div style="font-size:12px;font-weight:700;color:#7c3aed;margin-bottom:6px;">CÂU HỎI TƯƠNG TÁC #' + (idx + 1) + '</div>' +
-            '<div style="font-weight:600;margin-bottom:10px;">' + renderText(q.question) + '</div>';
+          var html = crumbHtml +
+            '<div style="font-size:12px;font-weight:700;color:#7c3aed;margin-bottom:6px;">CÂU HỎI TƯƠNG TÁC #' + (idx + 1) + '</div>' +
+            '<div style="font-weight:600;margin-bottom:10px;">' + renderText(q.question, blkInline) + '</div>';
           card.innerHTML = html;
-          if (q.options && q.options.length > 0) {
+          if (q.options && q.options.length > 0 && q.type !== 'essay') {
             q.options.forEach(function(opt, oi) {
               var ob = document.createElement('button');
               ob.className = 'opt-btn' + (answers[blk.id] === oi ? ' selected' : '');
@@ -345,6 +443,20 @@ function buildScormScoHtml(course: MicroCourse): string {
               };
               card.appendChild(ob);
             });
+          } else if (q.type === 'essay') {
+            var ta = document.createElement('textarea');
+            ta.rows = 4;
+            ta.placeholder = 'Nhập bài làm tự luận...';
+            ta.style.cssText = 'width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-family:inherit;font-size:13px;';
+            ta.value = typeof answers[blk.id] === 'string' ? answers[blk.id] : '';
+            ta.oninput = function(ev) {
+              answers[blk.id] = ev.target.value;
+              if (ev.target.value.trim()) {
+                completedBlocks[blk.id] = true;
+                updateScormProgress();
+              }
+            };
+            card.appendChild(ta);
           }
         }
         var foot = document.createElement('div');

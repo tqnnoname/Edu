@@ -303,3 +303,196 @@ export const DEFAULT_MOUNTAIN_STARTER_QUESTIONS: MountainQuestionItem[] = [
     sourceTitle: 'Đại số & Tổ hợp',
   },
 ];
+
+export interface MountainSampleDataset {
+  id: string;
+  title: string;
+  subtitle: string;
+  questions: MountainQuestionItem[];
+}
+
+export const MOUNTAIN_SAMPLE_DATASETS: MountainSampleDataset[] = [
+  {
+    id: 'sample_katex_mix',
+    title: 'Bộ đề Tổng hợp (KaTeX chuẩn)',
+    subtitle: '10 câu Toán, Lý, Hóa, Tiếng Anh, Địa lý có công thức toán học sắc nét',
+    questions: DEFAULT_MOUNTAIN_STARTER_QUESTIONS,
+  },
+  {
+    id: 'sample_math_calculus',
+    title: 'Toán học & Giải tích nâng cao',
+    subtitle: '8 câu Đạo hàm, Tích phân, Logarit, Tổ hợp & Hình học không gian',
+    questions: [
+      {
+        id: 'mm_1',
+        question: 'Tính đạo hàm của hàm số $f(x) = \\ln(x^2 + 1)$ tại điểm $x = 1$:',
+        options: ['$f\'(1) = 1$', '$f\'(1) = 2$', '$f\'(1) = \\frac{1}{2}$', '$f\'(1) = 0$'],
+        correctAnswer: 0,
+        explanation: '$f\'(x) = \\frac{2x}{x^2+1} \\implies f\'(1) = \\frac{2}{2} = 1$.',
+        sourceTitle: 'Toán học & Giải tích',
+      },
+      {
+        id: 'mm_2',
+        question: 'Nghiệm tổng quát của phương trình $\\sin x = 1$ là:',
+        options: [
+          '$x = \\frac{\\pi}{2} + k2\\pi$',
+          '$x = \\pi + k2\\pi$',
+          '$x = k\\pi$',
+          '$x = -\\frac{\\pi}{2} + k2\\pi$',
+        ],
+        correctAnswer: 0,
+        explanation: 'Trên đường tròn lượng giác, $\\sin x = 1 \\iff x = \\frac{\\pi}{2} + k2\\pi\\ (k \\in \\mathbb{Z})$.',
+        sourceTitle: 'Lượng giác',
+      },
+      {
+        id: 'mm_3',
+        question: 'Giá trị của giới hạn $\\lim_{x \\to +\\infty} \\frac{3x^2 - 2x + 1}{x^2 + 5}$ bằng:',
+        options: ['$0$', '$1$', '$3$', '$+\\infty$'],
+        correctAnswer: 2,
+        explanation: 'Chia cả tử và mẫu cho $x^2$, giới hạn bằng tỉ số hệ số bậc cao nhất $\\frac{3}{1} = 3$.',
+        sourceTitle: 'Giới hạn',
+      },
+      {
+        id: 'mm_4',
+        question: 'Trong không gian $Oxyz$, cho $\\vec{u} = (1; -2; 2)$. Độ dài vectơ $|\\vec{u}|$ bằng:',
+        options: ['$3$', '$5$', '$\\sqrt{5}$', '$9$'],
+        correctAnswer: 0,
+        explanation: '$|\\vec{u}| = \\sqrt{1^2 + (-2)^2 + 2^2} = \\sqrt{9} = 3$.',
+        sourceTitle: 'Hình học Oxyz',
+      },
+      {
+        id: 'mm_5',
+        question: 'Diện tích mặt cầu bán kính $R = 3$ là:',
+        options: ['$36\\pi$', '$12\\pi$', '$9\\pi$', '$27\\pi$'],
+        correctAnswer: 0,
+        explanation: 'Diện tích mặt cầu $S = 4\\pi R^2 = 4\\pi \\cdot 3^2 = 36\\pi$.',
+        sourceTitle: 'Hình học không gian',
+      },
+      {
+        id: 'mm_6',
+        question: 'Số phức $z = 3 - 4i$ có môđun $|z|$ bằng:',
+        options: ['$7$', '$5$', '$1$', '$25$'],
+        correctAnswer: 1,
+        explanation: '$|z| = \\sqrt{3^2 + (-4)^2} = 5$.',
+        sourceTitle: 'Số phức',
+      },
+      {
+        id: 'mm_7',
+        question: 'Cấp số cộng $(u_n)$ có $u_1 = 2$ và công sai $d = 3$. Số hạng $u_5$ bằng:',
+        options: ['$11$', '$14$', '$17$', '$15$'],
+        correctAnswer: 1,
+        explanation: '$u_5 = u_1 + 4d = 2 + 4 \\cdot 3 = 14$.',
+        sourceTitle: 'Dãy số',
+      },
+      {
+        id: 'mm_8',
+        question: 'Nguyên hàm của hàm số $f(x) = e^{2x}$ là:',
+        options: [
+          '$2e^{2x} + C$',
+          '$\\frac{1}{2}e^{2x} + C$',
+          '$e^{2x} + C$',
+          '$e^{x} + C$',
+        ],
+        correctAnswer: 1,
+        explanation: '$\\int e^{2x}\\,dx = \\frac{1}{2}e^{2x} + C$.',
+        sourceTitle: 'Nguyên hàm',
+      },
+    ],
+  },
+  {
+    id: 'sample_science_physics',
+    title: 'Khoa học Tự nhiên (Lý & Hóa)',
+    subtitle: '8 câu thực hành công thức Vật lý & Hóa học phổ thông',
+    questions: [
+      {
+        id: 'sp_1',
+        question: 'Con lắc lò xo có độ cứng $k = 100\\text{ N/m}$, vật nặng $m = 0{,}25\\text{ kg}$. Tần số góc $\\omega$ bằng:',
+        options: ['$20\\text{ rad/s}$', '$10\\text{ rad/s}$', '$400\\text{ rad/s}$', '$5\\text{ rad/s}$'],
+        correctAnswer: 0,
+        explanation: '$\\omega = \\sqrt{\\frac{k}{m}} = \\sqrt{\\frac{100}{0{,}25}} = \\sqrt{400} = 20\\text{ rad/s}$.',
+        sourceTitle: 'Vật lý 12',
+      },
+      {
+        id: 'sp_2',
+        question: 'Định luật Ôm cho đoạn mạch chỉ có điện trở $R$ là:',
+        options: ['$I = \\frac{U}{R}$', '$I = U \\cdot R$', '$U = \\frac{I}{R}$', '$P = U \\cdot R^2$'],
+        correctAnswer: 0,
+        explanation: 'Cường độ dòng điện tỉ lệ thuận với hiệu điện thế và tỉ lệ nghịch với điện trở: $I = \\frac{U}{R}$.',
+        sourceTitle: 'Điện học',
+      },
+      {
+        id: 'sp_3',
+        question: 'Giá trị $\\text{pH}$ của dung dịch $\\text{HCl}$ nồng độ $0{,}01\\text{ M}$ (coi điện li hoàn toàn) là:',
+        options: ['$\\text{pH} = 1$', '$\\text{pH} = 2$', '$\\text{pH} = 3$', '$\\text{pH} = 12$'],
+        correctAnswer: 1,
+        explanation: '$[\\text{H}^+] = 10^{-2}\\text{ M} \\implies \\text{pH} = -\\log(10^{-2}) = 2$.',
+        sourceTitle: 'Hóa học',
+      },
+      {
+        id: 'sp_4',
+        question: 'Công thức tính bước sóng $\\lambda$ của sóng cơ truyền với tốc độ $v$ và tần số $f$ là:',
+        options: ['$\\lambda = v \\cdot f$', '$\\lambda = \\frac{v}{f}$', '$\\lambda = \\frac{f}{v}$', '$\\lambda = \\frac{v}{2f}$'],
+        correctAnswer: 1,
+        explanation: 'Quãng đường sóng truyền đi trong 1 chu kì: $\\lambda = vT = \\frac{v}{f}$.',
+        sourceTitle: 'Sóng cơ',
+      },
+      {
+        id: 'sp_5',
+        question: 'Trong phản ứng hóa học, chất nào vừa có tính oxi hóa vừa có tính khử?',
+        options: ['$\\text{SO}_2$', '$\\text{H}_2\\text{SO}_4$', '$\\text{KMnO}_4$', '$\\text{F}_2$'],
+        correctAnswer: 0,
+        explanation: 'Trong $\\text{SO}_2$, lưu huỳnh có số oxi hóa trung gian $+4$, nên vừa có thể tăng lên $+6$ vừa có thể giảm.',
+        sourceTitle: 'Hóa vô cơ',
+      },
+      {
+        id: 'sp_6',
+        question: 'Một điện trở $R = 10\\,\\Omega$ có dòng điện $I = 2\\text{ A}$ chạy qua. Công suất tỏa nhiệt trên $R$ là:',
+        options: ['$20\\text{ W}$', '$40\\text{ W}$', '$5\\text{ W}$', '$100\\text{ W}$'],
+        correctAnswer: 1,
+        explanation: '$P = I^2 R = 2^2 \\cdot 10 = 40\\text{ W}$.',
+        sourceTitle: 'Công suất điện',
+      },
+      {
+        id: 'sp_7',
+        question: 'Khối lượng mol phân tử của khí $\\text{CO}_2$ (với $M_\\text{C}=12, M_\\text{O}=16$) là:',
+        options: ['$28\\text{ g/mol}$', '$44\\text{ g/mol}$', '$32\\text{ g/mol}$', '$40\\text{ g/mol}$'],
+        correctAnswer: 1,
+        explanation: '$M_{\\text{CO}_2} = 12 + 2 \\cdot 16 = 44\\text{ g/mol}$.',
+        sourceTitle: 'Hóa học cơ bản',
+      },
+      {
+        id: 'sp_8',
+        question: 'Gia tốc rơi tự do gần mặt đất lấy $g \\approx 10\\text{ m/s}^2$. Quãng đường vật rơi tự do sau $t = 3\\text{ s}$ (vận tốc đầu bằng $0$) là:',
+        options: ['$30\\text{ m}$', '$45\\text{ m}$', '$90\\text{ m}$', '$15\\text{ m}$'],
+        correctAnswer: 1,
+        explanation: '$s = \\frac{1}{2}gt^2 = \\frac{1}{2} \\cdot 10 \\cdot 3^2 = 45\\text{ m}$.',
+        sourceTitle: 'Cơ học',
+      },
+    ],
+  },
+];
+
+const STAGE_THEME_ICONS = ['🪨', '🌉', '🌲', '⛺', '🏔️', '🦅', '⚡', '🪜', '❄️', '☁️', '🚩', '🔥'];
+const STAGE_THEME_NAMES = [
+  'Suối đá',
+  'Cầu treo',
+  'Rừng thông',
+  'Trạm gác',
+  'Vách đá',
+  'Đèo gió',
+  'Sườn dốc',
+  'Thang dây',
+  'Tuyết phủ',
+  'Cổng mây',
+  'Chóp núi',
+  'Ải sương',
+];
+
+export function getObstacleStageMeta(stageNumber: number): { label: string; icon: string } {
+  const idx = Math.max(0, stageNumber - 1);
+  return {
+    label: STAGE_THEME_NAMES[idx % STAGE_THEME_NAMES.length],
+    icon: STAGE_THEME_ICONS[idx % STAGE_THEME_ICONS.length],
+  };
+}
+

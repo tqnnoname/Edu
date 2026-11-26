@@ -1,4 +1,5 @@
 import { Question } from '../types/exam';
+import { formatInlineTokensForPlainText } from './inlineImages';
 
 /**
  * Copy plain/formatted text to system clipboard while preserving all line breaks,
@@ -69,16 +70,16 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
 export function formatQuestionForCopy(q: Question, questionNumber?: number): string {
   const lines: string[] = [];
   const header = questionNumber !== undefined ? `Câu ${questionNumber}: ` : '';
-  lines.push(`${header}${q.question || ''}`.trimEnd());
+  lines.push(`${header}${formatInlineTokensForPlainText(q.question || '')}`.trimEnd());
 
   if (q.imageUrl) {
-    lines.push(`[Ảnh minh họa]: ${q.imageUrl}`);
+    lines.push(q.imageCaption ? `[Ảnh minh họa: ${q.imageCaption}]` : '[Ảnh minh họa]');
   }
 
   if (q.type === 'single_choice' || q.type === 'multiple_choice') {
     (q.options || []).forEach((opt, idx) => {
       const letter = String.fromCharCode(65 + idx);
-      lines.push(`${letter}. ${opt}`);
+      lines.push(`${letter}. ${formatInlineTokensForPlainText(opt)}`);
     });
     if (q.type === 'single_choice' && typeof q.correctAnswer === 'number') {
       lines.push(`Đáp án: ${String.fromCharCode(65 + q.correctAnswer)}`);
@@ -90,18 +91,18 @@ export function formatQuestionForCopy(q: Question, questionNumber?: number): str
   } else if (q.type === 'true_false' && q.tfItems) {
     q.tfItems.forEach((it, idx) => {
       const letter = String.fromCharCode(97 + idx);
-      lines.push(`${letter}) ${it.statement} [${it.isCorrect ? 'Đúng' : 'Sai'}]`);
+      lines.push(`${letter}) ${formatInlineTokensForPlainText(it.statement)} [${it.isCorrect ? 'Đúng' : 'Sai'}]`);
     });
   } else if (q.type === 'text_input' && q.acceptedAnswers) {
     lines.push(`Đáp án: ${q.acceptedAnswers.join('; ')}`);
   } else if (q.type === 'essay' && q.sampleAnswer) {
-    lines.push(`Đáp án tham khảo:\n${q.sampleAnswer}`);
+    lines.push(`Đáp án tham khảo:\n${formatInlineTokensForPlainText(q.sampleAnswer)}`);
   } else if (q.type === 'matching' && q.matchingLeftItems && q.matchingRightItems) {
     lines.push('Cột trái:');
-    q.matchingLeftItems.forEach((l, i) => lines.push(`  ${i + 1}. ${l.content}`));
+    q.matchingLeftItems.forEach((l, i) => lines.push(`  ${i + 1}. ${formatInlineTokensForPlainText(l.content)}`));
     lines.push('Cột phải:');
     q.matchingRightItems.forEach((r, i) =>
-      lines.push(`  ${String.fromCharCode(65 + i)}. ${r.content}`)
+      lines.push(`  ${String.fromCharCode(65 + i)}. ${formatInlineTokensForPlainText(r.content)}`)
     );
   } else if (q.type === 'grouped' && q.subQuestions) {
     q.subQuestions.forEach((sub, sIdx) => {
@@ -116,7 +117,14 @@ export function formatQuestionForCopy(q: Question, questionNumber?: number): str
   }
 
   if (q.explanation && q.explanation.trim()) {
-    lines.push(`Lời giải: ${q.explanation}`);
+    lines.push(`Lời giải: ${formatInlineTokensForPlainText(q.explanation)}`);
+  }
+  if (q.explanationImageUrl) {
+    lines.push(
+      q.explanationImageCaption
+        ? `[Ảnh minh họa lời giải: ${q.explanationImageCaption}]`
+        : '[Ảnh minh họa lời giải]'
+    );
   }
 
   return lines.join('\n');

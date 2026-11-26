@@ -299,7 +299,12 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
 
                 {/* Question Statement with KaTeX & Roots */}
                 <div className="text-slate-900 leading-relaxed font-medium">
-                  <RichContentRenderer content={q.question} imageUrl={q.imageUrl} />
+                  <RichContentRenderer
+                    content={q.question}
+                    imageUrl={q.imageUrl}
+                    imageCaption={q.imageCaption}
+                    inlineImages={q.inlineImages}
+                  />
                 </div>
 
                 {/* Format 1: Single choice & Multiple choice */}
@@ -336,7 +341,7 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                               {letter}
                             </span>
                             <div className="flex-1">
-                              <RichContentRenderer content={opt} />
+                              <RichContentRenderer content={opt} inlineImages={q.inlineImages} />
                               {q.optionImages?.[optIdx] && (
                                 <div className="mt-1.5">
                                   <img
@@ -374,7 +379,7 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                           <div className="flex items-start gap-2 flex-1">
                             <span className="font-bold text-slate-700 shrink-0">{letter})</span>
                             <div className="leading-relaxed">
-                              <RichContentRenderer content={item.statement} />
+                              <RichContentRenderer content={item.statement} inlineImages={q.inlineImages} />
                             </div>
                           </div>
                           {showSolutions && (
@@ -433,7 +438,7 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                           Đáp án tham khảo / Gợi ý chấm điểm:
                         </div>
                         <div className="text-emerald-950 leading-relaxed">
-                          <RichContentRenderer content={q.sampleAnswer} />
+                          <RichContentRenderer content={q.sampleAnswer} inlineImages={q.inlineImages} />
                         </div>
                       </div>
                     )}
@@ -448,19 +453,14 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                         <div className="font-bold text-purple-900 flex items-start gap-1.5">
                           <span className="shrink-0">{index + 1}.{sIdx + 1})</span>
                           <div className="flex-1 min-w-0">
-                            <RichContentRenderer content={sub.question} />
-                          </div>
-                        </div>
-                        {sub.imageUrl && (
-                          <div className="py-1">
-                            <img
-                              src={sub.imageUrl}
-                              alt={`Hình câu ${index + 1}.${sIdx + 1}`}
-                              className="max-h-32 rounded border border-purple-200 object-contain bg-white shadow-2xs"
-                              referrerPolicy="no-referrer"
+                            <RichContentRenderer
+                              content={sub.question}
+                              imageUrl={sub.imageUrl}
+                              imageCaption={sub.imageCaption}
+                              inlineImages={sub.inlineImages || q.inlineImages}
                             />
                           </div>
-                        )}
+                        </div>
                         {((sub.type || 'single_choice') === 'single_choice' || sub.type === 'multiple_choice') && sub.options && (
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-2">
                             {sub.options.map((opt, oIdx) => {
@@ -481,7 +481,10 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                                     <div className="flex items-start gap-1">
                                       <span className="font-bold shrink-0">{String.fromCharCode(65 + oIdx)}.</span>
                                       <div className="flex-1 min-w-0">
-                                        <RichContentRenderer content={opt} />
+                                        <RichContentRenderer
+                                          content={opt}
+                                          inlineImages={sub.inlineImages || q.inlineImages}
+                                        />
                                       </div>
                                     </div>
                                     {sub.optionImages?.[oIdx] && (
@@ -515,7 +518,10 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                                   <span className="font-bold text-slate-700 shrink-0">
                                     {String.fromCharCode(97 + itemIdx)})
                                   </span>
-                                  <RichContentRenderer content={item.statement} />
+                                  <RichContentRenderer
+                                    content={item.statement}
+                                    inlineImages={sub.inlineImages || q.inlineImages}
+                                  />
                                 </div>
                                 {showSolutions && (
                                   <span
@@ -568,19 +574,27 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                                 <div className="font-bold text-emerald-900 text-[10px] uppercase">
                                   Đáp án tham khảo ({index + 1}.{sIdx + 1}):
                                 </div>
-                                <RichContentRenderer content={sub.sampleAnswer} />
+                                <RichContentRenderer
+                                  content={sub.sampleAnswer}
+                                  inlineImages={sub.inlineImages || q.inlineImages}
+                                />
                               </div>
                             )}
                           </div>
                         )}
 
-                        {showSolutions && sub.explanation && (
+                        {showSolutions && (sub.explanation || sub.explanationImageUrl) && (
                           <div className="p-2.5 bg-blue-50/80 border border-blue-200 rounded-lg text-[11px] text-blue-950 space-y-0.5">
                             <div className="font-bold text-blue-900 uppercase text-[10px] tracking-wider">
                               Lời giải chi tiết ({index + 1}.{sIdx + 1}):
                             </div>
                             <div className="leading-relaxed">
-                              <RichContentRenderer content={sub.explanation} />
+                              <RichContentRenderer
+                                content={sub.explanation || ''}
+                                imageUrl={sub.explanationImageUrl}
+                                imageCaption={sub.explanationImageCaption}
+                                inlineImages={sub.inlineImages || q.inlineImages}
+                              />
                             </div>
                           </div>
                         )}
@@ -590,13 +604,18 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                 )}
 
                 {/* Explanation (when solutions visible) */}
-                {showSolutions && q.explanation && (
+                {showSolutions && (q.explanation || q.explanationImageUrl) && (
                   <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-lg text-xs text-blue-950 mt-2 space-y-1">
                     <div className="font-bold text-blue-900 uppercase text-[10px] tracking-wider">
                       Lời giải chi tiết:
                     </div>
                     <div className="leading-relaxed">
-                      <RichContentRenderer content={q.explanation} />
+                      <RichContentRenderer
+                        content={q.explanation || ''}
+                        imageUrl={q.explanationImageUrl}
+                        imageCaption={q.explanationImageCaption}
+                        inlineImages={q.inlineImages}
+                      />
                     </div>
                   </div>
                 )}

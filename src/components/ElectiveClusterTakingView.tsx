@@ -34,8 +34,20 @@ import { MiniCalculator } from './MiniCalculator';
 import { ScratchpadModal } from './ScratchpadModal';
 import { RichContentRenderer } from './RichContentRenderer';
 import { MatchingQuestionView } from './MatchingQuestionView';
+import { MathToolbar } from './MathToolbar';
+import { InlineImageStrip, InlineImageTitleModal } from './InlineImageTitleModal';
+import { CopyContentButton } from './CopyContentButton';
 import { ConfirmModal } from './ConfirmModal';
 import { RoomLockGuard, tryEnterKioskFullscreen } from './RoomLockGuard';
+import { insertTextAtEditableElement } from '../utils/cursorInsert';
+import {
+  collectUsedInlineImages,
+  extractImageFileFromClipboardEvent,
+  formatInlineImageToken,
+  registerImplicitImage,
+  registerImplicitImagesMap,
+} from '../utils/inlineImages';
+import { processImageFile } from '../utils/imageUpload';
 import {
   gradeEntireExam,
   shuffleExamQuestionsAndOptions,
@@ -118,10 +130,28 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
 
   const currentQuestion: Question | undefined = currentExam?.questions[currentIndex];
   const questionBodyRef = useRef<HTMLDivElement>(null);
+  const essayTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [showEssayPreview, setShowEssayPreview] = useState(true);
+  const [essayInlineImages, setEssayInlineImages] = useState<Record<string, string>>({});
+  const [essayPasteModal, setEssayPasteModal] = useState<{
+    imageSrc: string;
+    defaultTitle: string;
+    el: HTMLTextAreaElement | null;
+    range: { start: number; end: number } | null;
+  } | null>(null);
+
+  useEffect(() => {
+    preparedElectiveExams.forEach((ex) => {
+      ex.questions.forEach((q) => {
+        registerImplicitImagesMap(q.inlineImages);
+        q.subQuestions?.forEach((sq) => registerImplicitImagesMap(sq.inlineImages));
+      });
+    });
+  }, [preparedElectiveExams]);
 
   useEffect(() => {
     renderMath(questionBodyRef.current);
-  }, [activeSubjectIndex, currentIndex, currentQuestion?.id, fontSize]);
+  }, [activeSubjectIndex, currentIndex, currentQuestion?.id, fontSize, showEssayPreview, answersMap]);
 
   // Early submit lockout check
   const minSubmitMinutes = bundle.minSubmitMinutes || 0;
@@ -202,11 +232,23 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
       res.showOnlyStudentAnswersAfterExam =
         Boolean(bundle.showOnlyStudentAnswersAfterExam) ||
         Boolean(exam.showOnlyStudentAnswersAfterExam);
+
+      const texts: string[] = [];
+      Object.values(subAnswers).forEach((val) => {
+        if (typeof val === 'string') texts.push(val);
+        else if (val && typeof val === 'object' && !Array.isArray(val)) {
+          Object.values(val).forEach((sv) => {
+            if (typeof sv === 'string') texts.push(sv);
+          });
+        }
+      });
+      const usedImgs = collectUsedInlineImages(texts, essayInlineImages);
+      if (usedImgs) res.inlineImages = usedImgs;
       return res;
     });
 
     onComplete(results);
-  }, [preparedElectiveExams, answersMap, startTime, candidateName, studentCode, bundle, tabSwitchCount, onComplete]);
+  }, [preparedElectiveExams, answersMap, essayInlineImages, startTime, candidateName, studentCode, bundle, tabSwitchCount, onComplete]);
 
   // Countdown timer effect
   useEffect(() => {
@@ -661,19 +703,13 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                   <>
                     {/* Question Text with Rich LaTeX Math Renderer */}
                     <div className="text-slate-900 leading-relaxed font-medium mb-6 text-base sm:text-lg">
-                      <RichContentRenderer content={currentQuestion.question} />
+                      <RichContentRenderer
+                        content={currentQuestion.question}
+                        imageUrl={currentQuestion.imageUrl}
+                        imageCaption={currentQuestion.imageCaption}
+                        inlineImages={currentQuestion.inlineImages}
+                      />
                     </div>
-
-                    {/* Question Image if any */}
-                    {currentQuestion.imageUrl && (
-                      <div className="mb-6 rounded-xl overflow-hidden border border-slate-200 max-w-lg">
-                        <img 
-                          src={currentQuestion.imageUrl} 
-                          alt="Minh họa câu hỏi" 
-                          className="w-full object-contain max-h-80 bg-slate-50"
-                        />
-                      </div>
-                    )}
                   </>
                 )}
 
@@ -702,7 +738,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                             {letter}
                           </div>
                           <div className="flex-1 text-slate-900 font-normal leading-relaxed pt-0.5">
-                            <RichContentRenderer content={optText} />
+                            <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                             {currentQuestion.optionImages?.[optIdx] && (
                               <div className="mt-2">
                                 <img
@@ -758,7 +794,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                             {letter}
                           </div>
                           <div className="flex-1 text-slate-900 font-normal leading-relaxed pt-0.5">
-                            <RichContentRenderer content={optText} />
+                            <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                             {currentQuestion.optionImages?.[optIdx] && (
                               <div className="mt-2">
                                 <img
@@ -804,7 +840,7 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                                 {letter})
                               </span>
                               <div className="text-slate-800 text-sm leading-relaxed">
-                                <RichContentRenderer content={item.statement} />
+                                <RichContentRenderer content={item.statement} inlineImages={currentQuestion.inlineImages} />
                               </div>
                             </div>
 
@@ -864,6 +900,126 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                   </div>
                 )}
 
+                {/* Type 4b: essay */}
+                {currentQuestion.type === 'essay' && (
+                  <div className="p-4 sm:p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-800">
+                          Soạn thảo bài làm tự luận trực tuyến (đặt con trỏ ở đâu chèn công thức/ảnh tại đó):
+                        </label>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Hỗ trợ công thức KaTeX, tiêu đề, danh sách nhiều cấp, tải ảnh hoặc Ctrl+V dán ảnh.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <CopyContentButton
+                          compact
+                          getText={() =>
+                            typeof currentAnswers[currentQuestion.id] === 'string'
+                              ? (currentAnswers[currentQuestion.id] as string)
+                              : ''
+                          }
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowEssayPreview((v) => !v)}
+                          className="px-2.5 py-1 text-xs font-semibold text-purple-700 bg-white border border-purple-200 hover:bg-purple-50 rounded-lg flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>{showEssayPreview ? 'Ẩn xem trước' : 'Hiện xem trước'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <MathToolbar
+                      targetRef={essayTextareaRef}
+                      onInsert={(snippet) => {
+                        if (!insertTextAtEditableElement(essayTextareaRef.current, snippet)) {
+                          const cur =
+                            typeof currentAnswers[currentQuestion.id] === 'string'
+                              ? (currentAnswers[currentQuestion.id] as string)
+                              : '';
+                          const isBlock = snippet.trim().startsWith('|') || snippet.includes('\n');
+                          handleAnswerChange(cur ? (isBlock ? `${cur}\n${snippet}` : `${cur} ${snippet}`) : snippet);
+                        }
+                      }}
+                      onInsertInlineImage={(imgId, imgSrc, title) => {
+                        registerImplicitImage(imgSrc, imgId);
+                        setEssayInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+                        const token = formatInlineImageToken(imgId, title);
+                        if (!insertTextAtEditableElement(essayTextareaRef.current, token)) {
+                          const cur =
+                            typeof currentAnswers[currentQuestion.id] === 'string'
+                              ? (currentAnswers[currentQuestion.id] as string)
+                              : '';
+                          handleAnswerChange(cur ? `${cur}\n${token}` : token);
+                        }
+                      }}
+                    />
+
+                    <textarea
+                      ref={essayTextareaRef}
+                      rows={7}
+                      value={
+                        typeof currentAnswers[currentQuestion.id] === 'string'
+                          ? (currentAnswers[currentQuestion.id] as string)
+                          : ''
+                      }
+                      onChange={(e) => handleAnswerChange(e.target.value)}
+                      onPaste={(e) => {
+                        const file = extractImageFileFromClipboardEvent(e.nativeEvent);
+                        if (!file) return;
+                        e.preventDefault();
+                        const el = e.currentTarget;
+                        const range = {
+                          start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
+                          end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
+                        };
+                        void processImageFile(file, 1200, 0.85)
+                          .then((compressed) => {
+                            setEssayPasteModal({
+                              imageSrc: compressed,
+                              defaultTitle: 'Hình bài làm',
+                              el,
+                              range,
+                            });
+                          })
+                          .catch(() => {});
+                      }}
+                      placeholder="Nhập nội dung bài làm tự luận của bạn tại đây..."
+                      className="w-full p-3.5 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-600 font-mono leading-relaxed select-text"
+                    />
+
+                    <InlineImageStrip
+                      content={
+                        typeof currentAnswers[currentQuestion.id] === 'string'
+                          ? (currentAnswers[currentQuestion.id] as string)
+                          : ''
+                      }
+                      inlineImages={essayInlineImages}
+                      label="Ảnh đã chèn trong bài tự luận"
+                      onUpdateContent={(next) => handleAnswerChange(next)}
+                    />
+
+                    {showEssayPreview &&
+                      typeof currentAnswers[currentQuestion.id] === 'string' &&
+                      (currentAnswers[currentQuestion.id] as string).trim() && (
+                        <div className="p-3.5 bg-white border border-purple-200 rounded-xl space-y-1.5 select-text">
+                          <div className="text-[11px] font-bold uppercase tracking-wider text-purple-700">
+                            Xem trước bài tự luận đã hiển thị công thức &amp; ảnh:
+                          </div>
+                          <div className="text-sm text-slate-900 leading-relaxed">
+                            <RichContentRenderer
+                              content={currentAnswers[currentQuestion.id] as string}
+                              inlineImages={essayInlineImages}
+                            />
+                          </div>
+                        </div>
+                      )}
+                  </div>
+                )}
+
                 {/* Type 5: grouped (câu hỏi chùm) */}
                 {currentQuestion.type === 'grouped' && currentQuestion.subQuestions && (
                   <div className="space-y-6 pt-2">
@@ -888,7 +1044,12 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                           <div className="font-bold text-sm text-slate-900 flex items-start gap-2">
                             <span className="text-purple-700 font-mono">Câu {currentIndex + 1}.{subIdx + 1}:</span>
                             <div className="flex-1">
-                              <RichContentRenderer content={subQ.question} imageUrl={subQ.imageUrl} />
+                              <RichContentRenderer
+                                content={subQ.question}
+                                imageUrl={subQ.imageUrl}
+                                imageCaption={subQ.imageCaption}
+                                inlineImages={subQ.inlineImages || currentQuestion.inlineImages}
+                              />
                             </div>
                           </div>
 
@@ -909,7 +1070,10 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                                   >
                                     <span className="font-mono">{letter}.</span>
                                     <div className="flex-1">
-                                      <RichContentRenderer content={optText} />
+                                      <RichContentRenderer
+                                        content={optText}
+                                        inlineImages={subQ.inlineImages || currentQuestion.inlineImages}
+                                      />
                                       {subQ.optionImages?.[optIdx] && (
                                         <div className="mt-1.5">
                                           <img
@@ -1434,6 +1598,28 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
         onClose={() => setIsExitConfirmOpen(false)}
       />
 
+      <InlineImageTitleModal
+        isOpen={Boolean(essayPasteModal)}
+        initialImageSrc={essayPasteModal?.imageSrc || ''}
+        initialTitle={essayPasteModal?.defaultTitle || ''}
+        targetLabel="Bài làm tự luận trực tuyến"
+        onClose={() => setEssayPasteModal(null)}
+        onConfirm={(imgSrc, title) => {
+          const modal = essayPasteModal;
+          setEssayPasteModal(null);
+          if (!modal) return;
+          const imgId = registerImplicitImage(imgSrc);
+          setEssayInlineImages((prev) => ({ ...prev, [imgId]: imgSrc }));
+          const token = formatInlineImageToken(imgId, title);
+          if (!modal.el || !insertTextAtEditableElement(modal.el, token, modal.range)) {
+            const cur =
+              typeof currentAnswers[currentQuestion?.id || ''] === 'string'
+                ? (currentAnswers[currentQuestion?.id || ''] as string)
+                : '';
+            handleAnswerChange(cur ? `${cur}\n${token}` : token);
+          }
+        }}
+      />
     </div>
   );
 };

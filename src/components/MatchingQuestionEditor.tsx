@@ -5,8 +5,6 @@ import {
   Link2,
   AlertCircle,
   CheckCircle2,
-  Image as ImageIcon,
-  Upload,
   X,
 } from 'lucide-react';
 import { MatchingItem, MatchingLabelStyle, Question } from '../types/exam';
@@ -15,7 +13,8 @@ import {
   MATCHING_LABEL_PRESETS,
   MATCHING_LABEL_STYLE_OPTIONS,
 } from '../utils/matching';
-import { processImageFile } from '../utils/imageUpload';
+import { AttachedImageBox } from './InlineImageTitleModal';
+import { MatchingQuestionView } from './MatchingQuestionView';
 
 interface MatchingQuestionEditorProps {
   question: Question;
@@ -29,7 +28,6 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
   idPrefix = 'match',
 }) => {
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
-  const [openUrlInputId, setOpenUrlInputId] = useState<string | null>(null);
 
   const leftStyle: MatchingLabelStyle = question.matchingLeftLabelStyle || 'number';
   const rightStyle: MatchingLabelStyle = question.matchingRightLabelStyle || 'upper_alpha';
@@ -125,26 +123,6 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
         [leftId]: rightId,
       },
     });
-  };
-
-  const handleItemImageUpload = async (
-    side: 'left' | 'right',
-    itemId: string,
-    file?: File
-  ) => {
-    if (!file) return;
-    setImageUploadError(null);
-    try {
-      const compressed = await processImageFile(file);
-      if (side === 'left') {
-        handleUpdateLeftItem(itemId, { imageUrl: compressed });
-      } else {
-        handleUpdateRightItem(itemId, { imageUrl: compressed });
-      }
-      setOpenUrlInputId(null);
-    } catch (err: any) {
-      setImageUploadError(err?.message || 'Không thể tải ảnh lên cho ô ghép cột!');
-    }
   };
 
   return (
@@ -275,7 +253,6 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
             {leftItems.map((leftItem, idx) => {
               const displayLabel = formatMatchingLabel(idx, leftStyle, leftItem.label);
               const mappedRightId = correctPairs[leftItem.id] || '';
-              const isUrlOpen = openUrlInputId === `left_${leftItem.id}`;
 
               return (
                 <div
@@ -310,42 +287,6 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
                       className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
                     />
 
-                    <label
-                      className={`inline-flex items-center justify-center p-1.5 rounded-lg border text-xs cursor-pointer transition-colors shrink-0 ${
-                        leftItem.imageUrl
-                          ? 'bg-purple-50 border-purple-300 text-purple-700'
-                          : 'bg-white border-slate-200 text-slate-600 hover:border-purple-300 hover:text-purple-700'
-                      }`}
-                      title="Tải ảnh lên cho ý cột trái"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleItemImageUpload('left', leftItem.id, file);
-                          e.target.value = '';
-                        }}
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setOpenUrlInputId(isUrlOpen ? null : `left_${leftItem.id}`)
-                      }
-                      className={`p-1.5 rounded-lg border transition-colors cursor-pointer shrink-0 ${
-                        isUrlOpen || leftItem.imageUrl
-                          ? 'bg-purple-50 border-purple-300 text-purple-700'
-                          : 'bg-white border-slate-200 text-slate-600 hover:border-purple-300 hover:text-purple-700'
-                      }`}
-                      title="Dán link ảnh / Xem ảnh"
-                    >
-                      <ImageIcon className="w-3.5 h-3.5" />
-                    </button>
-
                     <button
                       type="button"
                       onClick={() => handleRemoveLeftItem(leftItem.id)}
@@ -357,55 +298,18 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
                     </button>
                   </div>
 
-                  {/* Image URL input & Thumbnail preview */}
-                  {(isUrlOpen || leftItem.imageUrl) && (
-                    <div className="pl-9 space-y-2">
-                      {isUrlOpen && (
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            value={leftItem.imageUrl || ''}
-                            onChange={(e) =>
-                              handleUpdateLeftItem(leftItem.id, {
-                                imageUrl: e.target.value || undefined,
-                              })
-                            }
-                            placeholder="Dán đường dẫn ảnh (https://...) hoặc tải ảnh lên"
-                            className="flex-1 px-2 py-1 bg-white border border-purple-200 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-purple-500"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setOpenUrlInputId(null)}
-                            className="px-2 py-1 text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-600 rounded cursor-pointer"
-                          >
-                            Đóng
-                          </button>
-                        </div>
-                      )}
-
-                      {leftItem.imageUrl && (
-                        <div className="relative inline-flex items-start gap-2 p-1.5 bg-white border border-slate-200 rounded-lg">
-                          <img
-                            src={leftItem.imageUrl}
-                            alt={`Ảnh ý trái ${displayLabel}`}
-                            className="max-h-24 max-w-[180px] object-contain rounded"
-                            referrerPolicy="no-referrer"
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleUpdateLeftItem(leftItem.id, { imageUrl: undefined })
-                            }
-                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded border border-rose-200 cursor-pointer"
-                            title="Xóa ảnh"
-                          >
-                            <X className="w-3 h-3" />
-                            Xóa ảnh
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {/* Image attachment (upload or Ctrl+V paste — no raw URL exposed) */}
+                  <div className="pl-9">
+                    <AttachedImageBox
+                      compact
+                      label={`Ảnh ý trái ${displayLabel}`}
+                      imageUrl={leftItem.imageUrl}
+                      showCaption={false}
+                      onChangeImage={(url) =>
+                        handleUpdateLeftItem(leftItem.id, { imageUrl: url || undefined })
+                      }
+                    />
+                  </div>
 
                   {/* Select correct right item */}
                   <div className="flex items-center gap-2 pl-9">
@@ -474,7 +378,6 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
                 .filter(Boolean);
               const isDistractor = linkedLeftLabels.length === 0;
               const cannotDelete = rightItems.length <= leftItems.length;
-              const isUrlOpen = openUrlInputId === `right_${rightItem.id}`;
 
               return (
                 <div
@@ -513,42 +416,6 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
                       className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
 
-                    <label
-                      className={`inline-flex items-center justify-center p-1.5 rounded-lg border text-xs cursor-pointer transition-colors shrink-0 ${
-                        rightItem.imageUrl
-                          ? 'bg-purple-50 border-purple-300 text-purple-700'
-                          : 'bg-white border-slate-200 text-slate-600 hover:border-purple-300 hover:text-purple-700'
-                      }`}
-                      title="Tải ảnh lên cho ý cột phải"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleItemImageUpload('right', rightItem.id, file);
-                          e.target.value = '';
-                        }}
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setOpenUrlInputId(isUrlOpen ? null : `right_${rightItem.id}`)
-                      }
-                      className={`p-1.5 rounded-lg border transition-colors cursor-pointer shrink-0 ${
-                        isUrlOpen || rightItem.imageUrl
-                          ? 'bg-purple-50 border-purple-300 text-purple-700'
-                          : 'bg-white border-slate-200 text-slate-600 hover:border-purple-300 hover:text-purple-700'
-                      }`}
-                      title="Dán link ảnh / Xem ảnh"
-                    >
-                      <ImageIcon className="w-3.5 h-3.5" />
-                    </button>
-
                     <button
                       type="button"
                       onClick={() => handleRemoveRightItem(rightItem.id)}
@@ -564,55 +431,18 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
                     </button>
                   </div>
 
-                  {/* Image URL input & Thumbnail preview */}
-                  {(isUrlOpen || rightItem.imageUrl) && (
-                    <div className="pl-9 space-y-2">
-                      {isUrlOpen && (
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            value={rightItem.imageUrl || ''}
-                            onChange={(e) =>
-                              handleUpdateRightItem(rightItem.id, {
-                                imageUrl: e.target.value || undefined,
-                              })
-                            }
-                            placeholder="Dán đường dẫn ảnh (https://...) hoặc tải ảnh lên"
-                            className="flex-1 px-2 py-1 bg-white border border-purple-200 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-purple-500"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setOpenUrlInputId(null)}
-                            className="px-2 py-1 text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-600 rounded cursor-pointer"
-                          >
-                            Đóng
-                          </button>
-                        </div>
-                      )}
-
-                      {rightItem.imageUrl && (
-                        <div className="relative inline-flex items-start gap-2 p-1.5 bg-white border border-slate-200 rounded-lg">
-                          <img
-                            src={rightItem.imageUrl}
-                            alt={`Ảnh ý phải ${displayLabel}`}
-                            className="max-h-24 max-w-[180px] object-contain rounded"
-                            referrerPolicy="no-referrer"
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleUpdateRightItem(rightItem.id, { imageUrl: undefined })
-                            }
-                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded border border-rose-200 cursor-pointer"
-                            title="Xóa ảnh"
-                          >
-                            <X className="w-3 h-3" />
-                            Xóa ảnh
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {/* Image attachment (upload or Ctrl+V paste — no raw URL exposed) */}
+                  <div className="pl-9">
+                    <AttachedImageBox
+                      compact
+                      label={`Ảnh ý phải ${displayLabel}`}
+                      imageUrl={rightItem.imageUrl}
+                      showCaption={false}
+                      onChangeImage={(url) =>
+                        handleUpdateRightItem(rightItem.id, { imageUrl: url || undefined })
+                      }
+                    />
+                  </div>
 
                   <div className="pl-9 text-[11px]">
                     {isDistractor ? (
@@ -630,6 +460,19 @@ export const MatchingQuestionEditor: React.FC<MatchingQuestionEditorProps> = ({
             })}
           </div>
         </div>
+      </div>
+
+      {/* Live Preview of Matching Question */}
+      <div className="p-3 bg-white border border-blue-200 rounded-xl space-y-2">
+        <div className="text-[11px] font-bold text-blue-800 uppercase tracking-wider">
+          Xem trước ghép đôi (KaTeX &amp; Hình ảnh hai cột):
+        </div>
+        <MatchingQuestionView
+          question={question}
+          mode="preview"
+          showSolutions={true}
+          hidePrompt={true}
+        />
       </div>
     </div>
   );
