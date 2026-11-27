@@ -942,12 +942,11 @@ function mergeCoursesArrayById(existingArr: any, incomingArr: any, deletedSet: S
       const prevTs = getItemTs(prev);
       const incomingIsEmptyStub =
         item.schemaVersion === 2 &&
-        item.detailsLoaded === false &&
-        (!Array.isArray(item.chapters) || item.chapters.length === 0) &&
-        (!Array.isArray(item.lessons) || item.lessons.length === 0);
+        item.detailsLoaded === false;
       const prevHasDetails =
-        (Array.isArray(prev.chapters) && prev.chapters.length > 0) ||
-        (Array.isArray(prev.lessons) && prev.lessons.length > 0);
+        prev.detailsLoaded !== false &&
+        ((Array.isArray(prev.chapters) && prev.chapters.length > 0) ||
+          (Array.isArray(prev.lessons) && prev.lessons.length > 0));
       if (incomingIsEmptyStub && prevHasDetails) {
         if (nextTs >= prevTs) {
           map.set(item.id, {
@@ -1126,18 +1125,52 @@ function sanitizeIncomingPayloadForCaller(existing: any, payload: any, caller: V
 }
 
 function mergeStorageSnapshots(existing: any, payload: any) {
-  const deletedExamIds = mergeDeletedIdLists(existing.deletedExamIds, payload.deletedExamIds);
-  const deletedBundleIds = mergeDeletedIdLists(existing.deletedBundleIds, payload.deletedBundleIds);
-  const deletedClassroomIds = mergeDeletedIdLists(existing.deletedClassroomIds, payload.deletedClassroomIds);
-  const deletedCourseIds = mergeDeletedIdLists(existing.deletedCourseIds, payload.deletedCourseIds);
-  const deletedResultIds = mergeDeletedIdLists(existing.deletedResultIds, payload.deletedResultIds);
-  const deletedHomeworkIds = mergeDeletedIdLists(existing.deletedHomeworkIds, payload.deletedHomeworkIds);
-  const deletedClassroomHomeworkIds = mergeDeletedIdLists(
-    existing.deletedClassroomHomeworkIds,
-    payload.deletedClassroomHomeworkIds
+  const allowIncomingDeletes = Boolean(payload?.explicitPermanentDelete);
+  const unblockIdsFromArray = (delIds: any, incomingArr: any): string[] => {
+    const incomingIds = new Set<string>(
+      Array.isArray(incomingArr) ? incomingArr.map((x: any) => x?.id).filter(Boolean) : []
+    );
+    return (Array.isArray(delIds) ? delIds : []).filter((id: string) => id && !incomingIds.has(id));
+  };
+
+  const deletedExamIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedExamIds, payload.deletedExamIds) : existing.deletedExamIds,
+    payload.customExams
   );
-  const deletedSubjectIds = mergeDeletedIdLists(existing.deletedSubjectIds, payload.deletedSubjectIds);
-  const deletedScoreboardIds = mergeDeletedIdLists(existing.deletedScoreboardIds, payload.deletedScoreboardIds);
+  const deletedBundleIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedBundleIds, payload.deletedBundleIds) : existing.deletedBundleIds,
+    payload.customBundles
+  );
+  const deletedClassroomIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedClassroomIds, payload.deletedClassroomIds) : existing.deletedClassroomIds,
+    payload.classrooms
+  );
+  const deletedCourseIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedCourseIds, payload.deletedCourseIds) : existing.deletedCourseIds,
+    payload.courses
+  );
+  const deletedResultIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedResultIds, payload.deletedResultIds) : existing.deletedResultIds,
+    payload.results
+  );
+  const deletedHomeworkIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedHomeworkIds, payload.deletedHomeworkIds) : existing.deletedHomeworkIds,
+    payload.homeworkSubmissions
+  );
+  const deletedClassroomHomeworkIds = unblockIdsFromArray(
+    allowIncomingDeletes
+      ? mergeDeletedIdLists(existing.deletedClassroomHomeworkIds, payload.deletedClassroomHomeworkIds)
+      : existing.deletedClassroomHomeworkIds,
+    payload.classroomHomeworks
+  );
+  const deletedSubjectIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedSubjectIds, payload.deletedSubjectIds) : existing.deletedSubjectIds,
+    payload.subjects
+  );
+  const deletedScoreboardIds = unblockIdsFromArray(
+    allowIncomingDeletes ? mergeDeletedIdLists(existing.deletedScoreboardIds, payload.deletedScoreboardIds) : existing.deletedScoreboardIds,
+    payload.scoreboards
+  );
 
   const existingSubjects = Array.isArray(existing.subjects) ? existing.subjects : [];
   const incomingSubjects = Array.isArray(payload.subjects) ? payload.subjects : [];
@@ -1338,13 +1371,57 @@ app.post('/api/sync', requireAuth, (req: AuthenticatedRequest, res) => {
 
   const existing = getOrInitializeStorage();
   const sanitizedIncoming = sanitizeIncomingPayloadForCaller(existing, payload, caller);
-  const merged = mergeStorageSnapshots(existing, sanitizedIncoming);
+  const merged = mergeStorageSnapshots(existing, {
+    ...sanitizedIncoming,
+    explicitPermanentDelete: Boolean(payload.explicitPermanentDelete),
+  });
   writeServerData(merged);
 
   res.json({
     success: true,
     lastSyncedAt: merged.lastSyncedAt,
     data: filterSyncDataForCaller(merged, caller),
+  });
+});
+
+// POST /api/sync/clear-tombstones - Unblock tombstones on server backup store (Teacher/Admin only)
+app.post('/api/sync/clear-tombstones', requireAuth, (req: AuthenticatedRequest, res) => {
+  const caller = req.caller!;
+  if (caller.role !== 'teacher' && !caller.isMasterAdmin) {
+    return res.status(403).json({ success: false, error: 'Chỉ Giáo viên hoặc Quản trị viên mới được phép khôi phục dữ liệu.' });
+  }
+  const clearAll = req.body?.clearAll !== false;
+  const unblockIds = new Set<string>(
+    Array.isArray(req.body?.unblockIds)
+      ? req.body.unblockIds.filter((x: unknown): x is string => typeof x === 'string')
+      : []
+  );
+
+  const existing = getOrInitializeStorage();
+  const filterTomb = (arr: any) =>
+    clearAll
+      ? []
+      : (Array.isArray(arr) ? arr : []).filter((id: string) => !unblockIds.has(id));
+
+  const nextStore = {
+    ...existing,
+    deletedExamIds: filterTomb(existing.deletedExamIds),
+    deletedBundleIds: filterTomb(existing.deletedBundleIds),
+    deletedClassroomIds: filterTomb(existing.deletedClassroomIds),
+    deletedCourseIds: filterTomb(existing.deletedCourseIds),
+    deletedResultIds: filterTomb(existing.deletedResultIds),
+    deletedHomeworkIds: filterTomb(existing.deletedHomeworkIds),
+    deletedClassroomHomeworkIds: filterTomb(existing.deletedClassroomHomeworkIds),
+    deletedSubjectIds: filterTomb(existing.deletedSubjectIds),
+    deletedScoreboardIds: filterTomb(existing.deletedScoreboardIds),
+    lastSyncedAt: new Date().toISOString(),
+  };
+  writeServerData(nextStore);
+
+  res.json({
+    success: true,
+    lastSyncedAt: nextStore.lastSyncedAt,
+    data: filterSyncDataForCaller(nextStore, caller),
   });
 });
 

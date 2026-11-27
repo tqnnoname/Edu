@@ -13,6 +13,8 @@ import { RichContentRenderer } from './RichContentRenderer';
 import { MatchingQuestionEditor } from './MatchingQuestionEditor';
 import { MatchingQuestionView } from './MatchingQuestionView';
 import { processImageFile } from '../utils/imageUpload';
+import { uploadImageOrKeepFallback } from '../utils/courseMedia';
+import { ResilientImage } from './ResilientImage';
 import {
   formatAcceptedShortAnswersList,
   formatShortAnswerDecimalComma,
@@ -219,11 +221,12 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
     };
     try {
       const compressed = await processImageFile(file, 1200, 0.85);
+      const uploadedUrl = await uploadImageOrKeepFallback(compressed, file.name || 'quick_q_paste.png');
       setCursorImageModal({
         isOpen: true,
         field,
         subIdx,
-        initialImageSrc: compressed,
+        initialImageSrc: uploadedUrl,
         targetEl: el,
         range,
         targetLabel,
@@ -376,10 +379,10 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-200 flex flex-col">
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+      <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] overflow-hidden shadow-2xl border border-slate-200 flex flex-col">
         {/* Header */}
-        <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-md z-10">
+        <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between bg-white shrink-0 z-10">
           <div>
             <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
               <span>Chỉnh sửa nội dung & Điểm câu hỏi</span>
@@ -425,7 +428,7 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
         </div>
 
         {/* Body */}
-        <div ref={modalBodyRef} className="p-4 sm:p-6 space-y-5 flex-1">
+        <div ref={modalBodyRef} className="p-4 sm:p-6 space-y-5 flex-1 min-h-0 overflow-y-auto scroll-lane">
           {/* Question text */}
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
@@ -546,11 +549,10 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
                                   <RichContentRenderer content={opt} inlineImages={inlineImages} />
                                 )}
                                 {optImg && (
-                                  <img
+                                  <ResilientImage
                                     src={optImg}
                                     alt={`Phương án ${letter}`}
-                                    className="max-h-24 rounded border border-slate-200 object-contain mt-1"
-                                    referrerPolicy="no-referrer"
+                                    className="max-h-24 max-w-full rounded border border-slate-200 object-contain mt-1"
                                   />
                                 )}
                               </div>
@@ -676,11 +678,10 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
                                           />
                                         )}
                                         {sub.optionImages?.[soIdx] && (
-                                          <img
+                                          <ResilientImage
                                             src={sub.optionImages[soIdx]}
                                             alt={`Ảnh ${sLetter}`}
-                                            className="max-h-20 rounded border border-slate-200 object-contain mt-1"
-                                            referrerPolicy="no-referrer"
+                                            className="max-h-20 max-w-full rounded border border-slate-200 object-contain mt-1"
                                           />
                                         )}
                                       </div>
@@ -1702,7 +1703,7 @@ export const QuickQuestionEditorModal: React.FC<QuickQuestionEditorModalProps> =
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between sticky bottom-0">
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2 shrink-0">
           {onDelete ? (
             <div>
               {!isConfirmingDelete ? (

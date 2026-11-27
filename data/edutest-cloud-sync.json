@@ -1216,28 +1216,12 @@
     "cta_title": "Bạn có sẵn đề thi muốn đưa lên web để luyện tập?"
   },
   "liveTextUpdatedAt": "2026-11-21T08:11:13.989Z",
-  "deletedExamIds": [
-    "custom-1794721603782"
-  ],
+  "deletedExamIds": [],
   "deletedBundleIds": [],
-  "deletedClassroomIds": [
-    "class_1794830310964"
-  ],
-  "deletedCourseIds": [
-    "course_1794672896578",
-    "course_1794670581683"
-  ],
-  "deletedResultIds": [
-    "res-1794761972055",
-    "res-1794790318071",
-    "res-1795000537833",
-    "res-1794925165953",
-    "res-1794918863613",
-    "res-1794918901179"
-  ],
-  "deletedHomeworkIds": [
-    "hwsub_hw_1794824723545_ld4_9MkQZgyoHLZAwWzS67HlemIjrM83_1795168821641"
-  ],
+  "deletedClassroomIds": [],
+  "deletedCourseIds": [],
+  "deletedResultIds": [],
+  "deletedHomeworkIds": [],
   "deletedClassroomHomeworkIds": [],
   "deletedSubjectIds": [],
   "deletedScoreboardIds": [],

@@ -466,7 +466,7 @@ export const TeacherToolsView: React.FC<TeacherToolsViewProps> = ({
 
   const handleConfirmDeleteBoard = () => {
     if (!deleteTargetId) return;
-    deleteScoreboard(deleteTargetId);
+    deleteScoreboard(deleteTargetId, { confirmedByUser: true });
     void triggerCloudSync();
     const remaining = getAllScoreboards();
     setScoreboards(remaining);

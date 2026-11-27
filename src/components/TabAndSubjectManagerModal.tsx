@@ -52,6 +52,7 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
   const [editingSubjectName, setEditingSubjectName] = useState('');
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectCode, setNewSubjectCode] = useState('');
+  const [pendingDeleteSubject, setPendingDeleteSubject] = useState<CustomSubject | null>(null);
 
   // Tab operations
   const handleAddNewTab = () => {
@@ -116,9 +117,10 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
     setEditingSubjectId(null);
   };
 
-  const handleDeleteSubject = (subjId: string) => {
-    if (subjects.length <= 1) return;
-    deleteSubject(subjId);
+  const handleConfirmDeleteSubject = () => {
+    if (!pendingDeleteSubject || subjects.length <= 1) return;
+    deleteSubject(pendingDeleteSubject.id, { confirmedByUser: true });
+    setPendingDeleteSubject(null);
     onRefreshTabsAndSubjects();
   };
 
@@ -376,7 +378,7 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
                           {subjects.length > 1 && (
                             <button
                               type="button"
-                              onClick={() => handleDeleteSubject(subj.id)}
+                              onClick={() => setPendingDeleteSubject(subj)}
                               className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
                               title="Xóa môn này"
                             >
@@ -389,6 +391,33 @@ export const TabAndSubjectManagerModal: React.FC<TabAndSubjectManagerModalProps>
                   );
                 })}
               </div>
+
+              {pendingDeleteSubject && (
+                <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="text-rose-900">
+                    <strong>Xác nhận xóa môn học &quot;{pendingDeleteSubject.name}&quot;?</strong>
+                    <div className="text-rose-700 mt-0.5">
+                      Môn học sẽ được chuyển vào Thùng rác (có thể khôi phục lại bất cứ lúc nào).
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setPendingDeleteSubject(null)}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 cursor-pointer"
+                    >
+                      Hủy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmDeleteSubject}
+                      className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold cursor-pointer"
+                    >
+                      Xác nhận xóa
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Add New Subject Form */}
               <div className="p-4 bg-slate-100 rounded-xl space-y-3">

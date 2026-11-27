@@ -11,6 +11,7 @@ import {
 import { renderMath } from '../utils/renderMath';
 import { exportExamToWord } from '../utils/exportFiles';
 import { getCurrentUser, isCreatorModeRestricted, isCreatorOfItem, isMasterAdminUser } from '../utils/storage';
+import { ResilientImage } from './ResilientImage';
 
 interface ExamPreviewModalProps {
   isOpen: boolean;
@@ -344,11 +345,10 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                               <RichContentRenderer content={opt} inlineImages={q.inlineImages} />
                               {q.optionImages?.[optIdx] && (
                                 <div className="mt-1.5">
-                                  <img
+                                  <ResilientImage
                                     src={q.optionImages[optIdx]}
                                     alt={`Phương án ${letter}`}
-                                    className="max-h-32 rounded border border-slate-200 object-contain bg-white shadow-2xs"
-                                    referrerPolicy="no-referrer"
+                                    className="max-h-32 max-w-full rounded border border-slate-200 object-contain bg-white shadow-2xs"
                                   />
                                 </div>
                               )}
@@ -489,11 +489,10 @@ export const ExamPreviewModal: React.FC<ExamPreviewModalProps> = ({
                                     </div>
                                     {sub.optionImages?.[oIdx] && (
                                       <div className="mt-1">
-                                        <img
+                                        <ResilientImage
                                           src={sub.optionImages[oIdx]}
                                           alt={`Ý ${String.fromCharCode(65 + oIdx)}`}
-                                          className="max-h-24 rounded border border-purple-100 object-contain bg-white shadow-2xs"
-                                          referrerPolicy="no-referrer"
+                                          className="max-h-24 max-w-full rounded border border-purple-100 object-contain bg-white shadow-2xs"
                                         />
                                       </div>
                                     )}

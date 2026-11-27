@@ -111,9 +111,15 @@
 /* 5. Ensure math containers never clip tall roots or high vector arrows */
 .question-container,
 .math-display,
-.katex-inline,
-.katex-block {
+.katex-inline {
   overflow: visible !important;
+}
+
+.katex-block {
+  overflow-x: auto !important;
+  overflow-y: visible !important;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
 }
 
 .question-container,
@@ -238,4 +244,80 @@
   user-select: none;
 }
 
+/* Mobile ergonomics, iOS safe area, visible scroll lanes, and accidental zoom prevention */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Always-visible, clean up/down scroll lane for main page & scrollable modal/panel bodies */
+html,
+body,
+.scroll-lane,
+.overflow-y-auto,
+.overflow-auto {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #f1f5f9;
+}
+
+.scroll-lane {
+  scrollbar-gutter: stable;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.scroll-lane::-webkit-scrollbar,
+.overflow-y-auto::-webkit-scrollbar,
+.overflow-auto::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+.scroll-lane::-webkit-scrollbar-track,
+.overflow-y-auto::-webkit-scrollbar-track,
+.overflow-auto::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 9999px;
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+.scroll-lane::-webkit-scrollbar-thumb,
+.overflow-y-auto::-webkit-scrollbar-thumb,
+.overflow-auto::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 9999px;
+  border: 2px solid #f1f5f9;
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
+.scroll-lane::-webkit-scrollbar-thumb:hover,
+.overflow-y-auto::-webkit-scrollbar-thumb:hover,
+.overflow-auto::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+button,
+a,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
 

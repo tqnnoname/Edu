@@ -16,6 +16,7 @@ import {
 } from '../utils/matching';
 import { renderMath } from '../utils/renderMath';
 import { RichContentRenderer } from './RichContentRenderer';
+import { ResilientImage } from './ResilientImage';
 
 interface MatchingQuestionViewProps {
   question: Question;
@@ -217,11 +218,10 @@ export const MatchingQuestionView: React.FC<MatchingQuestionViewProps> = ({
                         {hasText && <RichContentRenderer content={item.content} />}
                         {hasImg && (
                           <div className={hasText ? 'pt-1' : ''}>
-                            <img
+                            <ResilientImage
                               src={item.imageUrl}
                               alt={`Hình ảnh ý cột trái ${label}`}
                               className="max-h-44 max-w-full rounded-lg border border-slate-200 object-contain bg-white p-0.5"
-                              referrerPolicy="no-referrer"
                             />
                           </div>
                         )}
@@ -269,11 +269,10 @@ export const MatchingQuestionView: React.FC<MatchingQuestionViewProps> = ({
                         {hasText && <RichContentRenderer content={item.content} />}
                         {hasImg && (
                           <div className={hasText ? 'pt-1' : ''}>
-                            <img
+                            <ResilientImage
                               src={item.imageUrl}
                               alt={`Hình ảnh ý cột phải ${label}`}
                               className="max-h-44 max-w-full rounded-lg border border-slate-200 object-contain bg-white p-0.5"
-                              referrerPolicy="no-referrer"
                             />
                           </div>
                         )}
@@ -469,11 +468,10 @@ export const MatchingQuestionView: React.FC<MatchingQuestionViewProps> = ({
                           <RichContentRenderer content={matchedRightItem.content} />
                         )}
                         {matchedRightItem.imageUrl?.trim() && (
-                          <img
+                          <ResilientImage
                             src={matchedRightItem.imageUrl}
                             alt={`Ảnh đáp án (${displayedInput})`}
                             className="max-h-24 max-w-full rounded-md border border-slate-200 object-contain bg-white p-0.5"
-                            referrerPolicy="no-referrer"
                           />
                         )}
                       </div>

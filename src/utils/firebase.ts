@@ -74,11 +74,15 @@ import type {
 import { hashUsernameLookupId } from './crypto';
 import {
   courseHasEmbeddedBase64,
+  offloadClassroomHomeworkMediaToUrls,
   offloadCourseBase64MediaToUrls,
+  offloadExamBase64MediaToUrls,
+  offloadHomeworkSubmissionMediaToUrls,
   sanitizeAttachmentsForFirestore,
   sanitizeInlineImagesForFirestore,
   sanitizeUrlForFirestore,
 } from './courseMedia';
+import { registerMediaFirestoreProvider } from './mediaAssets';
 
 export const MASTER_ADMIN_EMAIL_LOWER = 'tranquangnhat418@gmail.com';
 
@@ -111,6 +115,8 @@ export const auth = (() => {
     return existingAuth;
   }
 })();
+
+registerMediaFirestoreProvider(() => ({ db, auth }));
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -1743,72 +1749,126 @@ function toSafeExamDoc(
       })
     : undefined;
 
-  return stripUndefined({
-    id: sanitizeDocId(exam.id),
-    title: (String(exam.title || '').trim() || 'Đề thi không tên').slice(0, 300),
-    subject: (String(exam.subject || '').trim() || 'general').slice(0, 64),
-    grade: String(exam.grade || 'Tổng hợp').slice(0, 64),
-    durationMinutes: safeFiniteNumber(exam.durationMinutes) ?? 45,
-    description: String(exam.description || '').slice(0, 4000),
-    instructions: exam.instructions ? String(exam.instructions).slice(0, 4000) : undefined,
-    settings: isPlainObject(exam.settings) ? exam.settings : {},
-    parts: Array.isArray(exam.parts) ? filterObjects(exam.parts, 50) : undefined,
-    attachedFile: safeAttachedFile,
-    questions: filterObjects(exam.questions, 300),
-    totalQuestions: safeFiniteNumber(exam.totalQuestions ?? exam.questions?.length) ?? 0,
-    totalPoints: safeFiniteNumber(exam.totalPoints) ?? 10,
-    isCustom: Boolean(exam.isCustom ?? true),
-    visibility: pickEnum(
-      exam.visibility,
-      ['public', 'exam_only', 'private', 'class', 'bundle_only'] as const,
-      'public'
-    ),
-    assignedClassId: exam.assignedClassId ? String(exam.assignedClassId).slice(0, 128) : undefined,
-    assignedClassName: exam.assignedClassName
-      ? String(exam.assignedClassName).slice(0, 200)
-      : undefined,
-    allowedEmails,
-    status: pickEnum(
-      exam.status,
-      ['draft', 'scheduled', 'open', 'closed', 'published'] as const,
-      'open'
-    ),
-    openTime: exam.openTime ? String(exam.openTime).slice(0, 64) : undefined,
-    closeTime: exam.closeTime ? String(exam.closeTime).slice(0, 64) : undefined,
-    modeType: pickEnum(exam.modeType, ['both', 'exam_only', 'practice_only'] as const, 'both'),
-    maxAttempts: safeFiniteNumber(exam.maxAttempts),
-    maxTabSwitches: safeFiniteNumber(exam.maxTabSwitches),
-    allowCopy: exam.allowCopy ?? true,
-    showAnswersAfterExam: exam.showAnswersAfterExam ?? true,
-    showOnlyStudentAnswersAfterExam: exam.showOnlyStudentAnswersAfterExam ?? false,
-    showLiveScoreDuringExam: exam.showLiveScoreDuringExam ?? true,
-    showScoreAfterExam: exam.showScoreAfterExam ?? true,
-    examCode: exam.examCode ? String(exam.examCode).slice(0, 32) : undefined,
-    randomQuestionCount: safeFiniteNumber(exam.randomQuestionCount),
-    lockExitUntilTimeout: exam.lockExitUntilTimeout ?? false,
-    minSubmitMinutes: safeFiniteNumber(exam.minSubmitMinutes),
-    requireAccessCode: exam.requireAccessCode ?? false,
-    accessSecurityCode: exam.accessSecurityCode
-      ? String(exam.accessSecurityCode).slice(0, 64)
-      : undefined,
-    accessMode: pickEnum(exam.accessMode, ['direct_and_code', 'code_only'] as const, 'direct_and_code'),
-    teacherMode: pickEnum(
-      exam.teacherMode || (exam.isCreatorOnlyMode ? 'creator' : 'normal'),
-      ['normal', 'creator', 'grading', 'presenting'] as const,
-      'normal'
-    ),
-    isCreatorOnlyMode: Boolean(exam.isCreatorOnlyMode || exam.teacherMode === 'creator'),
-    isOfficialClassExam: Boolean(exam.isOfficialClassExam),
-    preExamLockMinutes: safeFiniteNumber(exam.preExamLockMinutes),
-    allowExitAfterSubmit: Boolean(exam.allowExitAfterSubmit),
-    creatorId: sanitizeDocId(exam.creatorId || ownerUid),
-    creatorUid: ownerUid,
-    creatorEmail: safeNonEmptyEmail(exam.creatorEmail || ownerEmail, 'teacher@edutest.local'),
-    creatorName: exam.creatorName ? String(exam.creatorName).slice(0, 150) : undefined,
-    createdAtStr: (exam.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
-    ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
-    updatedAt: serverTimestamp(),
-  });
+  const buildPayload = (
+    questionsArr: any[],
+    attFile: typeof safeAttachedFile
+  ) =>
+    stripUndefined({
+      id: sanitizeDocId(exam.id),
+      title: (String(exam.title || '').trim() || 'Đề thi không tên').slice(0, 300),
+      subject: (String(exam.subject || '').trim() || 'general').slice(0, 64),
+      grade: String(exam.grade || 'Tổng hợp').slice(0, 64),
+      durationMinutes: safeFiniteNumber(exam.durationMinutes) ?? 45,
+      description: String(exam.description || '').slice(0, 4000),
+      instructions: exam.instructions ? String(exam.instructions).slice(0, 4000) : undefined,
+      settings: isPlainObject(exam.settings) ? exam.settings : {},
+      parts: Array.isArray(exam.parts) ? filterObjects(exam.parts, 50) : undefined,
+      attachedFile: attFile,
+      questions: questionsArr,
+      totalQuestions: safeFiniteNumber(exam.totalQuestions ?? exam.questions?.length) ?? 0,
+      totalPoints: safeFiniteNumber(exam.totalPoints) ?? 10,
+      isCustom: Boolean(exam.isCustom ?? true),
+      visibility: pickEnum(
+        exam.visibility,
+        ['public', 'exam_only', 'private', 'class', 'bundle_only'] as const,
+        'public'
+      ),
+      assignedClassId: exam.assignedClassId ? String(exam.assignedClassId).slice(0, 128) : undefined,
+      assignedClassName: exam.assignedClassName
+        ? String(exam.assignedClassName).slice(0, 200)
+        : undefined,
+      allowedEmails,
+      status: pickEnum(
+        exam.status,
+        ['draft', 'scheduled', 'open', 'closed', 'published'] as const,
+        'open'
+      ),
+      openTime: exam.openTime ? String(exam.openTime).slice(0, 64) : undefined,
+      closeTime: exam.closeTime ? String(exam.closeTime).slice(0, 64) : undefined,
+      modeType: pickEnum(exam.modeType, ['both', 'exam_only', 'practice_only'] as const, 'both'),
+      maxAttempts: safeFiniteNumber(exam.maxAttempts),
+      maxTabSwitches: safeFiniteNumber(exam.maxTabSwitches),
+      allowCopy: exam.allowCopy ?? true,
+      showAnswersAfterExam: exam.showAnswersAfterExam ?? true,
+      showOnlyStudentAnswersAfterExam: exam.showOnlyStudentAnswersAfterExam ?? false,
+      showLiveScoreDuringExam: exam.showLiveScoreDuringExam ?? true,
+      showScoreAfterExam: exam.showScoreAfterExam ?? true,
+      examCode: exam.examCode ? String(exam.examCode).slice(0, 32) : undefined,
+      randomQuestionCount: safeFiniteNumber(exam.randomQuestionCount),
+      lockExitUntilTimeout: exam.lockExitUntilTimeout ?? false,
+      minSubmitMinutes: safeFiniteNumber(exam.minSubmitMinutes),
+      requireAccessCode: exam.requireAccessCode ?? false,
+      accessSecurityCode: exam.accessSecurityCode
+        ? String(exam.accessSecurityCode).slice(0, 64)
+        : undefined,
+      accessMode: pickEnum(exam.accessMode, ['direct_and_code', 'code_only'] as const, 'direct_and_code'),
+      teacherMode: pickEnum(
+        exam.teacherMode || (exam.isCreatorOnlyMode ? 'creator' : 'normal'),
+        ['normal', 'creator', 'grading', 'presenting'] as const,
+        'normal'
+      ),
+      isCreatorOnlyMode: Boolean(exam.isCreatorOnlyMode || exam.teacherMode === 'creator'),
+      isOfficialClassExam: Boolean(exam.isOfficialClassExam),
+      preExamLockMinutes: safeFiniteNumber(exam.preExamLockMinutes),
+      allowExitAfterSubmit: Boolean(exam.allowExitAfterSubmit),
+      creatorId: sanitizeDocId(exam.creatorId || ownerUid),
+      creatorUid:
+        ownerEmail.trim().toLowerCase() === MASTER_ADMIN_EMAIL_LOWER && (exam as any).creatorUid
+          ? sanitizeDocId(String((exam as any).creatorUid))
+          : ownerUid,
+      creatorEmail: safeNonEmptyEmail(exam.creatorEmail || ownerEmail, 'teacher@edutest.local'),
+      creatorName: exam.creatorName ? String(exam.creatorName).slice(0, 150) : undefined,
+      createdAtStr: (exam.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
+      ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
+      updatedAt: serverTimestamp(),
+    });
+
+  const rawQuestions = filterObjects(exam.questions, 300);
+  const hasLargeBase64InQuestion = (q: any): boolean => {
+    if (!q || typeof q !== 'object') return false;
+    const checkStr = (s: unknown) => typeof s === 'string' && s.startsWith('data:') && s.length > 2000;
+    if (checkStr(q.imageUrl) || checkStr(q.explanationImageUrl)) return true;
+    if (q.inlineImages && typeof q.inlineImages === 'object') {
+      if (Object.values(q.inlineImages).some(checkStr)) return true;
+    }
+    if (Array.isArray(q.matchingLeftItems) && q.matchingLeftItems.some((it: any) => checkStr(it?.imageUrl))) {
+      return true;
+    }
+    if (Array.isArray(q.matchingRightItems) && q.matchingRightItems.some((it: any) => checkStr(it?.imageUrl))) {
+      return true;
+    }
+    if (Array.isArray(q.subQuestions) && q.subQuestions.some(hasLargeBase64InQuestion)) {
+      return true;
+    }
+    return false;
+  };
+
+  let safeQuestions: Record<string, any>[] = rawQuestions;
+  let safeAtt: Record<string, any> | undefined = safeAttachedFile;
+  if (rawQuestions.some(hasLargeBase64InQuestion)) {
+    safeQuestions = rawQuestions
+      .map((q) => sanitizeQuestionForCourseBlock(q as Question))
+      .filter((q): q is Question => Boolean(q));
+  }
+
+  let candidate = buildPayload(safeQuestions, safeAtt as typeof safeAttachedFile);
+  try {
+    let approxBytes = JSON.stringify(candidate).length;
+    if (approxBytes > 860000 && safeQuestions === rawQuestions) {
+      safeQuestions = rawQuestions
+        .map((q) => sanitizeQuestionForCourseBlock(q as Question))
+        .filter((q): q is Question => Boolean(q));
+      candidate = buildPayload(safeQuestions, safeAtt as typeof safeAttachedFile);
+      approxBytes = JSON.stringify(candidate).length;
+    }
+    if (approxBytes > 900000 && safeAtt?.dataUrl) {
+      const { dataUrl: _omit, ...restAtt } = safeAtt;
+      safeAtt = stripUndefined(restAtt);
+      candidate = buildPayload(safeQuestions, safeAtt as typeof safeAttachedFile);
+    }
+  } catch {}
+
+  return candidate;
 }
 
 function fromFirestoreExamDoc(d: any): Exam {
@@ -1906,7 +1966,10 @@ function toSafeBundleDoc(
     sections: Array.isArray(bundle.sections) ? filterObjects(bundle.sections, 50) : undefined,
     isCustom: Boolean(bundle.isCustom ?? true),
     creatorId: sanitizeDocId(bundle.creatorId || ownerUid),
-    creatorUid: ownerUid,
+    creatorUid:
+      ownerEmail.trim().toLowerCase() === MASTER_ADMIN_EMAIL_LOWER && (bundle as any).creatorUid
+        ? sanitizeDocId(String((bundle as any).creatorUid))
+        : ownerUid,
     creatorEmail: safeNonEmptyEmail(bundle.creatorEmail || ownerEmail, 'teacher@edutest.local'),
     creatorName: bundle.creatorName ? String(bundle.creatorName).slice(0, 150) : undefined,
     createdAtStr: (bundle.createdAt || new Date().toISOString().split('T')[0]).slice(0, 64),
@@ -2069,7 +2132,10 @@ function toSafeCourseDoc(
       : undefined,
     allowedEmails,
     creatorId: sanitizeDocId(course.creatorId || ownerUid),
-    creatorUid: ownerUid,
+    creatorUid:
+      ownerEmail.trim().toLowerCase() === MASTER_ADMIN_EMAIL_LOWER && (course as any).creatorUid
+        ? sanitizeDocId(String((course as any).creatorUid))
+        : ownerUid,
     creatorEmail: safeNonEmptyEmail(course.creatorEmail || ownerEmail, 'teacher@edutest.local'),
     creatorName: course.creatorName ? String(course.creatorName).slice(0, 150) : undefined,
     isScormEnabled: course.isScormEnabled ?? true,
@@ -2149,7 +2215,13 @@ function toSafeCourseLessonDoc(
     blockIds,
     practiceExamId: les.practiceExamId ? String(les.practiceExamId).slice(0, 128) : undefined,
     practiceExamTitle: les.practiceExamTitle ? String(les.practiceExamTitle).slice(0, 300) : undefined,
-    homework: isPlainObject(les.homework) ? stripUndefined({ ...les.homework }) : undefined,
+    homework: isPlainObject(les.homework)
+      ? stripUndefined({
+          ...les.homework,
+          inlineImages: sanitizeInlineImagesForFirestore((les.homework as any).inlineImages),
+          attachments: sanitizeAttachmentsForFirestore((les.homework as any).attachments),
+        })
+      : undefined,
     creatorUid: ownerUid,
     creatorEmail: safeNonEmptyEmail(ownerEmail, 'teacher@edutest.local'),
     ...(isKnownUpdate ? {} : { createdAt: serverTimestamp() }),
@@ -2466,6 +2538,7 @@ export async function syncCourseSubcollectionsToFirestore(
   activeWebUser?: UserAccount | null,
   options?: {
     migrateLegacyRoot?: boolean;
+    pruneRemovedChildren?: boolean;
     onMediaOffloaded?: (cleanCourse: MicroCourse) => void;
   }
 ): Promise<{ ok: boolean; course: MicroCourse; migratedMediaCount: number; error?: string }> {
@@ -2610,8 +2683,8 @@ export async function syncCourseSubcollectionsToFirestore(
       }
     }
 
-    // Remove deleted chapters / lessons / blocks from Firestore subcollections
-    if (cachedSubIds) {
+    // Only prune deleted chapters / lessons / blocks when explicitly saving a non-empty hydrated course
+    if (cachedSubIds && options?.pruneRemovedChildren === true && chapters.length > 0) {
       const orphanRefs: DocumentReference[] = [];
       cachedSubIds.blocks.forEach((id) => {
         if (!nextBlkIds.has(id)) orphanRefs.push(doc(db, 'courses', cleanId, 'blocks', id));
@@ -2680,7 +2753,14 @@ export async function migrateLegacyCourseToSubcollections(
   });
 }
 
-export async function deleteCourseFromFirestoreCascade(courseId: string): Promise<void> {
+export async function deleteCourseFromFirestoreCascade(
+  courseId: string,
+  options?: { userConfirmedDelete?: boolean }
+): Promise<void> {
+  if (options?.userConfirmedDelete !== true) {
+    console.warn('[deleteCourseFromFirestoreCascade] Blocked auto-delete without explicit user confirmation:', courseId);
+    return;
+  }
   const fbUser = getFirebaseAuthUser();
   if (!fbUser || !courseId) return;
   const cleanId = sanitizeDocId(courseId);
@@ -2938,8 +3018,8 @@ function toSafeClassroomHomeworkDoc(
     classId: sanitizeDocId(hw.classId),
     title: (String(hw.title || '').trim() || 'Bài tập về nhà').slice(0, 300),
     instructions: hw.instructions ? String(hw.instructions).slice(0, 20000) : undefined,
-    inlineImages: isPlainObject(hw.inlineImages) ? hw.inlineImages : undefined,
-    attachments: Array.isArray(hw.attachments) ? filterObjects(hw.attachments, 20) : undefined,
+    inlineImages: sanitizeInlineImagesForFirestore(hw.inlineImages),
+    attachments: sanitizeAttachmentsForFirestore(hw.attachments),
     openTime: hw.openTime ? String(hw.openTime).slice(0, 64) : undefined,
     closeTime: hw.closeTime ? String(hw.closeTime).slice(0, 64) : undefined,
     maxScore: safeFiniteNumber(hw.maxScore) ?? 10,
@@ -2985,9 +3065,9 @@ function toSafeHomeworkSubmissionDoc(
     studentCode: sub.studentCode ? String(sub.studentCode).slice(0, 60) : undefined,
     teacherEmail: teacherEmail ? teacherEmail.slice(0, 180) : undefined,
     imageUrls: filterStrings(sub.imageUrls, 20),
-    attachments: Array.isArray(sub.attachments) ? filterObjects(sub.attachments, 20) : undefined,
+    attachments: sanitizeAttachmentsForFirestore(sub.attachments),
     textAnswer: sub.textAnswer ? String(sub.textAnswer).slice(0, 50000) : undefined,
-    inlineImages: isPlainObject(sub.inlineImages) ? sub.inlineImages : undefined,
+    inlineImages: sanitizeInlineImagesForFirestore(sub.inlineImages),
     note: sub.note ? String(sub.note).slice(0, 2000) : undefined,
     submittedAt: (String(sub.submittedAt || '').trim() || new Date().toISOString()).slice(0, 64),
     score: safeFiniteNumber(sub.score),
@@ -3137,18 +3217,33 @@ export interface FirestoreSyncSnapshot {
   deletedSubjectIds?: string[];
   deletedScoreboardIds?: string[];
   falselyTombstonedCourseIds?: string[];
+  falselyTombstonedExamIds?: string[];
+  falselyTombstonedBundleIds?: string[];
+  falselyTombstonedClassroomIds?: string[];
+  falselyTombstonedResultIds?: string[];
+  falselyTombstonedClassroomHomeworkIds?: string[];
+  falselyTombstonedHomeworkIds?: string[];
+  falselyTombstonedScoreboardIds?: string[];
   isDeltaSync?: boolean;
   pulledAtMs?: number;
 }
 
-export async function safeDeleteFirestoreDoc(col: string, id: string): Promise<void> {
+export async function safeDeleteFirestoreDoc(
+  col: string,
+  id: string,
+  options?: { userConfirmedDelete?: boolean }
+): Promise<void> {
+  if (options?.userConfirmedDelete !== true) {
+    console.warn('[safeDeleteFirestoreDoc] Blocked auto-delete without explicit user confirmation:', col, id);
+    return;
+  }
   const fbUser = getFirebaseAuthUser();
   if (!fbUser) return;
   const cleanId = sanitizeDocId(id);
   const targetRef = doc(db, col, cleanId);
   try {
     if (col === 'courses') {
-      await deleteCourseFromFirestoreCascade(cleanId);
+      await deleteCourseFromFirestoreCascade(cleanId, { userConfirmedDelete: true });
       return;
     }
     const snap = await getDoc(targetRef).catch(() => null);
@@ -3363,6 +3458,13 @@ export async function pullAuthenticatedDataFromFirestore(
             getDocs(
               query(collection(db, 'exams'), where('creatorUid', '==', fbUser.uid), limit(250))
             ).catch(() => null),
+            ...(primaryEmail
+              ? [
+                  getDocs(
+                    query(collection(db, 'exams'), where('creatorEmail', '==', primaryEmail), limit(250))
+                  ).catch(() => null),
+                ]
+              : []),
           ]
         : []),
     ];
@@ -3399,14 +3501,22 @@ export async function pullAuthenticatedDataFromFirestore(
             getDocs(
               query(collection(db, 'bundles'), where('creatorUid', '==', fbUser.uid), limit(150))
             ).catch(() => null),
+            ...(primaryEmail
+              ? [
+                  getDocs(
+                    query(collection(db, 'bundles'), where('creatorEmail', '==', primaryEmail), limit(150))
+                  ).catch(() => null),
+                ]
+              : []),
           ]
         : []),
     ];
     return mergeQuerySnapDocs(await Promise.all(queries));
   };
 
+  const forceCourses = Boolean(forceFull || options?.forceCoursesFull);
+
   const pullCoursesDocs = async () => {
-    const forceCourses = Boolean(forceFull || options?.forceCoursesFull);
     if (isAdmin) {
       const snap = await queryCollectionDeltaSafe('courses', forceCourses ? null : sinceTs, 350);
       return snap ? snap.docs : [];
@@ -3432,6 +3542,13 @@ export async function pullAuthenticatedDataFromFirestore(
             getDocs(
               query(collection(db, 'courses'), where('creatorUid', '==', fbUser.uid), limit(150))
             ).catch(() => null),
+            ...(primaryEmail
+              ? [
+                  getDocs(
+                    query(collection(db, 'courses'), where('creatorEmail', '==', primaryEmail), limit(150))
+                  ).catch(() => null),
+                ]
+              : []),
           ]
         : []),
     ];
@@ -3644,9 +3761,56 @@ export async function pullAuthenticatedDataFromFirestore(
     }
   }
   if (tombData) {
-    out.deletedExamIds = tombData.deletedExamIds || [];
-    out.deletedBundleIds = tombData.deletedBundleIds || [];
-    out.deletedClassroomIds = tombData.deletedClassroomIds || [];
+    // Only apply raw deletion tombstones on full pulls so partial delta-sync queries
+    // never let stale tombstones mask older, unmodified live Cloud documents.
+    const canApplyGeneralTombstones = !sinceTs;
+    const canApplyCourseTombstones = !sinceTs || forceCourses;
+
+    const liveExamIds = new Set(examDocs.map((d) => d.id));
+    const rawDeletedExams: string[] = Array.isArray(tombData.deletedExamIds)
+      ? tombData.deletedExamIds
+      : [];
+    const falselyTombstonedExams = rawDeletedExams.filter(
+      (id) => liveExamIds.has(sanitizeDocId(id)) && !id.startsWith('exam_e2e_')
+    );
+    if (falselyTombstonedExams.length > 0) {
+      out.falselyTombstonedExamIds = falselyTombstonedExams;
+    }
+    const falseExamSet = new Set(falselyTombstonedExams);
+    if (canApplyGeneralTombstones) {
+      out.deletedExamIds = rawDeletedExams.filter((id) => !falseExamSet.has(id));
+    }
+
+    const liveBundleIds = new Set(bundleDocs.map((d) => d.id));
+    const rawDeletedBundles: string[] = Array.isArray(tombData.deletedBundleIds)
+      ? tombData.deletedBundleIds
+      : [];
+    const falselyTombstonedBundles = rawDeletedBundles.filter((id) =>
+      liveBundleIds.has(sanitizeDocId(id))
+    );
+    if (falselyTombstonedBundles.length > 0) {
+      out.falselyTombstonedBundleIds = falselyTombstonedBundles;
+    }
+    const falseBundleSet = new Set(falselyTombstonedBundles);
+    if (canApplyGeneralTombstones) {
+      out.deletedBundleIds = rawDeletedBundles.filter((id) => !falseBundleSet.has(id));
+    }
+
+    const liveClassIds = new Set(classroomDocs.map((d) => d.id));
+    const rawDeletedClasses: string[] = Array.isArray(tombData.deletedClassroomIds)
+      ? tombData.deletedClassroomIds
+      : [];
+    const falselyTombstonedClasses = rawDeletedClasses.filter((id) =>
+      liveClassIds.has(sanitizeDocId(id))
+    );
+    if (falselyTombstonedClasses.length > 0) {
+      out.falselyTombstonedClassroomIds = falselyTombstonedClasses;
+    }
+    const falseClassSet = new Set(falselyTombstonedClasses);
+    if (canApplyGeneralTombstones) {
+      out.deletedClassroomIds = rawDeletedClasses.filter((id) => !falseClassSet.has(id));
+    }
+
     const liveCourseIds = new Set(courseDocs.map((d) => d.id));
     const rawDeletedCourses: string[] = Array.isArray(tombData.deletedCourseIds)
       ? tombData.deletedCourseIds
@@ -3658,13 +3822,77 @@ export async function pullAuthenticatedDataFromFirestore(
       out.falselyTombstonedCourseIds = falselyTombstoned;
     }
     const falseSet = new Set(falselyTombstoned);
-    out.deletedCourseIds = rawDeletedCourses.filter((id) => !falseSet.has(id));
-    out.deletedUserIds = tombData.deletedUserIds || [];
-    out.deletedResultIds = tombData.deletedResultIds || [];
-    out.deletedHomeworkIds = tombData.deletedHomeworkIds || [];
-    out.deletedClassroomHomeworkIds = tombData.deletedClassroomHomeworkIds || [];
-    out.deletedSubjectIds = tombData.deletedSubjectIds || [];
-    out.deletedScoreboardIds = tombData.deletedScoreboardIds || [];
+    if (canApplyCourseTombstones) {
+      out.deletedCourseIds = rawDeletedCourses.filter((id) => !falseSet.has(id));
+    }
+
+    if (canApplyGeneralTombstones) {
+      out.deletedUserIds = tombData.deletedUserIds || [];
+    }
+
+    const liveResultIds = new Set(resultDocs.map((d) => d.id));
+    const rawDeletedResults: string[] = Array.isArray(tombData.deletedResultIds)
+      ? tombData.deletedResultIds
+      : [];
+    const falselyTombstonedResults = rawDeletedResults.filter((id) =>
+      liveResultIds.has(sanitizeDocId(id))
+    );
+    if (falselyTombstonedResults.length > 0) {
+      out.falselyTombstonedResultIds = falselyTombstonedResults;
+    }
+    const falseResultSet = new Set(falselyTombstonedResults);
+    if (canApplyGeneralTombstones) {
+      out.deletedResultIds = rawDeletedResults.filter((id) => !falseResultSet.has(id));
+    }
+
+    const liveHwSubIds = new Set(hwSubDocs.map((d) => d.id));
+    const rawDeletedHwSubs: string[] = Array.isArray(tombData.deletedHomeworkIds)
+      ? tombData.deletedHomeworkIds
+      : [];
+    const falselyTombstonedHwSubs = rawDeletedHwSubs.filter((id) =>
+      liveHwSubIds.has(sanitizeDocId(id))
+    );
+    if (falselyTombstonedHwSubs.length > 0) {
+      out.falselyTombstonedHomeworkIds = falselyTombstonedHwSubs;
+    }
+    const falseHwSubSet = new Set(falselyTombstonedHwSubs);
+    if (canApplyGeneralTombstones) {
+      out.deletedHomeworkIds = rawDeletedHwSubs.filter((id) => !falseHwSubSet.has(id));
+    }
+
+    const liveClassHwIds = new Set(hwDocs.map((d) => d.id));
+    const rawDeletedClassHws: string[] = Array.isArray(tombData.deletedClassroomHomeworkIds)
+      ? tombData.deletedClassroomHomeworkIds
+      : [];
+    const falselyTombstonedClassHws = rawDeletedClassHws.filter((id) =>
+      liveClassHwIds.has(sanitizeDocId(id))
+    );
+    if (falselyTombstonedClassHws.length > 0) {
+      out.falselyTombstonedClassroomHomeworkIds = falselyTombstonedClassHws;
+    }
+    const falseClassHwSet = new Set(falselyTombstonedClassHws);
+    if (canApplyGeneralTombstones) {
+      out.deletedClassroomHomeworkIds = rawDeletedClassHws.filter((id) => !falseClassHwSet.has(id));
+    }
+
+    if (canApplyGeneralTombstones) {
+      out.deletedSubjectIds = tombData.deletedSubjectIds || [];
+    }
+
+    const liveSbIds = new Set((sbSnap && !sbSnap.empty ? sbSnap.docs : []).map((d) => d.id));
+    const rawDeletedSbs: string[] = Array.isArray(tombData.deletedScoreboardIds)
+      ? tombData.deletedScoreboardIds
+      : [];
+    const falselyTombstonedSbs = rawDeletedSbs.filter((id) =>
+      liveSbIds.has(sanitizeDocId(id))
+    );
+    if (falselyTombstonedSbs.length > 0) {
+      out.falselyTombstonedScoreboardIds = falselyTombstonedSbs;
+    }
+    const falseSbSet = new Set(falselyTombstonedSbs);
+    if (canApplyGeneralTombstones) {
+      out.deletedScoreboardIds = rawDeletedSbs.filter((id) => !falseSbSet.has(id));
+    }
   }
 
   if (!sinceTs) {
@@ -3897,6 +4125,9 @@ export async function scanRecoverableCloudCourses(
         ...(isTeacher
           ? [
               getDocs(query(collection(db, 'courses'), where('creatorUid', '==', fbUser.uid), limit(200))).catch(() => null),
+              ...(primaryEmail
+                ? [getDocs(query(collection(db, 'courses'), where('creatorEmail', '==', primaryEmail), limit(200))).catch(() => null)]
+                : []),
             ]
           : []),
       ];
@@ -4008,6 +4239,212 @@ export async function clearCoursesFromCloudTombstones(
         if (!res.ok && res.error) {
           return { ok: false, error: res.error };
         }
+      }
+    }
+
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+export interface CloudExamRecoveryScanResult {
+  cloudExams: Exam[];
+  tombstonedExamIds: string[];
+  liveCloudTombstonedIds: string[];
+  orphanReferencedExamIds: string[];
+  error?: string;
+}
+
+export async function scanRecoverableCloudExams(
+  activeWebUser?: UserAccount | null
+): Promise<CloudExamRecoveryScanResult> {
+  const fbUser = getFirebaseAuthUser();
+  if (!fbUser || fbUser.isAnonymous) {
+    return {
+      cloudExams: [],
+      tombstonedExamIds: [],
+      liveCloudTombstonedIds: [],
+      orphanReferencedExamIds: [],
+      error: 'Bạn cần đăng nhập tài khoản Giáo viên / Quản trị viên để quét đề thi trên Cloud Firestore.',
+    };
+  }
+
+  const primaryEmail = (fbUser.email || activeWebUser?.email || '').trim().toLowerCase();
+  const isAdmin = isMasterAdminFirebaseUser(fbUser) || primaryEmail === MASTER_ADMIN_EMAIL_LOWER;
+  const isTeacher = isAdmin || activeWebUser?.role === 'teacher';
+
+  try {
+    const [tombSnap, clsSnap, bundleSnap] = await Promise.all([
+      getDocFromServer(doc(db, 'siteConfig', 'tombstones')).catch(() =>
+        getDoc(doc(db, 'siteConfig', 'tombstones')).catch(() => null)
+      ),
+      isAdmin
+        ? getDocs(query(collection(db, 'classrooms'), limit(200))).catch(() => null)
+        : isTeacher
+        ? getDocs(query(collection(db, 'classrooms'), where('teacherUid', '==', fbUser.uid), limit(100))).catch(() => null)
+        : Promise.resolve(null),
+      isAdmin
+        ? getDocs(query(collection(db, 'bundles'), limit(200))).catch(() => null)
+        : isTeacher
+        ? getDocs(query(collection(db, 'bundles'), where('creatorUid', '==', fbUser.uid), limit(100))).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    const tombData = tombSnap?.exists() ? tombSnap.data() : null;
+    const tombstonedExamIds: string[] = Array.isArray(tombData?.deletedExamIds)
+      ? tombData.deletedExamIds.filter((x: unknown): x is string => typeof x === 'string')
+      : [];
+
+    let docs: any[] = [];
+    if (isAdmin) {
+      const snap = await getDocs(query(collection(db, 'exams'), limit(500))).catch(() => null);
+      docs = snap ? snap.docs : [];
+    } else {
+      const queries = [
+        getDocs(
+          query(
+            collection(db, 'exams'),
+            where('visibility', 'in', ['public', 'bundle_only', 'exam_only']),
+            limit(250)
+          )
+        ).catch(() => null),
+        ...(primaryEmail
+          ? [
+              getDocs(
+                query(collection(db, 'exams'), where('allowedEmails', 'array-contains', primaryEmail), limit(200))
+              ).catch(() => null),
+            ]
+          : []),
+        ...(isTeacher
+          ? [
+              getDocs(query(collection(db, 'exams'), where('creatorUid', '==', fbUser.uid), limit(250))).catch(
+                () => null
+              ),
+              ...(primaryEmail
+                ? [
+                    getDocs(
+                      query(collection(db, 'exams'), where('creatorEmail', '==', primaryEmail), limit(250))
+                    ).catch(() => null),
+                  ]
+                : []),
+            ]
+          : []),
+      ];
+      docs = mergeQuerySnapDocs(await Promise.all(queries));
+    }
+
+    const foundById = new Map<string, Exam>();
+    for (const d of docs) {
+      markCloudDocKnown('exams', d.id);
+      const parsed = fromFirestoreExamDoc(d.data());
+      if (parsed?.id) foundById.set(parsed.id, parsed);
+    }
+
+    const referencedIds = new Set<string>(tombstonedExamIds);
+    if (clsSnap && !clsSnap.empty) {
+      clsSnap.docs.forEach((d) => {
+        const assigned = d.data()?.assignedExamIds;
+        if (Array.isArray(assigned)) {
+          assigned.forEach((eid: unknown) => {
+            if (typeof eid === 'string' && eid) referencedIds.add(eid);
+          });
+        }
+      });
+    }
+    if (bundleSnap && !bundleSnap.empty) {
+      bundleSnap.docs.forEach((d) => {
+        const exIds = d.data()?.examIds;
+        if (Array.isArray(exIds)) {
+          exIds.forEach((eid: unknown) => {
+            if (typeof eid === 'string' && eid) referencedIds.add(eid);
+          });
+        }
+      });
+    }
+
+    const missingFromQuery = Array.from(referencedIds).filter((id) => !foundById.has(id));
+    if (missingFromQuery.length > 0) {
+      await Promise.all(
+        missingFromQuery.slice(0, 40).map(async (eid) => {
+          try {
+            const snap = await getDocFromServer(doc(db, 'exams', sanitizeDocId(eid))).catch(() =>
+              getDoc(doc(db, 'exams', sanitizeDocId(eid)))
+            );
+            if (snap && snap.exists()) {
+              markCloudDocKnown('exams', snap.id);
+              const parsed = fromFirestoreExamDoc(snap.data());
+              if (parsed?.id) foundById.set(parsed.id, parsed);
+            }
+          } catch {}
+        })
+      );
+    }
+
+    const cloudExams = Array.from(foundById.values());
+    const tombSet = new Set(tombstonedExamIds);
+    const liveCloudTombstonedIds = cloudExams.filter((e) => tombSet.has(e.id)).map((e) => e.id);
+    const orphanReferencedExamIds = Array.from(referencedIds).filter(
+      (id) => !foundById.has(id) && !id.startsWith('exam_e2e_')
+    );
+
+    return {
+      cloudExams,
+      tombstonedExamIds,
+      liveCloudTombstonedIds,
+      orphanReferencedExamIds,
+    };
+  } catch (err: any) {
+    return {
+      cloudExams: [],
+      tombstonedExamIds: [],
+      liveCloudTombstonedIds: [],
+      orphanReferencedExamIds: [],
+      error: err?.message || String(err),
+    };
+  }
+}
+
+export async function clearExamsFromCloudTombstones(
+  examIdsToUnblock: string[],
+  examsToUpload: Exam[],
+  classrooms: Classroom[],
+  activeWebUser?: UserAccount | null
+): Promise<{ ok: boolean; error?: string }> {
+  const fbUser = getFirebaseAuthUser();
+  if (!fbUser || fbUser.isAnonymous) {
+    return { ok: false, error: 'Chưa đăng nhập Firebase.' };
+  }
+  const effectiveUid = fbUser.uid;
+  const unblockSet = new Set(examIdsToUnblock);
+
+  try {
+    const tombRef = doc(db, 'siteConfig', 'tombstones');
+    const tombSnap = await getDocFromServer(tombRef).catch(() => getDoc(tombRef).catch(() => null));
+    if (tombSnap && tombSnap.exists()) {
+      const existing = tombSnap.data() || {};
+      const nextDeletedExams = (Array.isArray(existing.deletedExamIds) ? existing.deletedExamIds : []).filter(
+        (id: string) => !unblockSet.has(id)
+      );
+      await setDoc(
+        tombRef,
+        stripUndefined({
+          ...existing,
+          id: 'tombstones',
+          deletedExamIds: nextDeletedExams,
+          updatedById: effectiveUid,
+          updatedAt: serverTimestamp(),
+        }),
+        { merge: true }
+      );
+      markCloudDocKnown('siteConfig', 'tombstones');
+      invalidateSiteConfigCache('tombstones');
+    }
+
+    for (const ex of examsToUpload) {
+      const ok = await syncSingleExamToFirestoreNow(ex, classrooms, activeWebUser);
+      if (!ok) {
+        return { ok: false, error: `Không thể đồng bộ lại đề "${ex.title}" lên Cloud.` };
       }
     }
 
@@ -4217,14 +4654,10 @@ export async function pushAuthorizedDataToFirestore(
   const allCourses: MicroCourse[] = payload.courses || [];
 
   const ops: BatchWriteOp[] = [];
-  const deletePromises: Promise<void>[] = [];
 
   try {
-    // 1. Tombstones & Site Config — write ONLY when explicitly modified (never blindly overwrite by students or non-dirty background syncs)
-    const shouldPushTombstones =
-      dirtySiteConfigSet.has('tombstones') ||
-      (Boolean(options?.forceFull) && isTeacher) ||
-      (isTeacher && !knownCloudDocIds.has('siteConfig/tombstones'));
+    // 1. Tombstones & Site Config — write ONLY when explicitly modified by user action (never from background/forceFull sync)
+    const shouldPushTombstones = dirtySiteConfigSet.has('tombstones');
 
     if (shouldPushTombstones) {
       let tombPayload: Record<string, any>;
@@ -4419,7 +4852,7 @@ export async function pushAuthorizedDataToFirestore(
       return ms === 0 || ms >= minTsMs;
     };
 
-    // 3. Exams
+    // 3. Exams (offload embedded base64 / local image URLs to persistent Firestore mediaAssets)
     if (isTeacher) {
       for (const ex of allExams) {
         if (!ex.id || deletedExamSet.has(ex.id)) continue;
@@ -4427,17 +4860,22 @@ export async function pushAuthorizedDataToFirestore(
         const cleanId = sanitizeDocId(ex.id);
         const key = `exams/${cleanId}`;
         if (!shouldSyncItem(key, ex.id, ex.updatedAt)) continue;
+        const { exam: preparedExam } = await offloadExamBase64MediaToUrls(ex).catch(() => ({
+          exam: ex,
+        }));
         ops.push({
           ref: doc(db, 'exams', cleanId),
-          data: toSafeExamDoc(ex, effectiveUid, primaryEmail, allClassrooms, knownCloudDocIds.has(key)),
+          data: toSafeExamDoc(
+            preparedExam,
+            effectiveUid,
+            primaryEmail,
+            allClassrooms,
+            knownCloudDocIds.has(key)
+          ),
           docKey: key,
         });
       }
-      for (const delId of deletedExamSet) {
-        if (knownCloudDocIds.has(`exams/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('exams', delId).catch(() => {}));
-        }
-      }
+      // NOTE: Never auto-delete Firestore documents from background sync tombstones.
     }
 
     // 4. Bundles
@@ -4460,11 +4898,6 @@ export async function pushAuthorizedDataToFirestore(
           docKey: key,
         });
       }
-      for (const delId of deletedBundleSet) {
-        if (knownCloudDocIds.has(`bundles/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('bundles', delId).catch(() => {}));
-        }
-      }
     }
 
     // 5. Courses (subcollection-based sync + Base64->URL offloading + legacy root cleanup)
@@ -4478,6 +4911,7 @@ export async function pushAuthorizedDataToFirestore(
         if (!shouldSyncItem(key, c.id, c.updatedAt)) continue;
         courseSyncPromises.push(
           syncCourseSubcollectionsToFirestore(c, allClassrooms, currentUser, {
+            pruneRemovedChildren: false,
             onMediaOffloaded: options?.onCourseMediaOffloaded,
           }).then((res) => {
             if (!res.ok && res.error) {
@@ -4485,13 +4919,6 @@ export async function pushAuthorizedDataToFirestore(
             }
           })
         );
-      }
-      if (dirtySiteConfigSet.has('tombstones')) {
-        for (const delId of deletedCourseSet) {
-          if (knownCloudDocIds.has(`courses/${sanitizeDocId(delId)}`)) {
-            deletePromises.push(deleteCourseFromFirestoreCascade(delId).catch(() => {}));
-          }
-        }
       }
     }
 
@@ -4532,11 +4959,6 @@ export async function pushAuthorizedDataToFirestore(
           });
         }
       }
-      for (const delId of deletedClassroomSet) {
-        if (knownCloudDocIds.has(`classrooms/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('classrooms', delId).catch(() => {}));
-        }
-      }
     }
 
     // 7. Results
@@ -4563,11 +4985,6 @@ export async function pushAuthorizedDataToFirestore(
         ),
         docKey: key,
       });
-    }
-    for (const delId of deletedResultSet) {
-      if (knownCloudDocIds.has(`results/${sanitizeDocId(delId)}`)) {
-        deletePromises.push(safeDeleteFirestoreDoc('results', delId).catch(() => {}));
-      }
     }
 
     // 8. Course progress
@@ -4601,10 +5018,13 @@ export async function pushAuthorizedDataToFirestore(
         const cleanId = sanitizeDocId(hw.id);
         const key = `classroomHomeworks/${cleanId}`;
         if (!shouldSyncItem(key, hw.id, hw.updatedAt)) continue;
+        const { homework: preparedHw } = await offloadClassroomHomeworkMediaToUrls(hw).catch(() => ({
+          homework: hw,
+        }));
         ops.push({
           ref: doc(db, 'classroomHomeworks', cleanId),
           data: toSafeClassroomHomeworkDoc(
-            hw,
+            preparedHw,
             effectiveUid,
             primaryEmail,
             allClassrooms,
@@ -4612,11 +5032,6 @@ export async function pushAuthorizedDataToFirestore(
           ),
           docKey: key,
         });
-      }
-      for (const delId of deletedClassroomHwSet) {
-        if (knownCloudDocIds.has(`classroomHomeworks/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('classroomHomeworks', delId).catch(() => {}));
-        }
       }
     }
 
@@ -4634,10 +5049,13 @@ export async function pushAuthorizedDataToFirestore(
       const cleanId = sanitizeDocId(sub.id);
       const key = `homeworkSubmissions/${cleanId}`;
       if (!shouldSyncItem(key, sub.id, sub.updatedAt || sub.gradedAt || sub.submittedAt)) continue;
+      const { submission: preparedSub } = await offloadHomeworkSubmissionMediaToUrls(sub).catch(() => ({
+        submission: sub,
+      }));
       ops.push({
         ref: doc(db, 'homeworkSubmissions', cleanId),
         data: toSafeHomeworkSubmissionDoc(
-          sub,
+          preparedSub,
           effectiveUid,
           primaryEmail,
           allClassrooms,
@@ -4647,11 +5065,6 @@ export async function pushAuthorizedDataToFirestore(
         ),
         docKey: key,
       });
-    }
-    for (const delId of deletedHomeworkSet) {
-      if (knownCloudDocIds.has(`homeworkSubmissions/${sanitizeDocId(delId)}`)) {
-        deletePromises.push(safeDeleteFirestoreDoc('homeworkSubmissions', delId).catch(() => {}));
-      }
     }
 
     // 11. Teacher Role Requests
@@ -4745,19 +5158,14 @@ export async function pushAuthorizedDataToFirestore(
           docKey: key,
         });
       }
-      for (const delId of deletedScoreboardSet) {
-        if (knownCloudDocIds.has(`scoreboards/${sanitizeDocId(delId)}`)) {
-          deletePromises.push(safeDeleteFirestoreDoc('scoreboards', delId).catch(() => {}));
-        }
-      }
     }
 
-    if (ops.length === 0 && deletePromises.length === 0 && courseSyncPromises.length === 0) {
+    if (ops.length === 0 && courseSyncPromises.length === 0) {
       return { ok: true };
     }
 
-    // Execute atomic batch commits + parallel subcollection syncs + deletions
-    await Promise.all([commitBatchOperations(ops), ...courseSyncPromises, ...deletePromises]);
+    // Execute atomic batch commits + parallel subcollection syncs (ZERO automatic deletions)
+    await Promise.all([commitBatchOperations(ops), ...courseSyncPromises]);
 
     return { ok: true };
   } catch (err: any) {
@@ -4842,20 +5250,27 @@ export async function patchHomeworkSubmissionGradeInFirestore(
  * Đồng bộ tức thì 1 đề thi cụ thể lên Firestore (< 100ms, không qua hàng chờ batch/debounce)
  * Dùng khi Giáo viên bật/tắt chế độ "Người ra đề", lưu đề, hoặc thay đổi trạng thái phòng thi.
  */
-export async function syncSingleExamToFirestoreNow(
+export async function syncSingleExamToFirestoreDetailed(
   exam: Exam,
   classrooms: Classroom[],
   activeWebUser?: UserAccount | null
-): Promise<void> {
+): Promise<{ ok: boolean; error?: string }> {
   const fbUser = getFirebaseAuthUser();
-  if (!fbUser || !exam?.id) return;
+  if (!fbUser || !exam?.id) {
+    return { ok: false, error: 'Chưa đăng nhập Firebase.' };
+  }
   const primaryEmail = (fbUser.email || activeWebUser?.email || '').trim().toLowerCase();
-  if (!primaryEmail) return;
+  if (!primaryEmail) {
+    return { ok: false, error: 'Không xác định được email tài khoản.' };
+  }
   const cleanId = sanitizeDocId(exam.id);
   const key = `exams/${cleanId}`;
   try {
-    const safeDoc = toSafeExamDoc(
+    const { exam: preparedExam } = await offloadExamBase64MediaToUrls(exam).catch(() => ({
       exam,
+    }));
+    const safeDoc = toSafeExamDoc(
+      preparedExam,
       fbUser.uid,
       primaryEmail,
       classrooms,
@@ -4863,9 +5278,34 @@ export async function syncSingleExamToFirestoreNow(
     );
     await setDoc(doc(db, 'exams', cleanId), safeDoc, { merge: true });
     markCloudDocKnown('exams', cleanId);
-  } catch (err) {
+    return { ok: true };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
     console.warn('[syncSingleExamToFirestoreNow] warning:', err);
+    return { ok: false, error: msg };
   }
+}
+
+export async function syncSingleExamToFirestoreNow(
+  exam: Exam,
+  classrooms: Classroom[],
+  activeWebUser?: UserAccount | null
+): Promise<boolean> {
+  const res = await syncSingleExamToFirestoreDetailed(exam, classrooms, activeWebUser);
+  return res.ok;
+}
+
+export async function syncSingleCourseToFirestoreNow(
+  course: MicroCourse,
+  classrooms: Classroom[],
+  activeWebUser?: UserAccount | null,
+  options?: { onMediaOffloaded?: (cleanCourse: MicroCourse) => void }
+): Promise<{ ok: boolean; course?: MicroCourse; error?: string }> {
+  const res = await syncCourseSubcollectionsToFirestore(course, classrooms, activeWebUser, {
+    pruneRemovedChildren: false,
+    onMediaOffloaded: options?.onMediaOffloaded,
+  });
+  return { ok: res.ok, course: res.course, error: res.error };
 }
 
 /**
@@ -5181,29 +5621,19 @@ export function attachRealtimeFirestoreListeners(
           for (const change of changes) {
             const d = change.doc;
             if (change.type === 'removed') {
-              // Verify on server whether doc was truly deleted OR just moved out of this filtered query (e.g. visibility changed)
+              // NEVER delete local data on listener `removed` events (only refresh if doc still exists on server)
               const removedId = d.id;
               void getDocFromServer(doc(db, colName, removedId))
                 .then((checkSnap) => {
                   if (!checkSnap.exists()) {
                     knownCloudDocIds.delete(`${colName}/${removedId}`);
-                    if (!pendingRemoved[colName]) pendingRemoved[colName] = new Set();
-                    pendingRemoved[colName].add(removedId);
-                    scheduleFlushDelta();
                   } else {
                     markCloudDocKnown(colName, removedId);
                     pushDocIntoPendingDelta(colName, checkSnap.data());
                     scheduleFlushDelta();
                   }
                 })
-                .catch((checkErr: any) => {
-                  const code = String(checkErr?.code || '');
-                  if (code.includes('permission-denied')) {
-                    if (!pendingRemoved[colName]) pendingRemoved[colName] = new Set();
-                    pendingRemoved[colName].add(removedId);
-                    scheduleFlushDelta();
-                  }
-                });
+                .catch(() => {});
               continue;
             }
             markCloudDocKnown(colName, d.id);
@@ -5224,7 +5654,7 @@ export function attachRealtimeFirestoreListeners(
     } catch {}
   };
 
-  // 1. Always keep only 2 lightweight document listeners: own user doc (role changes) + tombstones
+  // 1. Keep lightweight document listeners for tombstones cache & own user role changes
   try {
     unsubs.push(
       onSnapshot(
@@ -5237,17 +5667,7 @@ export function attachRealtimeFirestoreListeners(
           if (!snap.exists()) return;
           const t = snap.data();
           siteConfigReadCache.set('tombstones', { data: t, fetchedAtMs: Date.now() });
-          pendingDelta.deletedExamIds = t.deletedExamIds || [];
-          pendingDelta.deletedBundleIds = t.deletedBundleIds || [];
-          pendingDelta.deletedClassroomIds = t.deletedClassroomIds || [];
-          pendingDelta.deletedCourseIds = t.deletedCourseIds || [];
-          pendingDelta.deletedUserIds = t.deletedUserIds || [];
-          pendingDelta.deletedResultIds = t.deletedResultIds || [];
-          pendingDelta.deletedHomeworkIds = t.deletedHomeworkIds || [];
-          pendingDelta.deletedClassroomHomeworkIds = t.deletedClassroomHomeworkIds || [];
-          pendingDelta.deletedSubjectIds = t.deletedSubjectIds || [];
-          pendingDelta.deletedScoreboardIds = t.deletedScoreboardIds || [];
-          scheduleFlushDelta();
+          // NOTE: Do not automatically push tombstones to hide live items in open sessions without explicit user consent.
         },
         () => {}
       ),
@@ -5622,4 +6042,432 @@ export function attachRealtimeFirestoreListeners(
       } catch {}
     });
   };
+}
+
+// =========================================================================
+// UNIFIED CLOUD DATA RECOVERY & TOMBSTONE UNBLOCKING (ALL COLLECTIONS)
+// =========================================================================
+
+export interface CloudAllDataRecoveryScanResult {
+  exams: Exam[];
+  bundles: ExamBundle[];
+  courses: MicroCourse[];
+  classrooms: Classroom[];
+  results: ExamResult[];
+  classroomHomeworks: ClassroomHomework[];
+  homeworkSubmissions: HomeworkSubmission[];
+  scoreboards: Scoreboard[];
+  subjects: CustomSubject[];
+  tombstones: {
+    deletedExamIds: string[];
+    deletedBundleIds: string[];
+    deletedCourseIds: string[];
+    deletedClassroomIds: string[];
+    deletedResultIds: string[];
+    deletedClassroomHomeworkIds: string[];
+    deletedHomeworkIds: string[];
+    deletedScoreboardIds: string[];
+    deletedSubjectIds: string[];
+  };
+  orphanReferencedIds: {
+    exams: string[];
+    courses: string[];
+  };
+  error?: string;
+}
+
+export async function scanAllCloudDataForRecovery(
+  activeWebUser?: UserAccount | null
+): Promise<CloudAllDataRecoveryScanResult> {
+  const emptyTombstones = {
+    deletedExamIds: [] as string[],
+    deletedBundleIds: [] as string[],
+    deletedCourseIds: [] as string[],
+    deletedClassroomIds: [] as string[],
+    deletedResultIds: [] as string[],
+    deletedClassroomHomeworkIds: [] as string[],
+    deletedHomeworkIds: [] as string[],
+    deletedScoreboardIds: [] as string[],
+    deletedSubjectIds: [] as string[],
+  };
+  const fbUser = getFirebaseAuthUser();
+  if (!fbUser || fbUser.isAnonymous) {
+    return {
+      exams: [],
+      bundles: [],
+      courses: [],
+      classrooms: [],
+      results: [],
+      classroomHomeworks: [],
+      homeworkSubmissions: [],
+      scoreboards: [],
+      subjects: [],
+      tombstones: emptyTombstones,
+      orphanReferencedIds: { exams: [], courses: [] },
+      error: 'Bạn cần đăng nhập tài khoản Giáo viên / Quản trị viên để quét toàn bộ dữ liệu trên Cloud Firestore.',
+    };
+  }
+
+  const primaryEmail = (fbUser.email || activeWebUser?.email || '').trim().toLowerCase();
+  const isAdmin = isMasterAdminFirebaseUser(fbUser) || primaryEmail === MASTER_ADMIN_EMAIL_LOWER;
+  const isTeacher = isAdmin || activeWebUser?.role === 'teacher';
+
+  try {
+    const [
+      tombSnap,
+      subjSnap,
+      examDocs,
+      bundleDocs,
+      courseDocs,
+      clsDocs,
+      resultDocs,
+      hwDocs,
+      hwSubDocs,
+      sbDocs,
+    ] = await Promise.all([
+      getDocFromServer(doc(db, 'siteConfig', 'tombstones')).catch(() =>
+        getDoc(doc(db, 'siteConfig', 'tombstones')).catch(() => null)
+      ),
+      getDocFromServer(doc(db, 'siteConfig', 'subjects')).catch(() =>
+        getDoc(doc(db, 'siteConfig', 'subjects')).catch(() => null)
+      ),
+      isAdmin
+        ? getDocs(query(collection(db, 'exams'), limit(500))).then((s) => s.docs).catch(() => [])
+        : Promise.all([
+            getDocs(query(collection(db, 'exams'), where('visibility', 'in', ['public', 'bundle_only', 'exam_only']), limit(250))).catch(() => null),
+            ...(primaryEmail
+              ? [getDocs(query(collection(db, 'exams'), where('allowedEmails', 'array-contains', primaryEmail), limit(200))).catch(() => null)]
+              : []),
+            ...(isTeacher
+              ? [
+                  getDocs(query(collection(db, 'exams'), where('creatorUid', '==', fbUser.uid), limit(250))).catch(() => null),
+                  ...(primaryEmail
+                    ? [getDocs(query(collection(db, 'exams'), where('creatorEmail', '==', primaryEmail), limit(250))).catch(() => null)]
+                    : []),
+                ]
+              : []),
+          ]).then(mergeQuerySnapDocs),
+      isAdmin
+        ? getDocs(query(collection(db, 'bundles'), limit(300))).then((s) => s.docs).catch(() => [])
+        : Promise.all([
+            getDocs(query(collection(db, 'bundles'), where('visibility', 'in', ['public', 'bundle_only', 'exam_only']), limit(150))).catch(() => null),
+            ...(primaryEmail
+              ? [getDocs(query(collection(db, 'bundles'), where('allowedEmails', 'array-contains', primaryEmail), limit(150))).catch(() => null)]
+              : []),
+            ...(isTeacher
+              ? [
+                  getDocs(query(collection(db, 'bundles'), where('creatorUid', '==', fbUser.uid), limit(150))).catch(() => null),
+                  ...(primaryEmail
+                    ? [getDocs(query(collection(db, 'bundles'), where('creatorEmail', '==', primaryEmail), limit(150))).catch(() => null)]
+                    : []),
+                ]
+              : []),
+          ]).then(mergeQuerySnapDocs),
+      isAdmin
+        ? getDocs(query(collection(db, 'courses'), limit(400))).then((s) => s.docs).catch(() => [])
+        : Promise.all([
+            getDocs(query(collection(db, 'courses'), where('visibility', '==', 'public'), limit(150))).catch(() => null),
+            ...(primaryEmail
+              ? [getDocs(query(collection(db, 'courses'), where('allowedEmails', 'array-contains', primaryEmail), limit(150))).catch(() => null)]
+              : []),
+            ...(isTeacher
+              ? [
+                  getDocs(query(collection(db, 'courses'), where('creatorUid', '==', fbUser.uid), limit(200))).catch(() => null),
+                  ...(primaryEmail
+                    ? [getDocs(query(collection(db, 'courses'), where('creatorEmail', '==', primaryEmail), limit(200))).catch(() => null)]
+                    : []),
+                ]
+              : []),
+          ]).then(mergeQuerySnapDocs),
+      isAdmin
+        ? getDocs(query(collection(db, 'classrooms'), limit(300))).then((s) => s.docs).catch(() => [])
+        : Promise.all([
+            ...(primaryEmail
+              ? [getDocs(query(collection(db, 'classrooms'), where('memberEmails', 'array-contains', primaryEmail), limit(100))).catch(() => null)]
+              : []),
+            ...(isTeacher
+              ? [
+                  getDocs(query(collection(db, 'classrooms'), where('teacherUid', '==', fbUser.uid), limit(100))).catch(() => null),
+                  ...(primaryEmail
+                    ? [getDocs(query(collection(db, 'classrooms'), where('teacherEmail', '==', primaryEmail), limit(100))).catch(() => null)]
+                    : []),
+                ]
+              : []),
+          ]).then(mergeQuerySnapDocs),
+      isAdmin
+        ? getDocs(query(collection(db, 'results'), limit(500))).then((s) => s.docs).catch(() => [])
+        : Promise.all([
+            getDocs(query(collection(db, 'results'), where('studentUid', '==', fbUser.uid), limit(250))).catch(() => null),
+            ...(isTeacher && primaryEmail
+              ? [getDocs(query(collection(db, 'results'), where('teacherEmail', '==', primaryEmail), limit(300))).catch(() => null)]
+              : []),
+          ]).then(mergeQuerySnapDocs),
+      isAdmin
+        ? getDocs(query(collection(db, 'classroomHomeworks'), limit(300))).then((s) => s.docs).catch(() => [])
+        : Promise.all([
+            ...(primaryEmail
+              ? [getDocs(query(collection(db, 'classroomHomeworks'), where('allowedEmails', 'array-contains', primaryEmail), limit(150))).catch(() => null)]
+              : []),
+            ...(isTeacher
+              ? [getDocs(query(collection(db, 'classroomHomeworks'), where('teacherUid', '==', fbUser.uid), limit(150))).catch(() => null)]
+              : []),
+          ]).then(mergeQuerySnapDocs),
+      isAdmin
+        ? getDocs(query(collection(db, 'homeworkSubmissions'), limit(400))).then((s) => s.docs).catch(() => [])
+        : Promise.all([
+            getDocs(query(collection(db, 'homeworkSubmissions'), where('studentUid', '==', fbUser.uid), limit(200))).catch(() => null),
+            ...(isTeacher && primaryEmail
+              ? [getDocs(query(collection(db, 'homeworkSubmissions'), where('teacherEmail', '==', primaryEmail), limit(300))).catch(() => null)]
+              : []),
+          ]).then(mergeQuerySnapDocs),
+      isAdmin
+        ? getDocs(query(collection(db, 'scoreboards'), limit(250))).then((s) => s.docs).catch(() => [])
+        : isTeacher
+        ? getDocs(query(collection(db, 'scoreboards'), where('creatorUid', '==', fbUser.uid), limit(150))).then((s) => s.docs).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
+    const tombData = tombSnap?.exists() ? tombSnap.data() : {};
+    const tombstones = {
+      deletedExamIds: filterStrings(tombData?.deletedExamIds, 500),
+      deletedBundleIds: filterStrings(tombData?.deletedBundleIds, 500),
+      deletedCourseIds: filterStrings(tombData?.deletedCourseIds, 500),
+      deletedClassroomIds: filterStrings(tombData?.deletedClassroomIds, 500),
+      deletedResultIds: filterStrings(tombData?.deletedResultIds, 500),
+      deletedClassroomHomeworkIds: filterStrings(tombData?.deletedClassroomHomeworkIds, 500),
+      deletedHomeworkIds: filterStrings(tombData?.deletedHomeworkIds, 500),
+      deletedScoreboardIds: filterStrings(tombData?.deletedScoreboardIds, 500),
+      deletedSubjectIds: filterStrings(tombData?.deletedSubjectIds, 500),
+    };
+
+    const examsMap = new Map<string, Exam>();
+    examDocs.forEach((d: any) => {
+      markCloudDocKnown('exams', d.id);
+      const parsed = fromFirestoreExamDoc(d.data());
+      if (parsed?.id && !parsed.id.startsWith('exam_e2e_')) examsMap.set(parsed.id, parsed);
+    });
+
+    const bundlesMap = new Map<string, ExamBundle>();
+    bundleDocs.forEach((d: any) => {
+      markCloudDocKnown('bundles', d.id);
+      const parsed = fromFirestoreBundleDoc(d.data());
+      if (parsed?.id) bundlesMap.set(parsed.id, parsed);
+    });
+
+    const coursesMap = new Map<string, MicroCourse>();
+    courseDocs.forEach((d: any) => {
+      markCloudDocKnown('courses', d.id);
+      const parsed = fromFirestoreCourseDoc(d.data());
+      if (parsed?.id && !parsed.id.startsWith('course_e2e_')) coursesMap.set(parsed.id, parsed);
+    });
+
+    const classroomsMap = new Map<string, Classroom>();
+    clsDocs.forEach((d: any) => {
+      markCloudDocKnown('classrooms', d.id);
+      const parsed = fromFirestoreClassroomDoc(d.data());
+      if (parsed?.id) classroomsMap.set(parsed.id, parsed);
+    });
+
+    const resultsMap = new Map<string, ExamResult>();
+    resultDocs.forEach((d: any) => {
+      markCloudDocKnown('results', d.id);
+      const parsed = fromFirestoreResultDoc(d.data());
+      if (parsed?.id) resultsMap.set(parsed.id, parsed);
+    });
+
+    const hwMap = new Map<string, ClassroomHomework>();
+    hwDocs.forEach((d: any) => {
+      markCloudDocKnown('classroomHomeworks', d.id);
+      const hd = d.data();
+      if (hd?.id) {
+        hwMap.set(hd.id, {
+          ...hd,
+          id: hd.id,
+          createdAt: hd.createdAtStr || toIsoString(hd.createdAt),
+          updatedAt: toIsoString(hd.updatedAt, ''),
+        } as ClassroomHomework);
+      }
+    });
+
+    const hwSubMap = new Map<string, HomeworkSubmission>();
+    hwSubDocs.forEach((d: any) => {
+      markCloudDocKnown('homeworkSubmissions', d.id);
+      const sd = d.data();
+      if (sd?.id) {
+        hwSubMap.set(sd.id, {
+          ...sd,
+          id: sd.id,
+          updatedAt: toIsoString(sd.updatedAt, ''),
+        } as HomeworkSubmission);
+      }
+    });
+
+    const sbMap = new Map<string, Scoreboard>();
+    sbDocs.forEach((d: any) => {
+      markCloudDocKnown('scoreboards', d.id);
+      const parsed = fromFirestoreScoreboardDoc(d.data());
+      if (parsed?.id) sbMap.set(parsed.id, parsed);
+    });
+
+    // Probe any tombstoned/referenced IDs missed by filtered queries via direct getDocFromServer
+    const probeMissing = async <T>(
+      colName: string,
+      ids: string[],
+      map: Map<string, T>,
+      parser: (raw: any) => T | null
+    ) => {
+      const missing = ids.filter((id) => id && !map.has(id) && !id.startsWith('exam_e2e_') && !id.startsWith('course_e2e_'));
+      if (missing.length === 0) return;
+      await Promise.all(
+        missing.slice(0, 40).map(async (id) => {
+          try {
+            const snap = await getDocFromServer(doc(db, colName, sanitizeDocId(id))).catch(() =>
+              getDoc(doc(db, colName, sanitizeDocId(id)))
+            );
+            if (snap && snap.exists()) {
+              markCloudDocKnown(colName, snap.id);
+              const parsed = parser(snap.data());
+              if (parsed) map.set((parsed as any).id || snap.id, parsed);
+            }
+          } catch {}
+        })
+      );
+    };
+
+    const refExamIds = new Set<string>(tombstones.deletedExamIds);
+    const refCourseIds = new Set<string>(tombstones.deletedCourseIds);
+    classroomsMap.forEach((cls) => {
+      (cls.assignedExamIds || []).forEach((id) => refExamIds.add(id));
+      (cls.assignedCourseIds || []).forEach((id) => refCourseIds.add(id));
+    });
+    bundlesMap.forEach((b) => {
+      (b.examIds || []).forEach((id) => refExamIds.add(id));
+    });
+
+    await Promise.all([
+      probeMissing('exams', Array.from(refExamIds), examsMap, fromFirestoreExamDoc),
+      probeMissing('bundles', tombstones.deletedBundleIds, bundlesMap, fromFirestoreBundleDoc),
+      probeMissing('courses', Array.from(refCourseIds), coursesMap, fromFirestoreCourseDoc),
+      probeMissing('classrooms', tombstones.deletedClassroomIds, classroomsMap, (raw) => fromFirestoreClassroomDoc(raw)),
+      probeMissing('results', tombstones.deletedResultIds, resultsMap, fromFirestoreResultDoc),
+      probeMissing('classroomHomeworks', tombstones.deletedClassroomHomeworkIds, hwMap, (hd) =>
+        hd?.id
+          ? ({
+              ...hd,
+              id: hd.id,
+              createdAt: hd.createdAtStr || toIsoString(hd.createdAt),
+              updatedAt: toIsoString(hd.updatedAt, ''),
+            } as ClassroomHomework)
+          : null
+      ),
+      probeMissing('homeworkSubmissions', tombstones.deletedHomeworkIds, hwSubMap, (sd) =>
+        sd?.id
+          ? ({
+              ...sd,
+              id: sd.id,
+              updatedAt: toIsoString(sd.updatedAt, ''),
+            } as HomeworkSubmission)
+          : null
+      ),
+      probeMissing('scoreboards', tombstones.deletedScoreboardIds, sbMap, fromFirestoreScoreboardDoc),
+    ]);
+
+    const subjectsData = subjSnap?.exists() ? subjSnap.data() : null;
+    const subjects: CustomSubject[] = Array.isArray(subjectsData?.items) ? subjectsData.items : [];
+
+    return {
+      exams: Array.from(examsMap.values()),
+      bundles: Array.from(bundlesMap.values()),
+      courses: Array.from(coursesMap.values()),
+      classrooms: Array.from(classroomsMap.values()),
+      results: Array.from(resultsMap.values()),
+      classroomHomeworks: Array.from(hwMap.values()),
+      homeworkSubmissions: Array.from(hwSubMap.values()),
+      scoreboards: Array.from(sbMap.values()),
+      subjects,
+      tombstones,
+      orphanReferencedIds: {
+        exams: Array.from(refExamIds).filter((id) => !examsMap.has(id) && !id.startsWith('exam_e2e_')),
+        courses: Array.from(refCourseIds).filter((id) => !coursesMap.has(id) && !id.startsWith('course_e2e_')),
+      },
+    };
+  } catch (err: any) {
+    return {
+      exams: [],
+      bundles: [],
+      courses: [],
+      classrooms: [],
+      results: [],
+      classroomHomeworks: [],
+      homeworkSubmissions: [],
+      scoreboards: [],
+      subjects: [],
+      tombstones: emptyTombstones,
+      orphanReferencedIds: { exams: [], courses: [] },
+      error: err?.message || String(err),
+    };
+  }
+}
+
+export async function clearAllCloudTombstonesAndRestore(
+  options: {
+    clearAllTombstones?: boolean;
+    unblockIds?: {
+      exams?: string[];
+      bundles?: string[];
+      courses?: string[];
+      classrooms?: string[];
+      results?: string[];
+      classroomHomeworks?: string[];
+      homeworkSubmissions?: string[];
+      scoreboards?: string[];
+      subjects?: string[];
+    };
+  },
+  _activeWebUser?: UserAccount | null
+): Promise<{ ok: boolean; error?: string }> {
+  const fbUser = getFirebaseAuthUser();
+  if (!fbUser || fbUser.isAnonymous) {
+    return { ok: false, error: 'Chưa đăng nhập Firebase.' };
+  }
+  try {
+    const tombRef = doc(db, 'siteConfig', 'tombstones');
+    const tombSnap = await getDocFromServer(tombRef).catch(() => getDoc(tombRef).catch(() => null));
+    const existing = tombSnap && tombSnap.exists() ? tombSnap.data() || {} : {};
+
+    const filterField = (field: string, idsToUnblock?: string[]) => {
+      if (options.clearAllTombstones) return [];
+      const cur: string[] = Array.isArray(existing[field]) ? existing[field] : [];
+      if (!idsToUnblock || idsToUnblock.length === 0) return cur;
+      const set = new Set(idsToUnblock);
+      return cur.filter((id) => !set.has(id));
+    };
+
+    const u = options.unblockIds || {};
+    await setDoc(
+      tombRef,
+      stripUndefined({
+        ...existing,
+        id: 'tombstones',
+        deletedExamIds: filterField('deletedExamIds', u.exams),
+        deletedBundleIds: filterField('deletedBundleIds', u.bundles),
+        deletedCourseIds: filterField('deletedCourseIds', u.courses),
+        deletedClassroomIds: filterField('deletedClassroomIds', u.classrooms),
+        deletedResultIds: filterField('deletedResultIds', u.results),
+        deletedClassroomHomeworkIds: filterField('deletedClassroomHomeworkIds', u.classroomHomeworks),
+        deletedHomeworkIds: filterField('deletedHomeworkIds', u.homeworkSubmissions),
+        deletedScoreboardIds: filterField('deletedScoreboardIds', u.scoreboards),
+        deletedSubjectIds: filterField('deletedSubjectIds', u.subjects),
+        updatedById: fbUser.uid,
+        ...(tombSnap?.exists() ? {} : { createdAt: serverTimestamp() }),
+        updatedAt: serverTimestamp(),
+      }),
+      { merge: true }
+    );
+    markCloudDocKnown('siteConfig', 'tombstones');
+    invalidateSiteConfigCache('tombstones');
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err) };
+  }
 }

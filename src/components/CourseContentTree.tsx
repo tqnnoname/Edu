@@ -1048,7 +1048,7 @@ export const CourseContentTree: React.FC<CourseContentTreeProps> = ({
       {/* Main Two-Column Tree + Inspector */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* LEFT PANE: HIERARCHICAL TREE */}
-        <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 p-4 shadow-xs space-y-3 max-h-[76vh] overflow-y-auto">
+        <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 p-4 shadow-xs space-y-3 max-h-[65dvh] lg:max-h-[calc(100dvh-13rem)] overflow-y-auto scroll-lane lg:sticky lg:top-20">
           {/* Course Root Node */}
           <div
             onClick={() => setSelection({ kind: 'course' })}
@@ -1339,7 +1339,7 @@ export const CourseContentTree: React.FC<CourseContentTreeProps> = ({
         </div>
 
         {/* RIGHT PANE: INSPECTOR & LIVE EDITOR */}
-        <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+        <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4 lg:max-h-[calc(100dvh-13rem)] lg:overflow-y-auto scroll-lane min-w-0">
           {/* Parent-Child Breadcrumb */}
           <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-500 pb-3 border-b border-slate-100">
             {breadcrumbItems.map((label, idx) => (
@@ -1806,7 +1806,7 @@ export const CourseContentTree: React.FC<CourseContentTreeProps> = ({
               )}
 
               {/* Save Footer */}
-              <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
+              <div className="sticky bottom-0 z-10 -mx-4 sm:-mx-5 px-4 sm:px-5 py-3 bg-white/95 backdrop-blur-xs border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[11px] text-slate-500">
                   {isDirty
                     ? 'Có thay đổi chưa lưu — nhấn Lưu để cập nhật vào khóa học gốc.'
@@ -1815,7 +1815,7 @@ export const CourseContentTree: React.FC<CourseContentTreeProps> = ({
                 <button
                   type="button"
                   onClick={handleSaveInspector}
-                  className="px-4 py-2 rounded-xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  className="px-4 py-2 rounded-xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs shrink-0"
                 >
                   <Save className="w-3.5 h-3.5" />
                   <span>Lưu cập nhật vào khóa học</span>

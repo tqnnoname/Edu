@@ -29,8 +29,10 @@ import {
   Lock,
   Columns2,
   CheckSquare,
-  Square
+  Square,
+  LayoutGrid
 } from 'lucide-react';
+import { ResilientImage } from './ResilientImage';
 import { MiniCalculator } from './MiniCalculator';
 import { ScratchpadModal } from './ScratchpadModal';
 import { RichContentRenderer } from './RichContentRenderer';
@@ -51,6 +53,7 @@ import {
   registerImplicitImagesMap,
 } from '../utils/inlineImages';
 import { processImageFile } from '../utils/imageUpload';
+import { uploadImageOrKeepFallback } from '../utils/courseMedia';
 import {
   gradeEntireExam,
   gradeQuestion,
@@ -60,7 +63,13 @@ import {
   formatShortAnswerDecimalComma,
 } from '../utils/scoring';
 import { renderMath } from '../utils/renderMath';
-import { saveCustomExam, saveActiveSession } from '../utils/storage';
+import {
+  saveCustomExam,
+  saveActiveSession,
+  loadExamDraft,
+  saveExamDraft,
+  clearExamDraft,
+} from '../utils/storage';
 
 interface ExamTakingViewProps {
   exam: Exam;
@@ -173,6 +182,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   const [fontSize, setFontSize] = useState<'normal' | 'large'>('normal');
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [isSplitView, setIsSplitView] = useState(true);
+  const [isMobileMatrixOpen, setIsMobileMatrixOpen] = useState(false);
   const [revealedExplanations, setRevealedExplanations] = useState<{ [questionId: string]: boolean }>({});
 
   const isRoomLockActive = Boolean(
@@ -186,6 +196,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
   const [showTabSwitchWarning, setShowTabSwitchWarning] = useState(false);
   const [copyToastNotice, setCopyToastNotice] = useState<string | null>(null);
+  const isSubmittingRef = useRef(false);
+  const draftRestoredForRef = useRef<string | null>(null);
 
   const startTime = useMemo(() => Date.now(), []);
   const activePracticeItem = mode === 'practice' ? practiceQueue[practiceCursor] : undefined;
@@ -205,6 +217,47 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     range: { start: number; end: number } | null;
     targetSubQuestionId?: string;
   } | null>(null);
+
+  // Auto-restore saved draft for current exam + mode on mount / exam change
+  useEffect(() => {
+    const key = `${initialExam.id}_${mode}`;
+    if (draftRestoredForRef.current === key) return;
+    draftRestoredForRef.current = key;
+    const draft = loadExamDraft(initialExam.id, mode);
+    if (!draft) return;
+    const hasProgress =
+      (draft.answers && Object.keys(draft.answers).length > 0) ||
+      (draft.flagged && Object.keys(draft.flagged).length > 0) ||
+      draft.currentIndex > 0;
+    if (!hasProgress) return;
+
+    if (draft.answers) setAnswers(draft.answers);
+    if (draft.flagged) setFlagged(draft.flagged);
+    if (draft.essayInlineImages) {
+      registerImplicitImagesMap(draft.essayInlineImages);
+      setEssayInlineImages(draft.essayInlineImages);
+    }
+    if (typeof draft.currentIndex === 'number' && draft.currentIndex >= 0 && draft.currentIndex < initialExam.questions.length) {
+      setCurrentIndex(draft.currentIndex);
+    }
+    if (mode === 'exam' && typeof draft.remainingSeconds === 'number' && draft.remainingSeconds > 0) {
+      setRemainingSeconds(Math.min(initialExam.durationMinutes * 60, draft.remainingSeconds));
+    }
+    if (mode === 'practice') {
+      if (typeof draft.practiceElapsedSeconds === 'number' && draft.practiceElapsedSeconds >= 0) {
+        setPracticeElapsedSeconds(draft.practiceElapsedSeconds);
+      }
+      if (Array.isArray(draft.practiceQueue) && draft.practiceQueue.length > 0) {
+        setPracticeQueue(draft.practiceQueue);
+      }
+      if (typeof draft.practiceCursor === 'number' && draft.practiceCursor >= 0) {
+        setPracticeCursor(draft.practiceCursor);
+      }
+    }
+    setSaveDraftToast('✓ Đã tự động khôi phục bài làm dở trước đó!');
+    const timer = window.setTimeout(() => setSaveDraftToast(null), 3500);
+    return () => window.clearTimeout(timer);
+  }, [initialExam.id, initialExam.durationMinutes, initialExam.questions.length, mode]);
 
   useEffect(() => {
     liveExam.questions.forEach((q) => {
@@ -265,8 +318,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     timeSpentSeconds < minRequiredSeconds;
   const remainingEarlySeconds = Math.max(0, minRequiredSeconds - timeSpentSeconds);
 
-  // Helper to submit exam
+  // Helper to submit exam (double-tap protected)
   const handleSubmitExam = useCallback((customReason?: string) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     const timeSpent =
       mode === 'practice'
         ? practiceElapsedSeconds
@@ -300,11 +355,67 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
       result.inlineImages = usedEssayImgs;
     }
 
+    clearExamDraft(exam.id, mode);
     onComplete(result);
   }, [exam, answers, essayInlineImages, mode, practiceElapsedSeconds, startTime, tabSwitchCount, candidateName, studentCode, onComplete]);
 
+  // Continuous automatic draft backup (on answer change, timer interval, and page hide)
+  const persistDraftNow = useCallback(() => {
+    if (isSubmittingRef.current) return;
+    saveExamDraft({
+      examId: exam.id,
+      mode,
+      answers,
+      flagged,
+      essayInlineImages: Object.keys(essayInlineImages).length > 0 ? essayInlineImages : undefined,
+      currentIndex,
+      remainingSeconds,
+      practiceElapsedSeconds,
+      practiceCursor: mode === 'practice' ? practiceCursor : undefined,
+      practiceQueue: mode === 'practice' ? practiceQueue : undefined,
+      savedAt: Date.now(),
+    });
+  }, [
+    exam.id,
+    mode,
+    answers,
+    flagged,
+    essayInlineImages,
+    currentIndex,
+    remainingSeconds,
+    practiceElapsedSeconds,
+    practiceCursor,
+    practiceQueue,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      persistDraftNow();
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [answers, flagged, essayInlineImages, currentIndex, persistDraftNow]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      persistDraftNow();
+    }, 12000);
+    const handleHide = () => {
+      if (document.visibilityState === 'hidden') {
+        persistDraftNow();
+      }
+    };
+    window.addEventListener('pagehide', persistDraftNow);
+    document.addEventListener('visibilitychange', handleHide);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('pagehide', persistDraftNow);
+      document.removeEventListener('visibilitychange', handleHide);
+    };
+  }, [persistDraftNow]);
+
   // Handle saving draft in-place
   const handleSaveDraftExam = () => {
+    persistDraftNow();
     saveActiveSession({
       examId: exam.id,
       examCode: exam.examCode,
@@ -791,11 +902,11 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                     <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                     {currentQuestion.optionImages?.[optIdx] && (
                       <div className="mt-2.5">
-                        <img
+                        <ResilientImage
                           src={currentQuestion.optionImages[optIdx]}
                           alt={`Phương án ${letter}`}
+                          fallbackLabel={`Phương án ${letter}`}
                           className="max-h-48 rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
-                          referrerPolicy="no-referrer"
                         />
                       </div>
                     )}
@@ -867,11 +978,11 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                     <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                     {currentQuestion.optionImages?.[optIdx] && (
                       <div className="mt-2.5">
-                        <img
+                        <ResilientImage
                           src={currentQuestion.optionImages[optIdx]}
                           alt={`Phương án ${letter}`}
+                          fallbackLabel={`Phương án ${letter}`}
                           className="max-h-48 rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
-                          referrerPolicy="no-referrer"
                         />
                       </div>
                     )}
@@ -1082,14 +1193,17 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                   start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
                   end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
                 };
-                void processImageFile(file, 1200, 0.85).then((compressed) => {
-                  setEssayPasteModal({
-                    imageSrc: compressed,
-                    defaultTitle: 'Hình bài làm',
-                    el,
-                    range,
-                  });
-                }).catch(() => {});
+                void processImageFile(file, 1200, 0.85)
+                  .then((compressed) => uploadImageOrKeepFallback(compressed, 'exam_essay_image.png'))
+                  .then((finalSrc) => {
+                    setEssayPasteModal({
+                      imageSrc: finalSrc,
+                      defaultTitle: 'Hình bài làm',
+                      el,
+                      range,
+                    });
+                  })
+                  .catch(() => {});
               }}
               placeholder="Nhập nội dung bài làm tự luận của bạn tại đây (có thể bấm nút Chèn ảnh hoặc nhấn Ctrl+V để dán ảnh)..."
               className="w-full p-3.5 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600 font-mono leading-relaxed select-text"
@@ -1194,11 +1308,11 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                               />
                               {subQ.optionImages?.[optIdx] && (
                                 <div className="mt-2">
-                                  <img
+                                  <ResilientImage
                                     src={subQ.optionImages[optIdx]}
                                     alt={`Ý ${letter}`}
+                                    fallbackLabel={`Ý ${letter}`}
                                     className="max-h-36 rounded-lg border border-purple-200 object-contain bg-white shadow-2xs"
-                                    referrerPolicy="no-referrer"
                                   />
                                 </div>
                               )}
@@ -1249,11 +1363,11 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
                               />
                               {subQ.optionImages?.[optIdx] && (
                                 <div className="mt-2">
-                                  <img
+                                  <ResilientImage
                                     src={subQ.optionImages[optIdx]}
                                     alt={`Ý ${letter}`}
+                                    fallbackLabel={`Ý ${letter}`}
                                     className="max-h-36 rounded-lg border border-purple-200 object-contain bg-white shadow-2xs"
-                                    referrerPolicy="no-referrer"
                                   />
                                 </div>
                               )}
@@ -1364,9 +1478,9 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
 
   return (
-    <div className={`min-h-screen bg-slate-100 flex flex-col font-sans ${isAntiCopyEnabled ? 'select-none' : 'select-text'}`}>
+    <div className={`min-h-screen bg-slate-100 flex flex-col font-sans pb-20 lg:pb-0 ${isAntiCopyEnabled ? 'select-none' : 'select-text'}`}>
       {/* Top Test-Taking Bar */}
-      <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-4 md:px-6 py-3 flex items-center justify-between gap-4 shadow-xs">
+      <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-3 sm:px-4 md:px-6 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-4 shadow-xs">
         {/* Left: Exam title & mode */}
         <div className="flex items-center gap-3 min-w-0">
           {!(isOfficialLocked && userRole === 'student') ? (
@@ -1588,11 +1702,11 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
       )}
 
       {/* Main Container: Full Width in Practice Mode (No Question Grid), 2-Column in Exam Mode */}
-      <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 items-start">
         {/* Question Box (12 cols in practice mode, 8 cols in exam mode) */}
         <main
           ref={questionContainerRef}
-          className={`${mode === 'practice' ? 'lg:col-span-12' : 'lg:col-span-8'} bg-white rounded-xl border border-slate-200 p-6 md:p-8 shadow-xs flex flex-col justify-between min-h-[580px]`}
+          className={`${mode === 'practice' ? 'lg:col-span-12' : 'lg:col-span-8'} bg-white rounded-xl border border-slate-200 p-4 sm:p-6 md:p-8 shadow-xs flex flex-col justify-between min-h-[480px] sm:min-h-[580px]`}
         >
           <div key={`${currentQuestion.id}_${practiceCursor}`}>
             {mode === 'practice' && activePracticeItem?.isRetry && (
@@ -1922,9 +2036,9 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           </div>
         </main>
 
-        {/* Right Sidebar: Question Matrix Palette (Hidden in practice mode) */}
+        {/* Right Sidebar: Question Matrix Palette (Desktop sidebar in exam mode) */}
         {mode !== 'practice' && (
-        <aside className="lg:col-span-4 bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between">
+        <aside className="hidden lg:flex lg:col-span-4 bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex-col justify-between">
           <div>
             {/* Header stats */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
@@ -2109,8 +2223,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
       {/* Instructions Modal */}
       {showInstructionsModal && exam.instructions && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] overflow-y-auto scroll-lane p-5 sm:p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
               <div className="flex items-center gap-2 font-bold text-slate-900 text-sm md:text-base">
                 <BookOpen className="w-5 h-5 text-blue-600" />
@@ -2142,8 +2256,8 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
       {/* Submit Confirmation Modal */}
       {isSubmitModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] overflow-y-auto scroll-lane p-5 sm:p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2 text-slate-900 font-bold">
                 <AlertTriangle className="w-5 h-5 text-amber-500" />
@@ -2243,9 +2357,194 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
         onClose={() => setEditingQuestion(null)}
       />
 
+      {/* Mobile Sticky Bottom Exam Bar (One-handed thumb navigation on phones) */}
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 px-3 py-2 pb-safe flex items-center justify-between gap-2 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]">
+        <button
+          type="button"
+          onClick={handlePracticePrev}
+          disabled={mode === 'practice' ? practiceCursor === 0 : currentIndex === 0}
+          className="min-h-[44px] px-3 text-xs font-semibold text-slate-700 bg-slate-100 active:bg-slate-200 disabled:opacity-40 rounded-xl flex items-center gap-1 cursor-pointer shrink-0"
+        >
+          <ChevronLeft className="w-4 h-4" />
+          <span>Trước</span>
+        </button>
+
+        {mode !== 'practice' ? (
+          <button
+            type="button"
+            onClick={() => setIsMobileMatrixOpen(true)}
+            className="min-h-[44px] flex-1 px-3 text-xs font-bold text-blue-800 bg-blue-50 active:bg-blue-100 border border-blue-200 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <LayoutGrid className="w-4 h-4 shrink-0" />
+            <span>
+              Câu {effectiveQuestionIndex + 1}/{exam.questions.length} ({answeredCount} đã làm)
+            </span>
+          </button>
+        ) : (
+          <div className="min-h-[44px] flex-1 px-3 text-xs font-bold text-slate-700 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-center">
+            Câu {effectiveQuestionIndex + 1} · {formatTime(practiceElapsedSeconds)}
+          </div>
+        )}
+
+        {(mode === 'practice'
+          ? practiceCursor < practiceQueue.length - 1
+          : currentIndex < exam.questions.length - 1) ? (
+          <button
+            type="button"
+            onClick={handlePracticeNextOrFinish}
+            className="min-h-[44px] px-3.5 text-xs font-semibold text-white bg-slate-900 active:bg-slate-800 rounded-xl flex items-center gap-1 cursor-pointer shrink-0"
+          >
+            <span>Tiếp</span>
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handlePracticeNextOrFinish}
+            className={`min-h-[44px] px-3.5 text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer shrink-0 ${
+              isEarlySubmitBlocked
+                ? 'bg-amber-600 text-white'
+                : 'bg-emerald-600 text-white'
+            }`}
+          >
+            {isEarlySubmitBlocked ? <Lock className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+            <span>Nộp</span>
+          </button>
+        )}
+      </div>
+
+      {/* Mobile Question Matrix Bottom-Sheet Drawer */}
+      {isMobileMatrixOpen && mode !== 'practice' && (
+        <div
+          className="lg:hidden fixed inset-0 z-50 bg-slate-950/55 backdrop-blur-xs flex items-end"
+          onClick={() => setIsMobileMatrixOpen(false)}
+        >
+          <div
+            className="w-full max-h-[82vh] bg-white rounded-t-2xl p-4 pb-safe shadow-2xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Bảng câu hỏi ({answeredCount}/{exam.questions.length})
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Chạm số câu để chuyển nhanh · Cắm cờ: {flaggedCount}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMobileMatrixOpen(false)}
+                className="w-10 h-10 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center cursor-pointer"
+                aria-label="Đóng bảng câu hỏi"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg mb-3 text-xs">
+              <button
+                type="button"
+                onClick={() => setFilterMode('all')}
+                className={`flex-1 py-2 px-2 font-medium rounded-md cursor-pointer ${
+                  filterMode === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                Tất cả ({exam.questions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterMode('unanswered')}
+                className={`flex-1 py-2 px-2 font-medium rounded-md cursor-pointer ${
+                  filterMode === 'unanswered' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                Chưa làm ({unansweredCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterMode('flagged')}
+                className={`flex-1 py-2 px-2 font-medium rounded-md cursor-pointer ${
+                  filterMode === 'flagged' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                Cắm cờ ({flaggedCount})
+              </button>
+            </div>
+
+            <div className="overflow-y-auto grid grid-cols-5 gap-2 py-1">
+              {exam.questions.map((q, idx) => {
+                const isSelected = isQuestionAnswered(q);
+                const isFlaggedItem = flagged[q.id];
+                if (filterMode === 'unanswered' && isSelected) return null;
+                if (filterMode === 'flagged' && !isFlaggedItem) return null;
+                const isCurrent = currentIndex === idx;
+
+                let btnClass = 'bg-slate-100 text-slate-700 border-slate-200';
+                if (isSelected) btnClass = 'bg-blue-600 text-white font-bold border-blue-600';
+                if (isFlaggedItem) {
+                  btnClass = isSelected
+                    ? 'bg-blue-600 text-white border-amber-400 ring-2 ring-amber-400'
+                    : 'bg-amber-100 text-amber-900 border-amber-300 font-bold';
+                }
+                if (isCurrent) btnClass += ' ring-2 ring-slate-900 ring-offset-1';
+
+                return (
+                  <button
+                    key={q.id}
+                    type="button"
+                    onClick={() => {
+                      setCurrentIndex(idx);
+                      setIsMobileMatrixOpen(false);
+                    }}
+                    className={`relative h-11 rounded-xl text-xs font-semibold border flex items-center justify-center cursor-pointer ${btnClass}`}
+                  >
+                    <span>{idx + 1}</span>
+                    {isFlaggedItem && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border border-white" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="pt-3 mt-3 border-t border-slate-100 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  handleSaveDraftExam();
+                  setIsMobileMatrixOpen(false);
+                }}
+                className="min-h-[44px] px-3.5 text-xs font-semibold text-slate-800 bg-slate-100 rounded-xl flex items-center gap-1.5 cursor-pointer"
+              >
+                <Save className="w-4 h-4 text-blue-600" />
+                <span>Lưu tạm</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMatrixOpen(false);
+                  if (isEarlySubmitBlocked) {
+                    setIsEarlySubmitNoticeOpen(true);
+                  } else {
+                    setIsSubmitModalOpen(true);
+                  }
+                }}
+                className={`min-h-[44px] flex-1 px-4 text-xs font-bold text-white rounded-xl flex items-center justify-center gap-1.5 cursor-pointer ${
+                  isEarlySubmitBlocked ? 'bg-amber-600' : 'bg-emerald-600'
+                }`}
+              >
+                {isEarlySubmitBlocked ? <Lock className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+                <span>{isEarlySubmitBlocked ? `Còn ${formatTime(remainingEarlySeconds)}` : 'Nộp bài thi'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Copy Prevention Toast */}
       {copyToastNotice && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-white px-5 py-3 rounded-xl shadow-2xl border border-rose-500/40 text-xs sm:text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-bottom-4">
+        <div className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-white px-5 py-3 rounded-xl shadow-2xl border border-rose-500/40 text-xs sm:text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-bottom-4">
           <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
           <span>{copyToastNotice}</span>
         </div>

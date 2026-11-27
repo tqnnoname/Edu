@@ -25,9 +25,9 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-150">
       <div 
-        className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 transform scale-100 transition-all"
+        className="bg-white rounded-2xl max-w-md w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] overflow-y-auto scroll-lane p-5 sm:p-6 shadow-2xl border border-slate-200 transform scale-100 transition-all"
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-modal-title"

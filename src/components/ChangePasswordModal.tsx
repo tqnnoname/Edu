@@ -142,15 +142,15 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs font-sans"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-xs font-sans"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden"
+        className="w-full max-w-md max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-purple-900 text-white p-5 relative">
+        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-purple-900 text-white p-5 relative shrink-0">
           <button
             type="button"
             onClick={onClose}
@@ -177,7 +177,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmitChange} className="p-6 space-y-4 text-xs">
+        <form onSubmit={handleSubmitChange} className="p-5 sm:p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto scroll-lane">
           {errorMessage && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />

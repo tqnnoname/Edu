@@ -42,6 +42,8 @@ import {
   saveHomeworkSubmission,
 } from '../utils/storage';
 import { processImageFile } from '../utils/imageUpload';
+import { uploadImageOrKeepFallback } from '../utils/courseMedia';
+import { resolveMediaSrcSync } from '../utils/mediaAssets';
 import { insertTextAtEditableElement } from '../utils/cursorInsert';
 import {
   collectUsedInlineImages,
@@ -52,6 +54,7 @@ import {
 } from '../utils/inlineImages';
 import { MathToolbar } from './MathToolbar';
 import { RichContentRenderer } from './RichContentRenderer';
+import { ResilientImage } from './ResilientImage';
 import { InlineImageStrip, InlineImageTitleModal } from './InlineImageTitleModal';
 import { ConfirmModal } from './ConfirmModal';
 import { CopyContentButton } from './CopyContentButton';
@@ -225,7 +228,9 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
 
     let restoredDraft: { textAnswer?: string; note?: string; inlineImages?: Record<string, string> } | null = null;
     try {
-      const raw = sessionStorage.getItem(getStudentDraftKey(hwId));
+      const raw =
+        localStorage.getItem(getStudentDraftKey(hwId)) ||
+        sessionStorage.getItem(getStudentDraftKey(hwId));
       if (raw) {
         restoredDraft = JSON.parse(raw);
       }
@@ -257,7 +262,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
     setUploadError(null);
   }, [classroom.id, selectedHomework?.id, selectedHomework?.inlineImages, currentUserId]);
 
-  // Bảo toàn bản nháp bài tự luận của học sinh khi chuyển tab trong lớp hoặc đổi chế độ
+  // Bảo toàn bản nháp bài tự luận của học sinh khi chuyển tab, ẩn tab hoặc tắt trình duyệt trên điện thoại
   useEffect(() => {
     const hwId = selectedHomework?.id || '';
     if (!hwId) return;
@@ -270,21 +275,21 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
           draftNote === baselineNote &&
           Object.keys(draftInlineImages).length === 0
         ) {
+          localStorage.removeItem(getStudentDraftKey(hwId));
           sessionStorage.removeItem(getStudentDraftKey(hwId));
           return;
         }
-        sessionStorage.setItem(
-          getStudentDraftKey(hwId),
-          JSON.stringify({
-            textAnswer: draftTextAnswer,
-            note: draftNote,
-            inlineImages: draftInlineImages,
-          })
-        );
+        const payload = JSON.stringify({
+          textAnswer: draftTextAnswer,
+          note: draftNote,
+          inlineImages: draftInlineImages,
+        });
+        localStorage.setItem(getStudentDraftKey(hwId), payload);
+        sessionStorage.setItem(getStudentDraftKey(hwId), payload);
       } catch {
         // ignore quota errors
       }
-    }, 200);
+    }, 250);
     return () => clearTimeout(timer);
   }, [classroom.id, selectedHomework?.id, currentUserId, draftTextAnswer, draftNote, draftInlineImages, mySubmission]);
 
@@ -472,7 +477,11 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       if (!ctx) return;
       ctx.drawImage(video, 0, 0, w, h);
       const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      setDraftImages((prev) => [...prev, dataUrl]);
+      const uploadedUrl = await uploadImageOrKeepFallback(
+        dataUrl,
+        `hw_camera_${Date.now()}.jpg`
+      );
+      setDraftImages((prev) => [...prev, uploadedUrl]);
       setIsCameraOpen(false);
       onToast('✓ Đã chụp ảnh bài làm!');
     } catch {
@@ -522,16 +531,27 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
         continue;
       }
       try {
-        const dataUrl = isImageFile(file)
-          ? await processImageFile(file)
-          : await readFileAsDataUrl(file);
-        added.push({
-          id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-          name: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          sizeBytes: file.size,
-          dataUrl,
-        });
+        if (isImageFile(file)) {
+          const compressed = await processImageFile(file);
+          const storedUrl = await uploadImageOrKeepFallback(compressed, file.name);
+          added.push({
+            id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+            name: file.name,
+            mimeType: file.type || 'image/jpeg',
+            sizeBytes: file.size,
+            url: !storedUrl.startsWith('data:') ? storedUrl : undefined,
+            dataUrl: storedUrl.startsWith('data:') ? storedUrl : undefined,
+          });
+        } else {
+          const dataUrl = await readFileAsDataUrl(file);
+          added.push({
+            id: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+            name: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            sizeBytes: file.size,
+            dataUrl,
+          });
+        }
       } catch (err: any) {
         setEditorError(err?.message || `Lỗi đọc tệp "${file.name}"`);
       }
@@ -648,7 +668,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       title: 'Xóa bài tập về nhà',
       message: `Bạn có chắc muốn xóa bài tập "${hw.title}" khỏi lớp học?`,
       onConfirm: () => {
-        deleteClassroomHomework(hw.id);
+        deleteClassroomHomework(hw.id, { confirmedByUser: true });
         const nextList = getHomeworksByClass(classroom.id);
         setHomeworks(nextList);
         setSelectedHomeworkId(nextList[0]?.id || '');
@@ -680,7 +700,8 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
             continue;
           }
           const compressed = await processImageFile(file);
-          nextImages.push(compressed);
+          const storedUrl = await uploadImageOrKeepFallback(compressed, file.name);
+          nextImages.push(storedUrl);
         } else {
           if (file.size > MAX_DOC_FILE_BYTES) {
             setUploadError(`Tệp "${file.name}" quá lớn (${formatFileSize(file.size)}). Giới hạn 4.5 MB/tệp.`);
@@ -805,7 +826,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
       title: 'Xóa bài nộp BTVN',
       message: `Bạn có chắc muốn xóa bài nộp của học sinh "${sub.studentName}"?`,
       onConfirm: () => {
-        deleteHomeworkSubmission(sub.id);
+        deleteHomeworkSubmission(sub.id, { confirmedByUser: true });
         reloadSubmissionsForSelected(selectedHomework.id);
         onToast(`✓ Đã xóa bài nộp của ${sub.studentName}.`);
       },
@@ -1065,26 +1086,27 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                             >
                               Xem
                             </button>
-                          ) : att.mimeType.startsWith('image/') && att.dataUrl ? (
+                          ) : att.mimeType.startsWith('image/') && (att.url || att.dataUrl) ? (
                             <button
                               type="button"
-                              onClick={() =>
+                              onClick={() => {
+                                const imgSrc = att.url || att.dataUrl;
                                 setLightboxState({
-                                  images: att.dataUrl ? [att.dataUrl] : [],
+                                  images: imgSrc ? [imgSrc] : [],
                                   index: 0,
                                   title: att.name,
                                   rotation: 0,
-                                })
-                              }
+                                });
+                              }}
                               className="text-indigo-700 hover:underline font-bold cursor-pointer"
                             >
                               Xem ảnh
                             </button>
                           ) : null}
                           <a
-                            href={att.dataUrl}
+                            href={resolveMediaSrcSync(att.url || att.dataUrl || '') || '#'}
                             download={att.name}
-                            className="text-slate-700 hover:text-indigo-700 p-1 rounded hover:bg-white transition-colors"
+                            className="text-slate-700 hover:text-indigo-700 p-1.5 rounded hover:bg-white transition-colors"
                             title="Tải xuống tệp"
                           >
                             <Download className="w-3.5 h-3.5" />
@@ -1198,15 +1220,18 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                               start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
                               end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
                             };
-                            void processImageFile(file, 1200, 0.85).then((compressed) => {
-                              setPasteImageModal({
-                                target: 'student',
-                                imageSrc: compressed,
-                                defaultTitle: 'Ảnh bài làm',
-                                el,
-                                range,
-                              });
-                            }).catch(() => {});
+                            void processImageFile(file, 1200, 0.85)
+                              .then((compressed) => uploadImageOrKeepFallback(compressed, file.name))
+                              .then((storedUrl) => {
+                                setPasteImageModal({
+                                  target: 'student',
+                                  imageSrc: storedUrl,
+                                  defaultTitle: 'Ảnh bài làm',
+                                  el,
+                                  range,
+                                });
+                              })
+                              .catch(() => {});
                           }}
                           placeholder="Nhập lời giải tự luận trực tiếp tại đây... Đặt con trỏ ở vị trí bất kỳ rồi bấm nút trên thanh công thức, Chèn ảnh hoặc nhấn Ctrl+V để dán ảnh."
                           className="w-full p-3.5 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-600 font-mono leading-relaxed"
@@ -1352,7 +1377,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                                   key={idx}
                                   className="relative group rounded-xl overflow-hidden border border-slate-200 bg-slate-50 aspect-[4/3]"
                                 >
-                                  <img
+                                  <ResilientImage
                                     src={imgUrl}
                                     alt={`Ảnh bài làm ${idx + 1}`}
                                     onClick={() =>
@@ -1370,7 +1395,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                                     onClick={() =>
                                       setDraftImages((prev) => prev.filter((_, i) => i !== idx))
                                     }
-                                    className="absolute top-1.5 right-1.5 p-1 bg-slate-900/80 hover:bg-rose-600 text-white rounded-lg cursor-pointer"
+                                    className="absolute top-1.5 right-1.5 min-h-[36px] min-w-[36px] flex items-center justify-center p-1.5 bg-slate-900/80 hover:bg-rose-600 text-white rounded-lg cursor-pointer"
                                     title="Xóa ảnh này"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
@@ -1430,7 +1455,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                           {mySubmission.attachments.map((att) => (
                             <a
                               key={att.id}
-                              href={att.dataUrl}
+                              href={resolveMediaSrcSync(att.url || att.dataUrl || '') || '#'}
                               download={att.name}
                               className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 flex items-center gap-2 hover:bg-slate-100"
                             >
@@ -1444,7 +1469,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                       {mySubmission.imageUrls.length > 0 && (
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                           {mySubmission.imageUrls.map((url, idx) => (
-                            <img
+                            <ResilientImage
                               key={idx}
                               src={url}
                               alt={`Bài nộp ${idx + 1}`}
@@ -1580,7 +1605,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                                       </button>
                                     ) : null}
                                     <a
-                                      href={att.dataUrl}
+                                      href={resolveMediaSrcSync(att.url || att.dataUrl || '') || '#'}
                                       download={att.name}
                                       className="text-slate-700 hover:text-indigo-700 p-1 rounded hover:bg-slate-100"
                                       title="Tải về"
@@ -1596,7 +1621,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                             {sub.imageUrls.length > 0 && (
                               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                                 {sub.imageUrls.map((imgUrl, idx) => (
-                                  <img
+                                  <ResilientImage
                                     key={idx}
                                     src={imgUrl}
                                     alt={`${sub.studentName} - ảnh ${idx + 1}`}
@@ -1680,20 +1705,22 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
 
       {/* Teacher Create / Edit Homework Modal */}
       {isEditorOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-slate-100 bg-white shrink-0">
               <h4 className="text-base font-bold text-slate-900">
                 {editingHwId ? 'Chỉnh sửa bài tập về nhà' : 'Giao bài tập về nhà mới'}
               </h4>
               <button
                 type="button"
                 onClick={handleCloseTeacherEditorExplicitly}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-6 space-y-4">
 
             {editorError && (
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">
@@ -1767,15 +1794,18 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                     start: typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length,
                     end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
                   };
-                  void processImageFile(file, 1200, 0.85).then((compressed) => {
-                    setPasteImageModal({
-                      target: 'teacher',
-                      imageSrc: compressed,
-                      defaultTitle: 'Hình đề bài',
-                      el,
-                      range,
-                    });
-                  }).catch(() => {});
+                  void processImageFile(file, 1200, 0.85)
+                    .then((compressed) => uploadImageOrKeepFallback(compressed, file.name))
+                    .then((storedUrl) => {
+                      setPasteImageModal({
+                        target: 'teacher',
+                        imageSrc: storedUrl,
+                        defaultTitle: 'Hình đề bài',
+                        el,
+                        range,
+                      });
+                    })
+                    .catch(() => {});
                 }}
                 placeholder="Nhập đề bài hoặc hướng dẫn làm bài cho học sinh (hỗ trợ KaTeX, Chèn ảnh hoặc Ctrl+V dán ảnh)..."
                 className="w-full p-3 bg-white border border-slate-300 rounded-xl font-mono text-xs sm:text-sm leading-relaxed"
@@ -1889,18 +1919,20 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-4 sm:px-6 py-3.5 border-t border-slate-100 bg-slate-50/90 shrink-0">
               <button
                 type="button"
                 onClick={handleCloseTeacherEditorExplicitly}
-                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
               >
                 Hủy
               </button>
               <button
                 type="button"
                 onClick={handleSaveHomework}
-                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold cursor-pointer"
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs"
               >
                 {editingHwId ? 'Lưu cập nhật BTVN' : 'Giao BTVN cho lớp'}
               </button>
@@ -2021,11 +2053,11 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
               </button>
             )}
 
-            <img
+            <ResilientImage
               src={lightboxState.images[lightboxState.index]}
               alt="Xem ảnh bài làm"
               style={{ transform: `rotate(${lightboxState.rotation}deg)` }}
-              className="max-h-[78vh] max-w-full object-contain rounded-xl transition-transform"
+              className="max-h-[78dvh] max-w-full object-contain rounded-xl transition-transform"
             />
 
             {lightboxState.images.length > 1 && (
@@ -2042,7 +2074,7 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                       : null
                   )
                 }
-                className="absolute right-2 z-10 p-2 bg-slate-900/80 text-white rounded-full hover:bg-slate-800 cursor-pointer"
+                className="absolute right-2 z-10 min-h-[44px] min-w-[44px] flex items-center justify-center p-2 bg-slate-900/80 text-white rounded-full hover:bg-slate-800 cursor-pointer"
               >
                 <ChevronRight className="w-5 h-5" />
               </button>
@@ -2053,15 +2085,15 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
 
       {/* PDF In-App Viewer Modal */}
       {previewPdfAttachment && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-4xl w-full h-[85vh] flex flex-col overflow-hidden shadow-2xl border border-slate-200">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-4xl w-full h-[85dvh] flex flex-col overflow-hidden shadow-2xl border border-slate-200">
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div className="font-bold text-sm text-slate-900 truncate">
                 {previewPdfAttachment.name}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <a
-                  href={previewPdfAttachment.dataUrl}
+                  href={resolveMediaSrcSync(previewPdfAttachment.url || previewPdfAttachment.dataUrl || '') || '#'}
                   download={previewPdfAttachment.name}
                   className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-bold flex items-center gap-1"
                 >
@@ -2071,14 +2103,14 @@ export const ClassroomHomeworkTab: React.FC<ClassroomHomeworkTabProps> = ({
                 <button
                   type="button"
                   onClick={() => setPreviewPdfAttachment(null)}
-                  className="p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  className="min-h-[40px] min-w-[40px] flex items-center justify-center p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
             <iframe
-              src={previewPdfAttachment.dataUrl}
+              src={resolveMediaSrcSync(previewPdfAttachment.url || previewPdfAttachment.dataUrl || '')}
               title={previewPdfAttachment.name}
               className="flex-1 w-full bg-slate-100"
             />

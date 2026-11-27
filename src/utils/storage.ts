@@ -23,8 +23,10 @@ import {
 } from '../types/exam';
 import { PRESET_EXAMS, PRESET_BUNDLES, SAMPLE_DEMO_EXAM } from '../data/presetExams';
 import {
+  clearAllCloudTombstonesAndRestore,
   clearCloudSyncCursor,
   clearCoursesFromCloudTombstones,
+  clearExamsFromCloudTombstones,
   computeStudentTeacherEmails,
   DirtyPushScope,
   fetchAllUsersAndCredentialsFromFirestore,
@@ -49,7 +51,9 @@ import {
   resolveOrCreateUnifiedUserProfile,
   safeDeleteFirestoreDoc,
   sanitizeDocId,
+  scanAllCloudDataForRecovery,
   scanRecoverableCloudCourses,
+  scanRecoverableCloudExams,
   sendPasswordResetEmailFirebase,
   signInWithEmailPasswordFirebase,
   signInWithGooglePopup,
@@ -58,6 +62,8 @@ import {
   submitJoinRequestToFirestore,
   syncJoinRequestDecisionToFirestore,
   syncSingleClassroomToFirestoreNow,
+  syncSingleCourseToFirestoreNow,
+  syncSingleExamToFirestoreDetailed,
   syncSingleExamToFirestoreNow,
   syncUserCredentialToFirestore,
   updatePasswordFirebase,
@@ -92,6 +98,117 @@ const STORAGE_KEY_DELETED_SCOREBOARDS = 'edutest_deleted_scoreboard_ids_v1';
 const STORAGE_KEY_MY_JOIN_REQUESTS = 'edutest_my_join_requests_v1';
 const STORAGE_KEY_NAV_TABS_UPDATED_AT = 'edutest_nav_tabs_updated_at_v1';
 const STORAGE_KEY_LIVE_TEXT_UPDATED_AT = 'edutest_live_text_updated_at_v1';
+const STORAGE_KEY_TRASH_BIN = 'edutest_trash_bin_v1';
+const STORAGE_KEY_PENDING_DIRTY_ENTITIES = 'edutest_pending_dirty_entities_v1';
+const STORAGE_KEY_PENDING_DIRTY_SITECONFIG = 'edutest_pending_dirty_siteconfig_v1';
+const STORAGE_KEY_AUTO_HEAL_MARKER = 'edutest_auto_heal_v20261127';
+
+// --- Trash Bin (Thùng rác an toàn — lưu toàn bộ bản sao trước khi xóa để luôn khôi phục được) ---
+export type TrashEntityType =
+  | 'exam'
+  | 'bundle'
+  | 'course'
+  | 'classroom'
+  | 'result'
+  | 'classroomHomework'
+  | 'homeworkSubmission'
+  | 'scoreboard'
+  | 'subject';
+
+export interface TrashBinItem {
+  id: string;
+  entityType: TrashEntityType;
+  itemId: string;
+  title: string;
+  subtitle?: string;
+  deletedAt: string;
+  deletedBy?: string;
+  data: any;
+}
+
+export function getTrashBinItems(): TrashBinItem[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_TRASH_BIN);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function archiveItemsToTrash(
+  entries: Array<{ entityType: TrashEntityType; itemId: string; title: string; subtitle?: string; data: any }>
+): void {
+  if (!entries.length) return;
+  try {
+    const curUser = getCurrentUser();
+    const nowIso = new Date().toISOString();
+    const existing = getTrashBinItems();
+    const incomingMap = new Map<string, TrashBinItem>();
+    for (const e of entries) {
+      if (!e.itemId || !e.data) continue;
+      const key = `${e.entityType}::${e.itemId}`;
+      incomingMap.set(key, {
+        id: key,
+        entityType: e.entityType,
+        itemId: e.itemId,
+        title: e.title || e.itemId,
+        subtitle: e.subtitle,
+        deletedAt: nowIso,
+        deletedBy: curUser?.email || curUser?.fullName || 'teacher',
+        data: e.data,
+      });
+    }
+    const merged = [
+      ...Array.from(incomingMap.values()),
+      ...existing.filter((x) => x && x.id && !incomingMap.has(x.id)),
+    ].slice(0, 500);
+    localStorage.setItem(STORAGE_KEY_TRASH_BIN, JSON.stringify(merged));
+    try {
+      saveSnapshotToIndexedDB(buildFullSyncPayload());
+    } catch {}
+  } catch {}
+}
+
+export function removeItemsFromTrashBin(trashIds: string[]): void {
+  if (!trashIds.length) return;
+  try {
+    const set = new Set(trashIds);
+    const next = getTrashBinItems().filter((x) => !set.has(x.id));
+    localStorage.setItem(STORAGE_KEY_TRASH_BIN, JSON.stringify(next));
+  } catch {}
+}
+
+export function permanentlyDeleteFromTrashBin(
+  trashId: string,
+  options?: { confirmedByUser?: boolean }
+): boolean {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[permanentlyDeleteFromTrashBin] Blocked without explicit user confirmation:', trashId);
+    return false;
+  }
+  try {
+    const next = getTrashBinItems().filter((x) => x.id !== trashId);
+    localStorage.setItem(STORAGE_KEY_TRASH_BIN, JSON.stringify(next));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getTotalLocalTombstoneCount(): number {
+  return (
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_EXAMS).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_BUNDLES).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_CLASSROOMS).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_COURSES).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_RESULTS).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_HOMEWORK).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_SUBJECTS).length +
+    getDeletedIdsByKey(STORAGE_KEY_DELETED_SCOREBOARDS).length
+  );
+}
 
 // --- Deleted IDs ---
 function getDeletedIdsByKey(key: string): string[] {
@@ -447,18 +564,51 @@ export function loadSampleDemoExam(): void {
   saveCustomExam(SAMPLE_DEMO_EXAM);
 }
 
-export function deleteAllExams(): void {
+export function deleteAllExams(options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteAllExams] Blocked auto-delete without explicit user confirmation');
+    return;
+  }
   try {
+    const existingAll = getAllExams();
+    archiveItemsToTrash(
+      existingAll.map((ex) => ({
+        entityType: 'exam' as const,
+        itemId: ex.id,
+        title: ex.title,
+        subtitle: `${ex.questions?.length || 0} câu · ${ex.durationMinutes} phút`,
+        data: ex,
+      }))
+    );
     localStorage.removeItem(STORAGE_KEY_CUSTOM_EXAMS);
-    const allPresetIds = PRESET_EXAMS.map((e) => e.id);
-    if (SAMPLE_DEMO_EXAM) allPresetIds.push(SAMPLE_DEMO_EXAM.id);
+    const allIds = Array.from(
+      new Set([
+        ...PRESET_EXAMS.map((e) => e.id),
+        ...(SAMPLE_DEMO_EXAM ? [SAMPLE_DEMO_EXAM.id] : []),
+        ...existingAll.map((e) => e.id),
+      ])
+    );
     const curr = getDeletedExamIds();
-    const updated = Array.from(new Set([...curr, ...allPresetIds]));
+    const updated = Array.from(new Set([...curr, ...allIds]));
     localStorage.setItem(STORAGE_KEY_DELETED_EXAMS, JSON.stringify(updated));
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
     console.error('Error deleting all exams', err);
+  }
+}
+
+function safeLocalStorageSetItem(key: string, value: string): boolean {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (err: any) {
+    console.warn(`[storage] localStorage.setItem("${key}") failed:`, err?.message || err);
+    updateSyncState({
+      status: 'error',
+      error: 'Bộ nhớ localStorage trình duyệt gần đầy — dữ liệu vẫn được lưu vào IndexedDB & đồng bộ Cloud.',
+    });
+    return false;
   }
 }
 
@@ -481,17 +631,41 @@ export function saveCustomExam(newExam: Exam): void {
     const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_EXAMS);
     const customExams: Exam[] = raw ? JSON.parse(raw) : [];
     const updated = [stampedExam, ...customExams.filter((e) => e.id !== stampedExam.id)];
-    localStorage.setItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(updated));
-    if (getFirebaseAuthUser()) {
-      void syncSingleExamToFirestoreNow(stampedExam, getAllClassrooms(), curUser);
-      try {
-        saveSnapshotToIndexedDB(buildFullSyncPayload());
-      } catch {}
-      if (wasDeleted) {
-        scheduleCloudSync();
-      }
+    safeLocalStorageSetItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(updated));
+
+    // Always snapshot directly into IndexedDB even if localStorage hit QuotaExceededError
+    try {
+      saveSnapshotToIndexedDB({
+        ...buildFullSyncPayload(),
+        customExams: updated,
+      });
+    } catch {}
+
+    markDirtyCloudEntity('exams', stampedExam.id);
+    const fbUser = getFirebaseAuthUser();
+    if (fbUser && !fbUser.isAnonymous) {
+      hasLocalMutations = true;
+      lastLocalMutationMs = Date.now();
+      updateSyncState({ status: 'syncing', lastSyncedAt: currentSyncState.lastSyncedAt });
+      void syncSingleExamToFirestoreDetailed(stampedExam, getAllClassrooms(), curUser).then((res) => {
+        if (!res.ok) {
+          markDirtyCloudEntity('exams', stampedExam.id);
+          updateSyncState({
+            status: 'error',
+            error: res.error || `Chưa đồng bộ được đề "${stampedExam.title}" lên Cloud Firestore.`,
+          });
+          scheduleCloudSync(1500);
+        } else {
+          unmarkDirtyCloudEntity('exams', stampedExam.id);
+          updateSyncState({ status: 'synced', lastSyncedAt: new Date().toISOString() });
+          if (wasDeleted) {
+            scheduleCloudSync(500);
+          } else {
+            scheduleLocationCloudSync();
+          }
+        }
+      });
     } else {
-      markDirtyCloudEntity('exams', stampedExam.id);
       scheduleCloudSync();
     }
   } catch (err) {
@@ -499,8 +673,24 @@ export function saveCustomExam(newExam: Exam): void {
   }
 }
 
-export function deleteCustomExam(examId: string): void {
+export function deleteCustomExam(examId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteCustomExam] Blocked auto-delete without explicit user confirmation:', examId);
+    return;
+  }
   try {
+    const target = getAllExams().find((e) => e.id === examId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'exam',
+          itemId: target.id,
+          title: target.title,
+          subtitle: `${target.questions?.length || 0} câu · ${target.durationMinutes} phút`,
+          data: target,
+        },
+      ]);
+    }
     const deleted = Array.from(new Set([...getDeletedExamIds(), examId]));
     localStorage.setItem(STORAGE_KEY_DELETED_EXAMS, JSON.stringify(deleted));
 
@@ -510,7 +700,7 @@ export function deleteCustomExam(examId: string): void {
       const updated = customExams.filter((e) => e.id !== examId);
       localStorage.setItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(updated));
     }
-    void safeDeleteFirestoreDoc('exams', examId).catch(() => {});
+    void safeDeleteFirestoreDoc('exams', examId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
@@ -570,8 +760,24 @@ export function saveCustomBundle(newBundle: ExamBundle): void {
   }
 }
 
-export function deleteCustomBundle(bundleId: string): void {
+export function deleteCustomBundle(bundleId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteCustomBundle] Blocked auto-delete without explicit user confirmation:', bundleId);
+    return;
+  }
   try {
+    const target = getAllBundles().find((b) => b.id === bundleId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'bundle',
+          itemId: target.id,
+          title: target.title,
+          subtitle: `${target.examIds?.length || 0} môn thành phần`,
+          data: target,
+        },
+      ]);
+    }
     const deleted = Array.from(new Set([...getDeletedBundleIds(), bundleId]));
     localStorage.setItem(STORAGE_KEY_DELETED_BUNDLES, JSON.stringify(deleted));
 
@@ -581,7 +787,7 @@ export function deleteCustomBundle(bundleId: string): void {
       const updated = customBundles.filter((b) => b.id !== bundleId);
       localStorage.setItem(STORAGE_KEY_CUSTOM_BUNDLES, JSON.stringify(updated));
     }
-    void safeDeleteFirestoreDoc('bundles', bundleId).catch(() => {});
+    void safeDeleteFirestoreDoc('bundles', bundleId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
@@ -622,13 +828,29 @@ export function saveExamResult(result: ExamResult): void {
   }
 }
 
-export function deleteExamResult(resultId: string): void {
+export function deleteExamResult(resultId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteExamResult] Blocked auto-delete without explicit user confirmation:', resultId);
+    return;
+  }
   try {
-    addDeletedIdByKey(STORAGE_KEY_DELETED_RESULTS, resultId);
     const results = getExamResults();
+    const target = results.find((r) => r.id === resultId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'result',
+          itemId: target.id,
+          title: `${target.examTitle || 'Bài thi'} — ${target.studentName || 'Thí sinh'}`,
+          subtitle: `Điểm: ${target.scoreOnTenScale?.toFixed(2) ?? target.score}`,
+          data: target,
+        },
+      ]);
+    }
+    addDeletedIdByKey(STORAGE_KEY_DELETED_RESULTS, resultId);
     const updated = results.filter((r) => r.id !== resultId);
     localStorage.setItem(STORAGE_KEY_RESULTS, JSON.stringify(updated));
-    void safeDeleteFirestoreDoc('results', resultId).catch(() => {});
+    void safeDeleteFirestoreDoc('results', resultId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (err) {
@@ -636,9 +858,22 @@ export function deleteExamResult(resultId: string): void {
   }
 }
 
-export function clearExamResults(): void {
+export function clearExamResults(options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[clearExamResults] Blocked auto-delete without explicit user confirmation');
+    return;
+  }
   try {
     const existing = getExamResults();
+    archiveItemsToTrash(
+      existing.map((r) => ({
+        entityType: 'result' as const,
+        itemId: r.id,
+        title: `${r.examTitle || 'Bài thi'} — ${r.studentName || 'Thí sinh'}`,
+        subtitle: `Điểm: ${r.scoreOnTenScale?.toFixed(2) ?? r.score}`,
+        data: r,
+      }))
+    );
     existing.forEach((r) => addDeletedIdByKey(STORAGE_KEY_DELETED_RESULTS, r.id));
     localStorage.removeItem(STORAGE_KEY_RESULTS);
     markDirtySiteConfig('tombstones');
@@ -668,6 +903,49 @@ export function getActiveSession(): UserExamState | null {
   } catch (err) {
     return null;
   }
+}
+
+const STORAGE_KEY_EXAM_DRAFT_PREFIX = 'edutest_exam_draft_v1_';
+
+export interface ExamTakingDraft {
+  examId: string;
+  mode: 'exam' | 'practice';
+  answers: Record<string, any>;
+  flagged: Record<string, boolean>;
+  essayInlineImages?: Record<string, string>;
+  currentIndex: number;
+  remainingSeconds: number;
+  practiceElapsedSeconds: number;
+  practiceCursor?: number;
+  practiceQueue?: { qIndex: number; isRetry: boolean }[];
+  savedAt: number;
+}
+
+export function saveExamDraft(draft: ExamTakingDraft): void {
+  try {
+    localStorage.setItem(`${STORAGE_KEY_EXAM_DRAFT_PREFIX}${draft.examId}_${draft.mode}`, JSON.stringify(draft));
+  } catch {}
+}
+
+export function loadExamDraft(examId: string, mode: 'exam' | 'practice'): ExamTakingDraft | null {
+  try {
+    const raw = localStorage.getItem(`${STORAGE_KEY_EXAM_DRAFT_PREFIX}${examId}_${mode}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ExamTakingDraft;
+    // Expire auto-drafts older than 24 hours
+    if (!parsed || !parsed.savedAt || Date.now() - parsed.savedAt > 24 * 60 * 60 * 1000) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function clearExamDraft(examId: string, mode: 'exam' | 'practice'): void {
+  try {
+    localStorage.removeItem(`${STORAGE_KEY_EXAM_DRAFT_PREFIX}${examId}_${mode}`);
+  } catch {}
 }
 
 // --- Custom Subjects Management ---
@@ -733,10 +1011,26 @@ export function updateSubjectName(subjectId: string, newName: string): void {
   }
 }
 
-export function deleteSubject(subjectId: string): void {
+export function deleteSubject(subjectId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteSubject] Blocked auto-delete without explicit user confirmation:', subjectId);
+    return;
+  }
   try {
-    addDeletedIdByKey(STORAGE_KEY_DELETED_SUBJECTS, subjectId);
     const list = getAllSubjects();
+    const target = list.find((s) => s.id === subjectId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'subject',
+          itemId: target.id,
+          title: target.name,
+          subtitle: target.code ? `Mã môn: ${target.code}` : undefined,
+          data: target,
+        },
+      ]);
+    }
+    addDeletedIdByKey(STORAGE_KEY_DELETED_SUBJECTS, subjectId);
     const updated = list.filter((s) => s.id !== subjectId);
     localStorage.setItem(STORAGE_KEY_CUSTOM_SUBJECTS, JSON.stringify(updated));
     markDirtySiteConfig('subjects');
@@ -953,16 +1247,32 @@ export function saveClassroom(
   }
 }
 
-export function deleteClassroom(classroomId: string): void {
+export function deleteClassroom(classroomId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteClassroom] Blocked auto-delete without explicit user confirmation:', classroomId);
+    return;
+  }
   try {
-    addDeletedIdByKey(STORAGE_KEY_DELETED_CLASSROOMS, classroomId);
     const list = getAllClassrooms();
+    const target = list.find((c) => c.id === classroomId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'classroom',
+          itemId: target.id,
+          title: target.name,
+          subtitle: `Mã lớp: ${target.code} · ${(target.students || []).length} học sinh`,
+          data: target,
+        },
+      ]);
+    }
+    addDeletedIdByKey(STORAGE_KEY_DELETED_CLASSROOMS, classroomId);
     const updated = list.filter((c) => c.id !== classroomId);
     localStorage.setItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(updated));
     if (getActiveClassId() === classroomId) {
       setActiveClassId(updated[0]?.id || '');
     }
-    void safeDeleteFirestoreDoc('classrooms', classroomId).catch(() => {});
+    void safeDeleteFirestoreDoc('classrooms', classroomId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
@@ -992,13 +1302,7 @@ export function getAllCourses(): MicroCourse[] {
     const deletedIds = new Set(getDeletedCourseIds());
     const parsed: MicroCourse[] = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    const withoutPresets = parsed.filter(
-      (c) => c && c.id && c.id !== 'course_ham_so_12' && c.id !== 'course_grammar_fast'
-    );
-    if (withoutPresets.length !== parsed.length) {
-      localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(withoutPresets));
-    }
-    const filtered = withoutPresets.filter((c) => !deletedIds.has(c.id));
+    const filtered = parsed.filter((c) => c && c.id && !deletedIds.has(c.id));
     return filtered.map((c) => {
       if (c.schemaVersion === 2 && c.detailsLoaded === false) {
         return {
@@ -1058,14 +1362,53 @@ export function saveCourse(course: MicroCourse): void {
     };
     const list = getAllCourses();
     const updated = [stampedCourse, ...list.filter((c) => c.id !== stampedCourse.id)];
-    localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
+    safeLocalStorageSetItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
     invalidateCourseDetailsCache(stampedCourse.id);
     if (stampedCourse.visibility === 'class' && stampedCourse.assignedClassId) {
       syncClassAssignmentForItem('course', stampedCourse.id, stampedCourse.visibility, stampedCourse.assignedClassId);
       markDirtyCloudEntity('classrooms', stampedCourse.assignedClassId);
     }
+
+    // Persist immediately into IndexedDB monotonic archive even if localStorage is full
+    try {
+      saveSnapshotToIndexedDB({
+        ...buildFullSyncPayload(),
+        courses: updated,
+      });
+    } catch {}
+
     markDirtyCloudEntity('courses', stampedCourse.id);
-    scheduleCloudSync();
+    const fbUser = getFirebaseAuthUser();
+    if (fbUser && !fbUser.isAnonymous) {
+      hasLocalMutations = true;
+      lastLocalMutationMs = Date.now();
+      updateSyncState({ status: 'syncing', lastSyncedAt: currentSyncState.lastSyncedAt });
+      void syncSingleCourseToFirestoreNow(stampedCourse, getAllClassrooms(), curUser, {
+        onMediaOffloaded: (cleanCourse) => applyHydratedCourseToLocalCache(cleanCourse),
+      }).then((res) => {
+        if (!res.ok) {
+          markDirtyCloudEntity('courses', stampedCourse.id);
+          updateSyncState({
+            status: 'error',
+            error: res.error || `Chưa đồng bộ được khóa học "${stampedCourse.title}" lên Cloud Firestore.`,
+          });
+          scheduleCloudSync(1500);
+        } else {
+          unmarkDirtyCloudEntity('courses', stampedCourse.id);
+          if (res.course) {
+            applyHydratedCourseToLocalCache(res.course);
+          }
+          updateSyncState({ status: 'synced', lastSyncedAt: new Date().toISOString() });
+          if (wasDeleted || stampedCourse.visibility === 'class') {
+            scheduleCloudSync(600);
+          } else {
+            scheduleLocationCloudSync();
+          }
+        }
+      });
+    } else {
+      scheduleCloudSync();
+    }
   } catch (e) {
     console.error(e);
   }
@@ -1079,9 +1422,12 @@ export function applyHydratedCourseToLocalCache(hydratedCourse: MicroCourse): vo
     const updated = exists
       ? list.map((c) => (c.id === hydratedCourse.id ? hydratedCourse : c))
       : [hydratedCourse, ...list];
-    localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
+    safeLocalStorageSetItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
     try {
-      saveSnapshotToIndexedDB(buildFullSyncPayload());
+      saveSnapshotToIndexedDB({
+        ...buildFullSyncPayload(),
+        courses: updated,
+      });
     } catch {}
   } catch (e) {
     console.warn('[applyHydratedCourseToLocalCache] error:', e);
@@ -1104,11 +1450,24 @@ export async function ensureCourseHydrated(
     }
     return null;
   }
-  const hydrated = await loadCourseFullDetailsFromFirestore(courseId, localCourse, { forceRefresh });
-  if (hydrated) {
+  const hydrated = await loadCourseFullDetailsFromFirestore(courseId, localCourse, { forceRefresh }).catch(() => null);
+  const localHasFallbackDetails =
+    localCourse &&
+    ((Array.isArray(localCourse.chapters) && localCourse.chapters.length > 0) ||
+      (Array.isArray(localCourse.lessons) && localCourse.lessons.length > 0));
+  const hydratedHasDetails =
+    hydrated &&
+    ((Array.isArray(hydrated.chapters) && hydrated.chapters.length > 0) ||
+      (Array.isArray(hydrated.lessons) && hydrated.lessons.length > 0));
+
+  if (hydrated && (hydratedHasDetails || !localHasFallbackDetails)) {
     applyHydratedCourseToLocalCache(hydrated);
+    return hydrated;
   }
-  return hydrated || localCourse;
+  if (localCourse) {
+    return { ...localCourse, detailsLoaded: true };
+  }
+  return hydrated || null;
 }
 
 export async function migrateCourseToV2Subcollections(
@@ -1153,11 +1512,27 @@ export async function migrateAllLegacyCourses(): Promise<{
   return { total: candidates.length, migrated, failed, errors };
 }
 
-export function deleteCourse(courseId: string): void {
+export function deleteCourse(courseId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteCourse] Blocked auto-delete without explicit user confirmation:', courseId);
+    return;
+  }
   try {
+    const list = getAllCourses();
+    const target = list.find((c) => c.id === courseId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'course',
+          itemId: target.id,
+          title: target.title,
+          subtitle: `${target.chapterCount ?? target.chapters?.length ?? 0} chương · ${target.lessonCount ?? target.lessons?.length ?? 0} bài học`,
+          data: target,
+        },
+      ]);
+    }
     addDeletedIdByKey(STORAGE_KEY_DELETED_COURSES, courseId);
     invalidateCourseDetailsCache(courseId);
-    const list = getAllCourses();
     const updated = list.filter((c) => c.id !== courseId);
     localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(updated));
 
@@ -1178,7 +1553,7 @@ export function deleteCourse(courseId: string): void {
     if (changedClasses) {
       localStorage.setItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(nextClasses));
     }
-    void safeDeleteFirestoreDoc('courses', courseId).catch(() => {});
+    void safeDeleteFirestoreDoc('courses', courseId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
@@ -1633,13 +2008,29 @@ export function saveClassroomHomework(hw: ClassroomHomework): ClassroomHomework 
   }
 }
 
-export function deleteClassroomHomework(homeworkId: string): void {
+export function deleteClassroomHomework(homeworkId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteClassroomHomework] Blocked auto-delete without explicit user confirmation:', homeworkId);
+    return;
+  }
   try {
-    addDeletedIdByKey(STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS, homeworkId);
     const list = getAllClassroomHomeworks();
+    const target = list.find((item) => item.id === homeworkId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'classroomHomework',
+          itemId: target.id,
+          title: target.title,
+          subtitle: `Bài tập về nhà lớp ${target.classId}`,
+          data: target,
+        },
+      ]);
+    }
+    addDeletedIdByKey(STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS, homeworkId);
     const updated = list.filter((item) => item.id !== homeworkId);
     localStorage.setItem(STORAGE_KEY_CLASSROOM_HOMEWORKS, JSON.stringify(updated));
-    void safeDeleteFirestoreDoc('classroomHomeworks', homeworkId).catch(() => {});
+    void safeDeleteFirestoreDoc('classroomHomeworks', homeworkId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
@@ -1793,13 +2184,29 @@ export function gradeHomeworkSubmission(
   }
 }
 
-export function deleteHomeworkSubmission(submissionId: string): void {
+export function deleteHomeworkSubmission(submissionId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteHomeworkSubmission] Blocked auto-delete without explicit user confirmation:', submissionId);
+    return;
+  }
   try {
-    addDeletedIdByKey(STORAGE_KEY_DELETED_HOMEWORK, submissionId);
     const list = getAllHomeworkSubmissions();
+    const target = list.find((s) => s.id === submissionId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'homeworkSubmission',
+          itemId: target.id,
+          title: `${target.homeworkTitle || target.lessonTitle || 'Bài nộp'} — ${target.studentName}`,
+          subtitle: target.score !== undefined ? `Điểm: ${target.score}` : undefined,
+          data: target,
+        },
+      ]);
+    }
+    addDeletedIdByKey(STORAGE_KEY_DELETED_HOMEWORK, submissionId);
     const updated = list.filter((s) => s.id !== submissionId);
     localStorage.setItem(STORAGE_KEY_HOMEWORK_SUBMISSIONS, JSON.stringify(updated));
-    void safeDeleteFirestoreDoc('homeworkSubmissions', submissionId).catch(() => {});
+    void safeDeleteFirestoreDoc('homeworkSubmissions', submissionId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
@@ -1867,11 +2274,15 @@ export function saveFeedback(fb: FeedbackItem): void {
   }
 }
 
-export function deleteFeedback(id: string): void {
+export function deleteFeedback(id: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteFeedback] Blocked auto-delete without explicit user confirmation:', id);
+    return;
+  }
   try {
     const list = getAllFeedbacks().filter((f) => f.id !== id);
     localStorage.setItem(STORAGE_KEY_FEEDBACKS, JSON.stringify(list));
-    void safeDeleteFirestoreDoc('feedbacks', id).catch(() => {});
+    void safeDeleteFirestoreDoc('feedbacks', id, { userConfirmedDelete: true }).catch(() => {});
     markDirtyCloudEntity('feedbacks', id);
     scheduleCloudSync();
   } catch (err) {
@@ -4249,12 +4660,29 @@ export function saveScoreboard(sb: Scoreboard, options?: { skipCloudSync?: boole
   }
 }
 
-export function deleteScoreboard(scoreboardId: string): void {
+export function deleteScoreboard(scoreboardId: string, options?: { confirmedByUser?: boolean }): void {
+  if (options?.confirmedByUser !== true) {
+    console.warn('[deleteScoreboard] Blocked auto-delete without explicit user confirmation:', scoreboardId);
+    return;
+  }
   try {
+    const list = getAllScoreboards();
+    const target = list.find((s) => s.id === scoreboardId);
+    if (target) {
+      archiveItemsToTrash([
+        {
+          entityType: 'scoreboard',
+          itemId: target.id,
+          title: target.title,
+          subtitle: `${(target.participants || []).length} thí sinh/nhóm`,
+          data: target,
+        },
+      ]);
+    }
     addDeletedIdByKey(STORAGE_KEY_DELETED_SCOREBOARDS, scoreboardId);
-    const updated = getAllScoreboards().filter((s) => s.id !== scoreboardId);
+    const updated = list.filter((s) => s.id !== scoreboardId);
     localStorage.setItem(STORAGE_KEY_SCOREBOARDS, JSON.stringify(updated));
-    void safeDeleteFirestoreDoc('scoreboards', scoreboardId).catch(() => {});
+    void safeDeleteFirestoreDoc('scoreboards', scoreboardId, { userConfirmedDelete: true }).catch(() => {});
     markDirtySiteConfig('tombstones');
     scheduleCloudSync();
   } catch (e) {
@@ -4371,6 +4799,50 @@ export function buildFullSyncPayload() {
 }
 
 const IDB_COURSES_ARCHIVE_KEY = 'edutest_courses_archive_v1';
+const IDB_EXAMS_ARCHIVE_KEY = 'edutest_exams_archive_v1';
+const IDB_FULL_ARCHIVE_KEY = 'edutest_full_archive_v1';
+
+export interface FullIndexedDBArchive {
+  customExams: Exam[];
+  customBundles: ExamBundle[];
+  courses: MicroCourse[];
+  classrooms: Classroom[];
+  results: ExamResult[];
+  classroomHomeworks: ClassroomHomework[];
+  homeworkSubmissions: HomeworkSubmission[];
+  scoreboards: Scoreboard[];
+  subjects: CustomSubject[];
+}
+
+function mergeMonotonicById<T extends { id: string }>(prev: T[], next: T[]): T[] {
+  const map = new Map<string, T>();
+  prev.forEach((item) => {
+    if (item?.id) map.set(item.id, item);
+  });
+  next.forEach((item) => {
+    if (!item?.id) return;
+    const cur = map.get(item.id) as any;
+    if (!cur) {
+      map.set(item.id, item);
+      return;
+    }
+    // Preserve hydrated course details over metadata stub
+    const nextIsStub = (item as any).schemaVersion === 2 && (item as any).detailsLoaded === false;
+    const curHasDetails =
+      cur.detailsLoaded !== false &&
+      ((Array.isArray(cur.chapters) && cur.chapters.length > 0) ||
+        (Array.isArray(cur.lessons) && cur.lessons.length > 0));
+    if (nextIsStub && curHasDetails) {
+      return;
+    }
+    const curTs = new Date(cur.updatedAt || cur.createdAt || 0).getTime() || 0;
+    const nextTs = new Date((item as any).updatedAt || (item as any).createdAt || 0).getTime() || 0;
+    if (nextTs >= curTs) {
+      map.set(item.id, item);
+    }
+  });
+  return Array.from(map.values());
+}
 
 function saveSnapshotToIndexedDB(payload: any): void {
   try {
@@ -4388,20 +4860,66 @@ function saveSnapshotToIndexedDB(payload: any): void {
         const tx = db.transaction(IDB_STORE, 'readwrite');
         const store = tx.objectStore(IDB_STORE);
         const coursesArr: MicroCourse[] = Array.isArray(payload?.courses) ? payload.courses : [];
+        const customExamsArr: Exam[] = Array.isArray(payload?.customExams) ? payload.customExams : [];
+
+        // Universal monotonic archive across ALL 9 entity types (never drops previously seen items)
+        const fullArchReq = store.get(IDB_FULL_ARCHIVE_KEY);
+        fullArchReq.onsuccess = () => {
+          try {
+            const prev: Partial<FullIndexedDBArchive> = fullArchReq.result || {};
+            const nextArchive: FullIndexedDBArchive = {
+              customExams: mergeMonotonicById(Array.isArray(prev.customExams) ? prev.customExams : [], customExamsArr),
+              customBundles: mergeMonotonicById(
+                Array.isArray(prev.customBundles) ? prev.customBundles : [],
+                Array.isArray(payload?.customBundles) ? payload.customBundles : []
+              ),
+              courses: mergeMonotonicById(Array.isArray(prev.courses) ? prev.courses : [], coursesArr),
+              classrooms: mergeMonotonicById(
+                Array.isArray(prev.classrooms) ? prev.classrooms : [],
+                Array.isArray(payload?.classrooms) ? payload.classrooms : []
+              ),
+              results: mergeMonotonicById(
+                Array.isArray(prev.results) ? prev.results : [],
+                Array.isArray(payload?.results) ? payload.results : []
+              ),
+              classroomHomeworks: mergeMonotonicById(
+                Array.isArray(prev.classroomHomeworks) ? prev.classroomHomeworks : [],
+                Array.isArray(payload?.classroomHomeworks) ? payload.classroomHomeworks : []
+              ),
+              homeworkSubmissions: mergeMonotonicById(
+                Array.isArray(prev.homeworkSubmissions) ? prev.homeworkSubmissions : [],
+                Array.isArray(payload?.homeworkSubmissions) ? payload.homeworkSubmissions : []
+              ),
+              scoreboards: mergeMonotonicById(
+                Array.isArray(prev.scoreboards) ? prev.scoreboards : [],
+                Array.isArray(payload?.scoreboards) ? payload.scoreboards : []
+              ),
+              subjects: mergeMonotonicById(
+                Array.isArray(prev.subjects) ? prev.subjects : [],
+                Array.isArray(payload?.subjects) ? payload.subjects : []
+              ),
+            };
+            store.put(nextArchive, IDB_FULL_ARCHIVE_KEY);
+          } catch {}
+        };
+
+        if (customExamsArr.length > 0) {
+          const examArchReq = store.get(IDB_EXAMS_ARCHIVE_KEY);
+          examArchReq.onsuccess = () => {
+            try {
+              const prevArch: Exam[] = Array.isArray(examArchReq.result) ? examArchReq.result : [];
+              store.put(mergeMonotonicById(prevArch, customExamsArr), IDB_EXAMS_ARCHIVE_KEY);
+            } catch {}
+          };
+        }
+
         if (coursesArr.length > 0) {
           store.put(payload, IDB_KEY);
           const archReq = store.get(IDB_COURSES_ARCHIVE_KEY);
           archReq.onsuccess = () => {
             try {
               const prevArch: MicroCourse[] = Array.isArray(archReq.result) ? archReq.result : [];
-              const mergedMap = new Map<string, MicroCourse>();
-              prevArch.forEach((c) => {
-                if (c?.id) mergedMap.set(c.id, c);
-              });
-              coursesArr.forEach((c) => {
-                if (c?.id) mergedMap.set(c.id, c);
-              });
-              store.put(Array.from(mergedMap.values()), IDB_COURSES_ARCHIVE_KEY);
+              store.put(mergeMonotonicById(prevArch, coursesArr), IDB_COURSES_ARCHIVE_KEY);
             } catch {}
           };
         } else {
@@ -4411,10 +4929,14 @@ function saveSnapshotToIndexedDB(payload: any): void {
             try {
               const prevSnap = prevReq.result;
               const prevCourses = Array.isArray(prevSnap?.courses) ? prevSnap.courses : [];
-              const nextPayload =
-                prevCourses.length > 0 && !initialPullCompleted
-                  ? { ...payload, courses: prevCourses }
-                  : payload;
+              const prevExams = Array.isArray(prevSnap?.customExams) ? prevSnap.customExams : [];
+              const nextPayload = {
+                ...payload,
+                ...(prevCourses.length > 0 && !initialPullCompleted ? { courses: prevCourses } : {}),
+                ...(prevExams.length > 0 && customExamsArr.length === 0 && !initialPullCompleted
+                  ? { customExams: prevExams }
+                  : {}),
+              };
               store.put(nextPayload, IDB_KEY);
             } catch {
               store.put(payload, IDB_KEY);
@@ -4424,6 +4946,104 @@ function saveSnapshotToIndexedDB(payload: any): void {
       } catch {}
     };
   } catch {}
+}
+
+export function loadFullArchiveFromIndexedDB(): Promise<FullIndexedDBArchive> {
+  const empty: FullIndexedDBArchive = {
+    customExams: [],
+    customBundles: [],
+    courses: [],
+    classrooms: [],
+    results: [],
+    classroomHomeworks: [],
+    homeworkSubmissions: [],
+    scoreboards: [],
+    subjects: [],
+  };
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === 'undefined') {
+        resolve(empty);
+        return;
+      }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction(IDB_STORE, 'readonly');
+          const store = tx.objectStore(IDB_STORE);
+          const fullReq = store.get(IDB_FULL_ARCHIVE_KEY);
+          const snapReq = store.get(IDB_KEY);
+          let fullRes: Partial<FullIndexedDBArchive> = {};
+          let snapRes: any = {};
+          let done = 0;
+          const finish = () => {
+            done++;
+            if (done < 2) return;
+            resolve({
+              customExams: mergeMonotonicById(
+                Array.isArray(snapRes?.customExams) ? snapRes.customExams : [],
+                Array.isArray(fullRes?.customExams) ? fullRes.customExams : []
+              ),
+              customBundles: mergeMonotonicById(
+                Array.isArray(snapRes?.customBundles) ? snapRes.customBundles : [],
+                Array.isArray(fullRes?.customBundles) ? fullRes.customBundles : []
+              ),
+              courses: mergeMonotonicById(
+                Array.isArray(snapRes?.courses) ? snapRes.courses : [],
+                Array.isArray(fullRes?.courses) ? fullRes.courses : []
+              ),
+              classrooms: mergeMonotonicById(
+                Array.isArray(snapRes?.classrooms) ? snapRes.classrooms : [],
+                Array.isArray(fullRes?.classrooms) ? fullRes.classrooms : []
+              ),
+              results: mergeMonotonicById(
+                Array.isArray(snapRes?.results) ? snapRes.results : [],
+                Array.isArray(fullRes?.results) ? fullRes.results : []
+              ),
+              classroomHomeworks: mergeMonotonicById(
+                Array.isArray(snapRes?.classroomHomeworks) ? snapRes.classroomHomeworks : [],
+                Array.isArray(fullRes?.classroomHomeworks) ? fullRes.classroomHomeworks : []
+              ),
+              homeworkSubmissions: mergeMonotonicById(
+                Array.isArray(snapRes?.homeworkSubmissions) ? snapRes.homeworkSubmissions : [],
+                Array.isArray(fullRes?.homeworkSubmissions) ? fullRes.homeworkSubmissions : []
+              ),
+              scoreboards: mergeMonotonicById(
+                Array.isArray(snapRes?.scoreboards) ? snapRes.scoreboards : [],
+                Array.isArray(fullRes?.scoreboards) ? fullRes.scoreboards : []
+              ),
+              subjects: mergeMonotonicById(
+                Array.isArray(snapRes?.subjects) ? snapRes.subjects : [],
+                Array.isArray(fullRes?.subjects) ? fullRes.subjects : []
+              ),
+            });
+          };
+          fullReq.onsuccess = () => {
+            fullRes = fullReq.result || {};
+            finish();
+          };
+          fullReq.onerror = finish;
+          snapReq.onsuccess = () => {
+            snapRes = snapReq.result || {};
+            finish();
+          };
+          snapReq.onerror = finish;
+        } catch {
+          resolve(empty);
+        }
+      };
+      req.onerror = () => resolve(empty);
+    } catch {
+      resolve(empty);
+    }
+  });
 }
 
 function loadSnapshotFromIndexedDB(): Promise<any | null> {
@@ -4487,7 +5107,7 @@ export function loadCoursesArchiveFromIndexedDB(): Promise<MicroCourse[]> {
             if (done < 2) return;
             const map = new Map<string, MicroCourse>();
             [...snapCourses, ...archCourses].forEach((c) => {
-              if (c && c.id && c.id !== 'course_ham_so_12' && c.id !== 'course_grammar_fast') {
+              if (c && c.id) {
                 map.set(c.id, c);
               }
             });
@@ -4500,6 +5120,62 @@ export function loadCoursesArchiveFromIndexedDB(): Promise<MicroCourse[]> {
           archReq.onerror = finish;
           snapReq.onsuccess = () => {
             snapCourses = Array.isArray(snapReq.result?.courses) ? snapReq.result.courses : [];
+            finish();
+          };
+          snapReq.onerror = finish;
+        } catch {
+          resolve([]);
+        }
+      };
+      req.onerror = () => resolve([]);
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+export function loadExamsArchiveFromIndexedDB(): Promise<Exam[]> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === 'undefined') {
+        resolve([]);
+        return;
+      }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction(IDB_STORE, 'readonly');
+          const store = tx.objectStore(IDB_STORE);
+          const archReq = store.get(IDB_EXAMS_ARCHIVE_KEY);
+          const snapReq = store.get(IDB_KEY);
+          let archExams: Exam[] = [];
+          let snapExams: Exam[] = [];
+          let done = 0;
+          const finish = () => {
+            done++;
+            if (done < 2) return;
+            const map = new Map<string, Exam>();
+            [...snapExams, ...archExams].forEach((e) => {
+              if (e && e.id && !e.id.startsWith('exam_e2e_')) {
+                map.set(e.id, e);
+              }
+            });
+            resolve(Array.from(map.values()));
+          };
+          archReq.onsuccess = () => {
+            archExams = Array.isArray(archReq.result) ? archReq.result : [];
+            finish();
+          };
+          archReq.onerror = finish;
+          snapReq.onsuccess = () => {
+            snapExams = Array.isArray(snapReq.result?.customExams) ? snapReq.result.customExams : [];
             finish();
           };
           snapReq.onerror = finish;
@@ -4552,9 +5228,54 @@ let lastPullCompletedAtMs = 0;
 let lastPullAuthUid = '';
 let hasLocalMutations = false;
 let lastLocalMutationMs = 0;
-const dirtyEntityKeys = new Set<string>();
-const dirtySiteConfigKeys = new Set<string>();
+const dirtyEntityKeys = new Set<string>(
+  (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PENDING_DIRTY_ENTITIES) : null;
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && x) : [];
+    } catch {
+      return [];
+    }
+  })()
+);
+const dirtySiteConfigKeys = new Set<string>(
+  (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PENDING_DIRTY_SITECONFIG) : null;
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && x) : [];
+    } catch {
+      return [];
+    }
+  })()
+);
 let dirtyUserProfile = false;
+hasLocalMutations = dirtyEntityKeys.size > 0 || dirtySiteConfigKeys.size > 0;
+
+function persistPendingDirtyTracking(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (dirtyEntityKeys.size > 0) {
+      localStorage.setItem(STORAGE_KEY_PENDING_DIRTY_ENTITIES, JSON.stringify(Array.from(dirtyEntityKeys)));
+    } else {
+      localStorage.removeItem(STORAGE_KEY_PENDING_DIRTY_ENTITIES);
+    }
+    if (dirtySiteConfigKeys.size > 0) {
+      localStorage.setItem(STORAGE_KEY_PENDING_DIRTY_SITECONFIG, JSON.stringify(Array.from(dirtySiteConfigKeys)));
+    } else {
+      localStorage.removeItem(STORAGE_KEY_PENDING_DIRTY_SITECONFIG);
+    }
+  } catch {}
+}
+
+function unmarkDirtyCloudEntity(col: string, id: string): void {
+  if (!col || !id) return;
+  dirtyEntityKeys.delete(`${col}/${id}`);
+  const sanitized = sanitizeDocId(id);
+  if (sanitized) dirtyEntityKeys.delete(`${col}/${sanitized}`);
+  persistPendingDirtyTracking();
+}
 
 export function markDirtyCloudEntity(col: string, id: string): void {
   if (!col || !id) return;
@@ -4563,10 +5284,12 @@ export function markDirtyCloudEntity(col: string, id: string): void {
   if (sanitized && sanitized !== id) {
     dirtyEntityKeys.add(`${col}/${sanitized}`);
   }
+  persistPendingDirtyTracking();
 }
 
 export function markDirtySiteConfig(key: 'tombstones' | 'subjects' | 'navTabs' | 'liveText'): void {
   dirtySiteConfigKeys.add(key);
+  persistPendingDirtyTracking();
 }
 
 export function markDirtyUserProfile(): void {
@@ -4577,6 +5300,7 @@ function clearDirtyCloudTracking(): void {
   dirtyEntityKeys.clear();
   dirtySiteConfigKeys.clear();
   dirtyUserProfile = false;
+  persistPendingDirtyTracking();
   if (syncDebounceTimer) {
     clearTimeout(syncDebounceTimer);
     syncDebounceTimer = null;
@@ -4599,6 +5323,7 @@ function consumeDirtyCloudScope(): { scope: DirtyPushScope | null; hasAny: boole
   dirtyEntityKeys.clear();
   dirtySiteConfigKeys.clear();
   dirtyUserProfile = false;
+  persistPendingDirtyTracking();
   return { scope, hasAny: true };
 }
 
@@ -4607,6 +5332,7 @@ function restoreDirtyCloudScope(scope: DirtyPushScope | null): void {
   scope.entities?.forEach((k) => dirtyEntityKeys.add(k));
   scope.siteConfig?.forEach((k) => dirtySiteConfigKeys.add(k));
   if (scope.userProfile) dirtyUserProfile = true;
+  persistPendingDirtyTracking();
 }
 
 let pushInFlightPromise: Promise<{
@@ -4689,10 +5415,13 @@ function scheduleLocationCloudSync(): void {
 }
 
 export function flushCloudSyncBeacon(): void {
-  if (!initialPullCompleted || !hasLocalMutations) return;
   try {
     const payload = buildFullSyncPayload();
     saveSnapshotToIndexedDB(payload);
+    if (!initialPullCompleted || !hasLocalMutations) return;
+    if (getFirebaseAuthUser() && (dirtyEntityKeys.size > 0 || dirtySiteConfigKeys.size > 0 || dirtyUserProfile)) {
+      void triggerCloudSync().catch(() => {});
+    }
     void getAuthHeaders().then((headers) => {
       if (!headers.Authorization) return;
       void fetch('/api/sync', {
@@ -4710,6 +5439,13 @@ export function initAutoSyncLifecycle(): void {
   autoSyncInitialized = true;
 
   window.addEventListener('pagehide', flushCloudSyncBeacon);
+  window.addEventListener('online', () => {
+    if (hasLocalMutations) {
+      void triggerCloudSync().catch(() => {});
+    } else {
+      void pullDataFromServer({ minIntervalMs: 5000 }).catch(() => {});
+    }
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       flushCloudSyncBeacon();
@@ -4918,24 +5654,23 @@ function mergeCoursesByTimestamp(
       ((prev.chapters && prev.chapters.length > 0) || (prev.lessons && prev.lessons.length > 0));
 
     if (incomingIsMetadataStub && prevHasDetails) {
-      if (nextTs > prevTs) {
-        // Remote subcollections/metadata updated — mark detailsLoaded: false so view re-hydrates cleanly
-        map.set(item.id, { ...item, detailsLoaded: false });
-      } else {
-        // Keep local hydrated chapters while optionally updating metadata on timestamp tie
-        const base = preferIncomingOnTie && nextTs === prevTs ? { ...prev, ...item } : prev;
-        map.set(item.id, {
-          ...base,
-          chapters: prev.chapters,
-          lessons: prev.lessons,
-          chapterCount: prev.chapters?.length ?? item.chapterCount,
-          lessonCount:
-            prev.chapters && prev.chapters.length > 0
-              ? prev.chapters.reduce((s, ch) => s + (ch.lessons?.length || 0), 0)
-              : prev.lessons?.length ?? item.lessonCount,
-          detailsLoaded: true,
-        });
-      }
+      // NEVER discard local hydrated chapters/lessons to `[]` when a v2 metadata stub arrives.
+      // If remote metadata updated genuinely later (>15s drift), mark detailsLoaded: false
+      // so the course view triggers background hydration while keeping cached chapters visible.
+      const remoteSignificantlyNewer = nextTs - prevTs > 15000;
+      const base = preferIncomingOnTie && nextTs >= prevTs ? { ...prev, ...item } : prev;
+      map.set(item.id, {
+        ...base,
+        chapters: prev.chapters,
+        lessons: prev.lessons,
+        chapterCount: item.chapterCount ?? prev.chapters?.length ?? 0,
+        lessonCount:
+          item.lessonCount ??
+          (prev.chapters && prev.chapters.length > 0
+            ? prev.chapters.reduce((s, ch) => s + (ch.lessons?.length || 0), 0)
+            : prev.lessons?.length ?? 0),
+        detailsLoaded: !remoteSignificantlyNewer,
+      });
       continue;
     }
 
@@ -4948,63 +5683,102 @@ function mergeCoursesByTimestamp(
 
 function applyMergedSnapshotToLocalStorage(
   sourceData: any,
-  options: { preferIncomingOnTie?: boolean } = {}
+  options: { preferIncomingOnTie?: boolean; allowTombstones?: boolean } = {}
 ): void {
   if (!sourceData || typeof sourceData !== 'object') return;
   const preferIncomingOnTie = options.preferIncomingOnTie !== false;
+  const allowTombstones = options.allowTombstones !== false;
   purgeLegacyLocalCredentials();
 
-  // 1. Merge deleted tombstones first so deleted records stay deleted everywhere
-  const mergedDeletedExams = Array.from(
-    new Set([...getDeletedExamIds(), ...(Array.isArray(sourceData.deletedExamIds) ? sourceData.deletedExamIds : [])])
-  );
-  localStorage.setItem(STORAGE_KEY_DELETED_EXAMS, JSON.stringify(mergedDeletedExams));
+  const dirtyIdsForCol = (col: string): Set<string> => {
+    const out = new Set<string>();
+    const prefix = `${col}/`;
+    dirtyEntityKeys.forEach((k) => {
+      if (k.startsWith(prefix)) {
+        out.add(k.slice(prefix.length));
+      }
+    });
+    return out;
+  };
 
-  const mergedDeletedBundles = Array.from(
-    new Set([...getDeletedBundleIds(), ...(Array.isArray(sourceData.deletedBundleIds) ? sourceData.deletedBundleIds : [])])
-  );
-  localStorage.setItem(STORAGE_KEY_DELETED_BUNDLES, JSON.stringify(mergedDeletedBundles));
+  // 1. Protect live incoming items & pending local dirty mutations from stale tombstones
+  const liveIncomingIds = (arr: any, col: string): Set<string> => {
+    const set = new Set<string>(
+      Array.isArray(arr) ? arr.map((x: any) => x?.id).filter(Boolean) : []
+    );
+    dirtyIdsForCol(col).forEach((id) => set.add(id));
+    return set;
+  };
 
-  const mergedDeletedClasses = Array.from(
-    new Set([...getDeletedClassroomIds(), ...(Array.isArray(sourceData.deletedClassroomIds) ? sourceData.deletedClassroomIds : [])])
-  );
-  localStorage.setItem(STORAGE_KEY_DELETED_CLASSROOMS, JSON.stringify(mergedDeletedClasses));
+  const mergeProtectedDeleted = (
+    localIds: string[],
+    incomingDeleted: any,
+    liveSet: Set<string>,
+    storageKey: string
+  ): string[] => {
+    const incomingDelArr =
+      allowTombstones && Array.isArray(incomingDeleted) ? incomingDeleted : [];
+    const merged = Array.from(new Set([...localIds, ...incomingDelArr])).filter(
+      (id) => !liveSet.has(id) && !liveSet.has(sanitizeDocId(id))
+    );
+    safeLocalStorageSetItem(storageKey, JSON.stringify(merged));
+    return merged;
+  };
 
-  const mergedDeletedCourses = Array.from(
-    new Set([...getDeletedCourseIds(), ...(Array.isArray(sourceData.deletedCourseIds) ? sourceData.deletedCourseIds : [])])
+  const mergedDeletedExams = mergeProtectedDeleted(
+    getDeletedExamIds(),
+    sourceData.deletedExamIds,
+    liveIncomingIds(sourceData.customExams, 'exams'),
+    STORAGE_KEY_DELETED_EXAMS
   );
-  localStorage.setItem(STORAGE_KEY_DELETED_COURSES, JSON.stringify(mergedDeletedCourses));
-
-  const mergedDeletedResults = Array.from(
-    new Set([...getDeletedResultIds(), ...(Array.isArray(sourceData.deletedResultIds) ? sourceData.deletedResultIds : [])])
+  const mergedDeletedBundles = mergeProtectedDeleted(
+    getDeletedBundleIds(),
+    sourceData.deletedBundleIds,
+    liveIncomingIds(sourceData.customBundles, 'bundles'),
+    STORAGE_KEY_DELETED_BUNDLES
   );
-  localStorage.setItem(STORAGE_KEY_DELETED_RESULTS, JSON.stringify(mergedDeletedResults));
-
-  const mergedDeletedHomework = Array.from(
-    new Set([...getDeletedHomeworkIds(), ...(Array.isArray(sourceData.deletedHomeworkIds) ? sourceData.deletedHomeworkIds : [])])
+  const mergedDeletedClasses = mergeProtectedDeleted(
+    getDeletedClassroomIds(),
+    sourceData.deletedClassroomIds,
+    liveIncomingIds(sourceData.classrooms, 'classrooms'),
+    STORAGE_KEY_DELETED_CLASSROOMS
   );
-  localStorage.setItem(STORAGE_KEY_DELETED_HOMEWORK, JSON.stringify(mergedDeletedHomework));
-
-  const mergedDeletedClassroomHomework = Array.from(
-    new Set([
-      ...getDeletedClassroomHomeworkIds(),
-      ...(Array.isArray(sourceData.deletedClassroomHomeworkIds) ? sourceData.deletedClassroomHomeworkIds : []),
-    ])
+  const mergedDeletedCourses = mergeProtectedDeleted(
+    getDeletedCourseIds(),
+    sourceData.deletedCourseIds,
+    liveIncomingIds(sourceData.courses, 'courses'),
+    STORAGE_KEY_DELETED_COURSES
   );
-  localStorage.setItem(STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS, JSON.stringify(mergedDeletedClassroomHomework));
-
-  const mergedDeletedSubjects = Array.from(
-    new Set([...getDeletedSubjectIds(), ...(Array.isArray(sourceData.deletedSubjectIds) ? sourceData.deletedSubjectIds : [])])
+  const mergedDeletedResults = mergeProtectedDeleted(
+    getDeletedResultIds(),
+    sourceData.deletedResultIds,
+    liveIncomingIds(sourceData.results, 'results'),
+    STORAGE_KEY_DELETED_RESULTS
   );
-  localStorage.setItem(STORAGE_KEY_DELETED_SUBJECTS, JSON.stringify(mergedDeletedSubjects));
-
-  const mergedDeletedScoreboards = Array.from(
-    new Set([
-      ...getDeletedScoreboardIds(),
-      ...(Array.isArray(sourceData.deletedScoreboardIds) ? sourceData.deletedScoreboardIds : []),
-    ])
+  const mergedDeletedHomework = mergeProtectedDeleted(
+    getDeletedHomeworkIds(),
+    sourceData.deletedHomeworkIds,
+    liveIncomingIds(sourceData.homeworkSubmissions, 'homeworkSubmissions'),
+    STORAGE_KEY_DELETED_HOMEWORK
   );
-  localStorage.setItem(STORAGE_KEY_DELETED_SCOREBOARDS, JSON.stringify(mergedDeletedScoreboards));
+  const mergedDeletedClassroomHomework = mergeProtectedDeleted(
+    getDeletedClassroomHomeworkIds(),
+    sourceData.deletedClassroomHomeworkIds,
+    liveIncomingIds(sourceData.classroomHomeworks, 'classroomHomeworks'),
+    STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS
+  );
+  const mergedDeletedSubjects = mergeProtectedDeleted(
+    getDeletedSubjectIds(),
+    sourceData.deletedSubjectIds,
+    liveIncomingIds(sourceData.subjects, 'subjects'),
+    STORAGE_KEY_DELETED_SUBJECTS
+  );
+  const mergedDeletedScoreboards = mergeProtectedDeleted(
+    getDeletedScoreboardIds(),
+    sourceData.deletedScoreboardIds,
+    liveIncomingIds(sourceData.scoreboards, 'scoreboards'),
+    STORAGE_KEY_DELETED_SCOREBOARDS
+  );
 
   const delExamSet = new Set(mergedDeletedExams);
   const delBundleSet = new Set(mergedDeletedBundles);
@@ -5021,21 +5795,21 @@ function applyMergedSnapshotToLocalStorage(
     const localClasses = getAllClassrooms();
     const sanitizedIncoming = sourceData.classrooms.map(sanitizeClassroomStudents);
     const merged = mergeByTimestamp(sanitizedIncoming, localClasses, delClassSet, preferIncomingOnTie);
-    localStorage.setItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(merged));
+    safeLocalStorageSetItem(STORAGE_KEY_CLASSROOMS, JSON.stringify(merged));
   }
 
   // 4. Merge custom exams
   if (sourceData.customExams && Array.isArray(sourceData.customExams)) {
     const localExams = getAllExams().filter((e) => e.isCustom);
     const merged = mergeByTimestamp(sourceData.customExams, localExams, delExamSet, preferIncomingOnTie);
-    localStorage.setItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(merged));
+    safeLocalStorageSetItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(merged));
   }
 
   // 5. Merge custom bundles
   if (sourceData.customBundles && Array.isArray(sourceData.customBundles)) {
     const localBundles = getAllBundles().filter((b) => b.isCustom);
     const merged = mergeByTimestamp(sourceData.customBundles, localBundles, delBundleSet, preferIncomingOnTie);
-    localStorage.setItem(STORAGE_KEY_CUSTOM_BUNDLES, JSON.stringify(merged));
+    safeLocalStorageSetItem(STORAGE_KEY_CUSTOM_BUNDLES, JSON.stringify(merged));
   }
 
   // 6. Merge courses (preserve hydrated v2 subcollection content locally when incoming is metadata-only)
@@ -5047,7 +5821,7 @@ function applyMergedSnapshotToLocalStorage(
       delCourseSet,
       preferIncomingOnTie
     );
-    localStorage.setItem(STORAGE_KEY_COURSES, JSON.stringify(merged));
+    safeLocalStorageSetItem(STORAGE_KEY_COURSES, JSON.stringify(merged));
   }
 
   // 7. Merge exam results
@@ -5171,43 +5945,9 @@ function applyMergedSnapshotToLocalStorage(
 
 export function applyRealtimeCloudDelta(
   delta: FirestoreSyncSnapshot,
-  removedByCollection: Record<string, string[]> = {}
+  _removedByCollection: Record<string, string[]> = {}
 ): void {
-  const removeMap: {
-    col: string;
-    storageKey: string;
-    delKey: string;
-  }[] = [
-    { col: 'exams', storageKey: STORAGE_KEY_CUSTOM_EXAMS, delKey: STORAGE_KEY_DELETED_EXAMS },
-    { col: 'bundles', storageKey: STORAGE_KEY_CUSTOM_BUNDLES, delKey: STORAGE_KEY_DELETED_BUNDLES },
-    { col: 'classrooms', storageKey: STORAGE_KEY_CLASSROOMS, delKey: STORAGE_KEY_DELETED_CLASSROOMS },
-    { col: 'courses', storageKey: STORAGE_KEY_COURSES, delKey: STORAGE_KEY_DELETED_COURSES },
-    { col: 'results', storageKey: STORAGE_KEY_RESULTS, delKey: STORAGE_KEY_DELETED_RESULTS },
-    { col: 'classroomHomeworks', storageKey: STORAGE_KEY_CLASSROOM_HOMEWORKS, delKey: STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS },
-    { col: 'homeworkSubmissions', storageKey: STORAGE_KEY_HOMEWORK_SUBMISSIONS, delKey: STORAGE_KEY_DELETED_HOMEWORK },
-    { col: 'scoreboards', storageKey: STORAGE_KEY_SCOREBOARDS, delKey: STORAGE_KEY_DELETED_SCOREBOARDS },
-  ];
-
-  for (const cfg of removeMap) {
-    const removedIds = removedByCollection[cfg.col];
-    if (removedIds && removedIds.length > 0) {
-      const remSet = new Set(removedIds);
-      try {
-        const raw = localStorage.getItem(cfg.storageKey);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            localStorage.setItem(
-              cfg.storageKey,
-              JSON.stringify(parsed.filter((item: any) => item && !remSet.has(item.id)))
-            );
-          }
-        }
-        // NOTE: Never add onSnapshot `removed` events into STORAGE_KEY_DELETED_* tombstones!
-        // Scoped queries fire `removed` when visibility/access/limit shifts, not just on deletion.
-      } catch {}
-    }
-  }
+  // ZERO auto-deletion on realtime delta events — never remove localStorage records automatically.
 
   if (delta.joinRequestsByClassId && typeof delta.joinRequestsByClassId === 'object') {
     const localClasses = getAllClassrooms();
@@ -5228,6 +5968,54 @@ export function applyRealtimeCloudDelta(
   try {
     saveSnapshotToIndexedDB(buildFullSyncPayload());
   } catch {}
+}
+
+let autoHealRunning = false;
+
+export async function runAutoRecoveryReconciliation(
+  markerKey?: string
+): Promise<{ restoredCount: number; restoredTitles: string[] }> {
+  if (autoHealRunning) return { restoredCount: 0, restoredTitles: [] };
+  autoHealRunning = true;
+  try {
+    const trashSet = new Set(getTrashBinItems().map((t) => `${t.entityType}::${t.itemId}`));
+    const report = await scanAllRecoverableData();
+    const toRestore = report.entries.filter(
+      (e) =>
+        e.source !== 'preset' &&
+        !trashSet.has(e.uidKey) &&
+        (!e.isAlreadyActive || e.isTombstoned)
+    );
+
+    if (toRestore.length > 0) {
+      const res = await restoreAllRecoverableData(toRestore, { clearAllTombstones: false });
+      if (res.ok && markerKey) {
+        try {
+          localStorage.setItem(STORAGE_KEY_AUTO_HEAL_MARKER, markerKey);
+        } catch {}
+      }
+      const restoredTitles = toRestore.map((e) => e.title).filter(Boolean);
+      if (res.ok && typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('edutest-data-auto-recovered', {
+            detail: { restoredCount: toRestore.length, restoredTitles },
+          })
+        );
+      }
+      return { restoredCount: res.ok ? toRestore.length : 0, restoredTitles };
+    }
+
+    if (!report.error && markerKey) {
+      try {
+        localStorage.setItem(STORAGE_KEY_AUTO_HEAL_MARKER, markerKey);
+      } catch {}
+    }
+    return { restoredCount: 0, restoredTitles: [] };
+  } catch {
+    return { restoredCount: 0, restoredTitles: [] };
+  } finally {
+    autoHealRunning = false;
+  }
 }
 
 export async function pullDataFromServer(options?: {
@@ -5274,21 +6062,59 @@ export async function pullDataFromServer(options?: {
       const fbUser = getFirebaseAuthUser();
       const currentWebUser = getCurrentUser();
       const hasCloudUser = Boolean(fbUser && !fbUser.isAnonymous);
+      const activeAuthUid = hasCloudUser && fbUser ? fbUser.uid : '';
+      const didAuthChange = activeAuthUid !== lastPullAuthUid;
+      const expectedHealMarker = activeAuthUid ? `v1_${activeAuthUid}` : '';
+      const needsAutoHeal = Boolean(
+        expectedHealMarker &&
+          typeof localStorage !== 'undefined' &&
+          localStorage.getItem(STORAGE_KEY_AUTO_HEAL_MARKER) !== expectedHealMarker
+      );
 
-      // 1. Hydrate IndexedDB local cache synchronously on initial boot only (0ms optimistic render)
+      // 1. Hydrate IndexedDB local snapshot + monotonic archives synchronously on initial boot
       if (!initialPullCompleted) {
-        const idbBackup = await loadSnapshotFromIndexedDB().catch(() => null);
+        const [idbBackup, fullArchive, coursesArch, examsArch] = await Promise.all([
+          loadSnapshotFromIndexedDB().catch(() => null),
+          loadFullArchiveFromIndexedDB().catch(() => null),
+          loadCoursesArchiveFromIndexedDB().catch(() => [] as MicroCourse[]),
+          loadExamsArchiveFromIndexedDB().catch(() => [] as Exam[]),
+        ]);
         if (idbBackup) {
-          applyMergedSnapshotToLocalStorage(idbBackup, { preferIncomingOnTie: false });
+          applyMergedSnapshotToLocalStorage(idbBackup, {
+            preferIncomingOnTie: false,
+            allowTombstones: false,
+          });
+          anySuccess = true;
+        }
+        const combinedArchiveCourses = mergeMonotonicById(
+          Array.isArray(fullArchive?.courses) ? fullArchive.courses : [],
+          coursesArch
+        );
+        const combinedArchiveExams = mergeMonotonicById(
+          Array.isArray(fullArchive?.customExams) ? fullArchive.customExams : [],
+          examsArch
+        );
+        if (
+          fullArchive ||
+          combinedArchiveCourses.length > 0 ||
+          combinedArchiveExams.length > 0
+        ) {
+          applyMergedSnapshotToLocalStorage(
+            {
+              ...(fullArchive || {}),
+              courses: combinedArchiveCourses,
+              customExams: combinedArchiveExams,
+            },
+            { preferIncomingOnTie: false, allowTombstones: false }
+          );
           anySuccess = true;
         }
       }
 
       // 2. Direct single-roundtrip Delta/Full Pull (skip redundant /api/sync when Cloud Auth is active)
-      const activeAuthUid = hasCloudUser && fbUser ? fbUser.uid : '';
-      const didAuthChange = activeAuthUid !== lastPullAuthUid;
-      const forceFull = options?.forceFull ?? (!hasLocalCachedLibraryData() || didAuthChange);
-      const forceCoursesFull = !hasLocalCoursesCached() || didAuthChange;
+      const forceFull =
+        options?.forceFull ?? (!hasLocalCachedLibraryData() || didAuthChange || needsAutoHeal);
+      const forceCoursesFull = !hasLocalCoursesCached() || didAuthChange || needsAutoHeal;
       const activeCls = options?.activeClassId ?? getActiveClassId();
       const firestorePromise = (
         hasCloudUser
@@ -5313,38 +6139,80 @@ export async function pullDataFromServer(options?: {
       const [serverJson, firestoreSnapshot] = await Promise.all([serverPromise, firestorePromise]);
 
       if (serverJson && serverJson.success && serverJson.data) {
-        applyMergedSnapshotToLocalStorage(serverJson.data, { preferIncomingOnTie: true });
+        applyMergedSnapshotToLocalStorage(serverJson.data, {
+          preferIncomingOnTie: true,
+          allowTombstones: hasCloudUser,
+        });
         anySuccess = true;
       }
 
       if (firestoreSnapshot !== null) {
         firestoreConnected = hasCloudUser;
+        const cleanLocalTombstones = (storageKey: string, currentIds: string[], falseIds?: string[]) => {
+          if (!Array.isArray(falseIds) || falseIds.length === 0) return;
+          const set = new Set(falseIds);
+          safeLocalStorageSetItem(storageKey, JSON.stringify(currentIds.filter((id) => !set.has(id))));
+        };
+
+        cleanLocalTombstones(STORAGE_KEY_DELETED_EXAMS, getDeletedExamIds(), firestoreSnapshot.falselyTombstonedExamIds);
+        cleanLocalTombstones(STORAGE_KEY_DELETED_BUNDLES, getDeletedBundleIds(), firestoreSnapshot.falselyTombstonedBundleIds);
+        cleanLocalTombstones(STORAGE_KEY_DELETED_COURSES, getDeletedCourseIds(), firestoreSnapshot.falselyTombstonedCourseIds);
+        cleanLocalTombstones(STORAGE_KEY_DELETED_CLASSROOMS, getDeletedClassroomIds(), firestoreSnapshot.falselyTombstonedClassroomIds);
+        cleanLocalTombstones(STORAGE_KEY_DELETED_RESULTS, getDeletedResultIds(), firestoreSnapshot.falselyTombstonedResultIds);
+        cleanLocalTombstones(STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS, getDeletedClassroomHomeworkIds(), firestoreSnapshot.falselyTombstonedClassroomHomeworkIds);
+        cleanLocalTombstones(STORAGE_KEY_DELETED_HOMEWORK, getDeletedHomeworkIds(), firestoreSnapshot.falselyTombstonedHomeworkIds);
+        cleanLocalTombstones(STORAGE_KEY_DELETED_SCOREBOARDS, getDeletedScoreboardIds(), firestoreSnapshot.falselyTombstonedScoreboardIds);
+
+        const hasAnyFalseTombstones = Boolean(
+          firestoreSnapshot.falselyTombstonedExamIds?.length ||
+            firestoreSnapshot.falselyTombstonedBundleIds?.length ||
+            firestoreSnapshot.falselyTombstonedCourseIds?.length ||
+            firestoreSnapshot.falselyTombstonedClassroomIds?.length ||
+            firestoreSnapshot.falselyTombstonedResultIds?.length ||
+            firestoreSnapshot.falselyTombstonedClassroomHomeworkIds?.length ||
+            firestoreSnapshot.falselyTombstonedHomeworkIds?.length ||
+            firestoreSnapshot.falselyTombstonedScoreboardIds?.length
+        );
         if (
-          Array.isArray(firestoreSnapshot.falselyTombstonedCourseIds) &&
-          firestoreSnapshot.falselyTombstonedCourseIds.length > 0
+          hasAnyFalseTombstones &&
+          currentWebUser &&
+          (currentWebUser.role === 'teacher' || isMasterAdminUser(currentWebUser))
         ) {
-          // Courses still exist on Cloud Firestore: clean false tombstones locally & on cloud
-          const falseSet = new Set(firestoreSnapshot.falselyTombstonedCourseIds);
-          const cleanedLocalDeleted = getDeletedCourseIds().filter((id) => !falseSet.has(id));
-          localStorage.setItem(STORAGE_KEY_DELETED_COURSES, JSON.stringify(cleanedLocalDeleted));
-          if (
-            currentWebUser &&
-            (currentWebUser.role === 'teacher' || isMasterAdminUser(currentWebUser))
-          ) {
-            void clearCoursesFromCloudTombstones(
-              firestoreSnapshot.falselyTombstonedCourseIds,
-              [],
-              getAllClassrooms(),
-              currentWebUser
-            ).catch(() => {});
-          }
+          void clearAllCloudTombstonesAndRestore(
+            {
+              unblockIds: {
+                exams: firestoreSnapshot.falselyTombstonedExamIds,
+                bundles: firestoreSnapshot.falselyTombstonedBundleIds,
+                courses: firestoreSnapshot.falselyTombstonedCourseIds,
+                classrooms: firestoreSnapshot.falselyTombstonedClassroomIds,
+                results: firestoreSnapshot.falselyTombstonedResultIds,
+                classroomHomeworks: firestoreSnapshot.falselyTombstonedClassroomHomeworkIds,
+                homeworkSubmissions: firestoreSnapshot.falselyTombstonedHomeworkIds,
+                scoreboards: firestoreSnapshot.falselyTombstonedScoreboardIds,
+              },
+            },
+            currentWebUser
+          ).catch(() => {});
         }
         if (Object.keys(firestoreSnapshot).length > 0) {
-          applyMergedSnapshotToLocalStorage(firestoreSnapshot, { preferIncomingOnTie: true });
+          applyMergedSnapshotToLocalStorage(firestoreSnapshot, {
+            preferIncomingOnTie: true,
+            allowTombstones: hasCloudUser && !firestoreSnapshot.isDeltaSync,
+          });
           anySuccess = true;
         }
         if (currentSyncState.status !== 'error') {
           updateSyncState({ status: 'synced', lastSyncedAt: new Date().toISOString() });
+        }
+
+        // One-time automatic self-healing scan for this device/UID:
+        // Unblocks & restores any Cloud/IndexedDB/local_hidden/server_backup data
+        // that is NOT explicitly in the user's TrashBin.
+        if (hasCloudUser && needsAutoHeal) {
+          const healRes = await runAutoRecoveryReconciliation(expectedHealMarker);
+          if (healRes.restoredCount > 0) {
+            anySuccess = true;
+          }
         }
       } else if (firestorePullError) {
         updateSyncState({ status: 'error', error: firestorePullError });
@@ -5486,10 +6354,11 @@ export interface FullCourseRecoveryReport {
 
 export async function scanAllRecoverableCourses(): Promise<FullCourseRecoveryReport> {
   const curUser = getCurrentUser();
+  const authHeaders = await getAuthHeaders();
   const [cloudRes, idbCourses, serverCourses] = await Promise.all([
     scanRecoverableCloudCourses(curUser),
     loadCoursesArchiveFromIndexedDB().catch(() => [] as MicroCourse[]),
-    fetch('/api/sync?skipCloud=1')
+    fetch('/api/sync?skipCloud=1', { headers: authHeaders })
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => (Array.isArray(j?.data?.courses) ? (j.data.courses as MicroCourse[]) : []))
       .catch(() => [] as MicroCourse[]),
@@ -5511,7 +6380,7 @@ export async function scanAllRecoverableCourses(): Promise<FullCourseRecoveryRep
 
   const byId = new Map<string, RecoverableCourseEntry>();
   const addEntry = (c: MicroCourse, source: RecoverableCourseEntry['source']) => {
-    if (!c || !c.id || c.id === 'course_ham_so_12' || c.id === 'course_grammar_fast') return;
+    if (!c || !c.id) return;
     const prev = byId.get(c.id);
     if (!prev || getSyncItemTs(c) > getSyncItemTs(prev.course)) {
       byId.set(c.id, {
@@ -5546,9 +6415,10 @@ export async function restoreRecoveredCourses(
     const restoreIds = coursesToRestore.map((c) => c.id);
     const unblockSet = new Set<string>([...restoreIds, ...extraTombstoneIdsToUnblock]);
 
-    // 1. Remove from local deletedCourseIds
+    // 1. Remove from local deletedCourseIds & Trash Bin
     const nextDeleted = getDeletedCourseIds().filter((id) => !unblockSet.has(id));
     localStorage.setItem(STORAGE_KEY_DELETED_COURSES, JSON.stringify(nextDeleted));
+    removeItemsFromTrashBin(restoreIds.map((id) => `course::${id}`));
 
     // 2. Merge restored courses into localStorage & re-stamp updatedAt so they persist
     const existingLocal = getAllCourses();
@@ -5580,6 +6450,14 @@ export async function restoreRecoveredCourses(
       if (!cloudRes.ok) {
         return { ok: false, restoredCount: stampedRestored.length, error: cloudRes.error };
       }
+      const headers = await getAuthHeaders();
+      if (headers.Authorization) {
+        void fetch('/api/sync/clear-tombstones', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ unblockIds: { courses: Array.from(unblockSet) } }),
+        }).catch(() => {});
+      }
     }
 
     return { ok: true, restoredCount: stampedRestored.length };
@@ -5587,5 +6465,650 @@ export async function restoreRecoveredCourses(
     return { ok: false, restoredCount: 0, error: err?.message || String(err) };
   }
 }
+
+export interface RecoverableExamEntry {
+  exam: Exam;
+  source: 'cloud' | 'indexeddb' | 'local_hidden' | 'server_backup' | 'preset';
+  isTombstoned: boolean;
+}
+
+export interface FullExamRecoveryReport {
+  entries: RecoverableExamEntry[];
+  tombstonedExamIds: string[];
+  orphanReferencedExamIds: string[];
+  error?: string;
+}
+
+export async function scanAllRecoverableExams(): Promise<FullExamRecoveryReport> {
+  const curUser = getCurrentUser();
+  const authHeaders = await getAuthHeaders();
+  const [cloudRes, idbExams, serverExams] = await Promise.all([
+    scanRecoverableCloudExams(curUser),
+    loadExamsArchiveFromIndexedDB().catch(() => [] as Exam[]),
+    fetch('/api/sync?skipCloud=1', { headers: authHeaders })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => (Array.isArray(j?.data?.customExams) ? (j.data.customExams as Exam[]) : []))
+      .catch(() => [] as Exam[]),
+  ]);
+
+  let rawLocalExams: Exam[] = [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_EXAMS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) rawLocalExams = parsed;
+    }
+  } catch {}
+
+  const tombSet = new Set<string>([
+    ...getDeletedExamIds(),
+    ...(cloudRes.tombstonedExamIds || []),
+  ]);
+
+  const byId = new Map<string, RecoverableExamEntry>();
+  const addEntry = (ex: Exam, source: RecoverableExamEntry['source']) => {
+    if (!ex || !ex.id || ex.id.startsWith('exam_e2e_')) return;
+    const prev = byId.get(ex.id);
+    if (!prev || getSyncItemTs(ex) > getSyncItemTs(prev.exam)) {
+      byId.set(ex.id, {
+        exam: ex,
+        source,
+        isTombstoned: tombSet.has(ex.id),
+      });
+    }
+  };
+
+  cloudRes.cloudExams.forEach((ex) => addEntry(ex, 'cloud'));
+  idbExams.forEach((ex) => addEntry(ex, 'indexeddb'));
+  serverExams.forEach((ex) => addEntry(ex, 'server_backup'));
+  rawLocalExams.forEach((ex) => {
+    if (tombSet.has(ex.id)) addEntry(ex, 'local_hidden');
+  });
+  PRESET_EXAMS.forEach((ex) => {
+    if (tombSet.has(ex.id)) addEntry(ex, 'preset');
+  });
+
+  return {
+    entries: Array.from(byId.values()),
+    tombstonedExamIds: Array.from(tombSet),
+    orphanReferencedExamIds: cloudRes.orphanReferencedExamIds || [],
+    error: cloudRes.error,
+  };
+}
+
+export async function restoreRecoveredExams(
+  examsToRestore: Exam[],
+  extraTombstoneIdsToUnblock: string[] = []
+): Promise<{ ok: boolean; restoredCount: number; error?: string }> {
+  try {
+    const curUser = getCurrentUser();
+    const restoreIds = examsToRestore.map((e) => e.id);
+    const unblockSet = new Set<string>([...restoreIds, ...extraTombstoneIdsToUnblock]);
+
+    // 1. Remove from local deletedExamIds & Trash Bin
+    const nextDeleted = getDeletedExamIds().filter((id) => !unblockSet.has(id));
+    localStorage.setItem(STORAGE_KEY_DELETED_EXAMS, JSON.stringify(nextDeleted));
+    removeItemsFromTrashBin(restoreIds.map((id) => `exam::${id}`));
+
+    // 2. Merge restored custom exams into localStorage & re-stamp updatedAt
+    let rawCustom: Exam[] = [];
+    try {
+      const r = localStorage.getItem(STORAGE_KEY_CUSTOM_EXAMS);
+      if (r) {
+        const parsed = JSON.parse(r);
+        if (Array.isArray(parsed)) rawCustom = parsed;
+      }
+    } catch {}
+
+    const presetIdSet = new Set(PRESET_EXAMS.map((p) => p.id));
+    const mergedMap = new Map<string, Exam>();
+    rawCustom.forEach((e) => {
+      if (e?.id) mergedMap.set(e.id, e);
+    });
+
+    const nowIso = new Date().toISOString();
+    const customToUpload: Exam[] = [];
+    examsToRestore.forEach((ex) => {
+      const stamped: Exam = {
+        ...ex,
+        updatedAt: ex.updatedAt || nowIso,
+      };
+      if (!presetIdSet.has(ex.id) || ex.isCustom) {
+        mergedMap.set(stamped.id, { ...stamped, isCustom: true });
+        markDirtyCloudEntity('exams', stamped.id);
+        customToUpload.push({ ...stamped, isCustom: true });
+      }
+    });
+
+    localStorage.setItem(STORAGE_KEY_CUSTOM_EXAMS, JSON.stringify(Array.from(mergedMap.values())));
+    markDirtySiteConfig('tombstones');
+    saveSnapshotToIndexedDB(buildFullSyncPayload());
+
+    // 3. Clear cloud tombstones & re-upload recovered exams if Firebase Auth is active
+    const fbUser = getFirebaseAuthUser();
+    if (fbUser && !fbUser.isAnonymous) {
+      const cloudRes = await clearExamsFromCloudTombstones(
+        Array.from(unblockSet),
+        customToUpload,
+        getAllClassrooms(),
+        curUser
+      );
+      if (!cloudRes.ok) {
+        return { ok: false, restoredCount: examsToRestore.length, error: cloudRes.error };
+      }
+      const headers = await getAuthHeaders();
+      if (headers.Authorization) {
+        void fetch('/api/sync/clear-tombstones', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ unblockIds: { exams: Array.from(unblockSet) } }),
+        }).catch(() => {});
+      }
+    }
+
+    return { ok: true, restoredCount: examsToRestore.length };
+  } catch (err: any) {
+    return { ok: false, restoredCount: 0, error: err?.message || String(err) };
+  }
+}
+
+// =========================================================================
+// UNIFIED FULL DATA RECOVERY & TRASH CENTER (ALL 9 ENTITY TYPES)
+// =========================================================================
+
+export type RecoverableDataCategory =
+  | 'exam'
+  | 'bundle'
+  | 'course'
+  | 'classroom'
+  | 'result'
+  | 'classroomHomework'
+  | 'homeworkSubmission'
+  | 'scoreboard'
+  | 'subject';
+
+export type RecoverableDataSource =
+  | 'cloud'
+  | 'trash'
+  | 'indexeddb'
+  | 'server_backup'
+  | 'local_hidden'
+  | 'preset';
+
+export interface RecoverableDataEntry {
+  uidKey: string;
+  category: RecoverableDataCategory;
+  id: string;
+  title: string;
+  subtitle?: string;
+  updatedAt?: string;
+  source: RecoverableDataSource;
+  isTombstoned: boolean;
+  isAlreadyActive: boolean;
+  data: any;
+  trashId?: string;
+}
+
+export interface FullDataRecoveryReport {
+  entries: RecoverableDataEntry[];
+  tombstonesByCategory: Record<RecoverableDataCategory, string[]>;
+  totalTombstonedCount: number;
+  missingOrHiddenCount: number;
+  error?: string;
+}
+
+function readRawArrayLocal(key: string): any[] {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatEntryMeta(category: RecoverableDataCategory, item: any): { title: string; subtitle?: string } {
+  if (!item) return { title: 'Dữ liệu' };
+  switch (category) {
+    case 'exam':
+      return {
+        title: item.title || 'Đề thi',
+        subtitle: `${item.questions?.length || 0} câu · ${item.durationMinutes || 0} phút${item.subject ? ` · ${item.subject}` : ''}`,
+      };
+    case 'bundle':
+      return {
+        title: item.title || 'Tổ hợp môn',
+        subtitle: `${(item.examIds || []).length} môn thành phần`,
+      };
+    case 'course':
+      return {
+        title: item.title || 'Khóa học',
+        subtitle: `${item.chapterCount ?? item.chapters?.length ?? 0} chương · ${item.lessonCount ?? item.lessons?.length ?? 0} bài`,
+      };
+    case 'classroom':
+      return {
+        title: item.name || 'Lớp học',
+        subtitle: `Mã: ${item.code || '—'} · ${(item.students || []).length} học sinh`,
+      };
+    case 'result':
+      return {
+        title: `${item.examTitle || 'Bài thi'} — ${item.studentName || 'Thí sinh'}`,
+        subtitle: `Điểm: ${item.scoreOnTenScale !== undefined ? Number(item.scoreOnTenScale).toFixed(2) : item.score ?? '—'}`,
+      };
+    case 'classroomHomework':
+      return {
+        title: item.title || 'Bài tập về nhà',
+        subtitle: item.maxScore ? `Thang điểm ${item.maxScore}` : undefined,
+      };
+    case 'homeworkSubmission':
+      return {
+        title: `${item.homeworkTitle || item.lessonTitle || 'Bài nộp'} — ${item.studentName || 'Học sinh'}`,
+        subtitle: item.score !== undefined ? `Điểm: ${item.score}` : 'Đã nộp',
+      };
+    case 'scoreboard':
+      return {
+        title: item.title || 'Bảng điểm',
+        subtitle: `${(item.participants || []).length} thí sinh/nhóm`,
+      };
+    case 'subject':
+      return {
+        title: item.name || 'Môn học',
+        subtitle: item.code ? `Mã: ${item.code}` : undefined,
+      };
+  }
+}
+
+export async function scanAllRecoverableData(): Promise<FullDataRecoveryReport> {
+  const curUser = getCurrentUser();
+  const authHeaders = await getAuthHeaders();
+
+  const [cloudRes, fullIdb, examIdb, courseIdb, serverData] = await Promise.all([
+    scanAllCloudDataForRecovery(curUser),
+    loadFullArchiveFromIndexedDB(),
+    loadExamsArchiveFromIndexedDB().catch(() => [] as Exam[]),
+    loadCoursesArchiveFromIndexedDB().catch(() => [] as MicroCourse[]),
+    fetch('/api/sync?skipCloud=1', { headers: authHeaders })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => (j?.success && j?.data ? j.data : {}))
+      .catch(() => ({})),
+  ]);
+
+  const trashItems = getTrashBinItems();
+
+  const tombstonesByCategory: Record<RecoverableDataCategory, string[]> = {
+    exam: Array.from(new Set([...getDeletedExamIds(), ...(cloudRes.tombstones.deletedExamIds || []), ...(Array.isArray(serverData?.deletedExamIds) ? serverData.deletedExamIds : [])])),
+    bundle: Array.from(new Set([...getDeletedBundleIds(), ...(cloudRes.tombstones.deletedBundleIds || []), ...(Array.isArray(serverData?.deletedBundleIds) ? serverData.deletedBundleIds : [])])),
+    course: Array.from(new Set([...getDeletedCourseIds(), ...(cloudRes.tombstones.deletedCourseIds || []), ...(Array.isArray(serverData?.deletedCourseIds) ? serverData.deletedCourseIds : [])])),
+    classroom: Array.from(new Set([...getDeletedClassroomIds(), ...(cloudRes.tombstones.deletedClassroomIds || []), ...(Array.isArray(serverData?.deletedClassroomIds) ? serverData.deletedClassroomIds : [])])),
+    result: Array.from(new Set([...getDeletedResultIds(), ...(cloudRes.tombstones.deletedResultIds || []), ...(Array.isArray(serverData?.deletedResultIds) ? serverData.deletedResultIds : [])])),
+    classroomHomework: Array.from(new Set([...getDeletedClassroomHomeworkIds(), ...(cloudRes.tombstones.deletedClassroomHomeworkIds || []), ...(Array.isArray(serverData?.deletedClassroomHomeworkIds) ? serverData.deletedClassroomHomeworkIds : [])])),
+    homeworkSubmission: Array.from(new Set([...getDeletedHomeworkIds(), ...(cloudRes.tombstones.deletedHomeworkIds || []), ...(Array.isArray(serverData?.deletedHomeworkIds) ? serverData.deletedHomeworkIds : [])])),
+    scoreboard: Array.from(new Set([...getDeletedScoreboardIds(), ...(cloudRes.tombstones.deletedScoreboardIds || []), ...(Array.isArray(serverData?.deletedScoreboardIds) ? serverData.deletedScoreboardIds : [])])),
+    subject: Array.from(new Set([...getDeletedSubjectIds(), ...(cloudRes.tombstones.deletedSubjectIds || []), ...(Array.isArray(serverData?.deletedSubjectIds) ? serverData.deletedSubjectIds : [])])),
+  };
+
+  const tombSetByCat: Record<RecoverableDataCategory, Set<string>> = {
+    exam: new Set(tombstonesByCategory.exam),
+    bundle: new Set(tombstonesByCategory.bundle),
+    course: new Set(tombstonesByCategory.course),
+    classroom: new Set(tombstonesByCategory.classroom),
+    result: new Set(tombstonesByCategory.result),
+    classroomHomework: new Set(tombstonesByCategory.classroomHomework),
+    homeworkSubmission: new Set(tombstonesByCategory.homeworkSubmission),
+    scoreboard: new Set(tombstonesByCategory.scoreboard),
+    subject: new Set(tombstonesByCategory.subject),
+  };
+
+  const activeSetByCat: Record<RecoverableDataCategory, Set<string>> = {
+    exam: new Set(getAllExams().map((x) => x.id)),
+    bundle: new Set(getAllBundles().map((x) => x.id)),
+    course: new Set(getAllCourses().map((x) => x.id)),
+    classroom: new Set(getAllClassrooms().map((x) => x.id)),
+    result: new Set(getExamResults().map((x) => x.id)),
+    classroomHomework: new Set(getAllClassroomHomeworks().map((x) => x.id)),
+    homeworkSubmission: new Set(getAllHomeworkSubmissions().map((x) => x.id)),
+    scoreboard: new Set(getAllScoreboards().map((x) => x.id)),
+    subject: new Set(getAllSubjects().map((x) => x.id)),
+  };
+
+  const byKey = new Map<string, RecoverableDataEntry>();
+  const addEntry = (
+    category: RecoverableDataCategory,
+    item: any,
+    source: RecoverableDataSource,
+    trashId?: string
+  ) => {
+    if (!item || !item.id) return;
+    if (String(item.id).startsWith('exam_e2e_') || String(item.id).startsWith('course_e2e_')) return;
+    const uidKey = `${category}::${item.id}`;
+    const prev = byKey.get(uidKey);
+    const meta = formatEntryMeta(category, item);
+    const isTombstoned = tombSetByCat[category].has(item.id);
+    const isAlreadyActive = activeSetByCat[category].has(item.id);
+    const nextItemIsStub =
+      category === 'course' && item.schemaVersion === 2 && item.detailsLoaded === false;
+    const prevHasDetails =
+      category === 'course' &&
+      prev?.data &&
+      prev.data.detailsLoaded !== false &&
+      ((prev.data.chapters && prev.data.chapters.length > 0) ||
+        (prev.data.lessons && prev.data.lessons.length > 0));
+
+    if (!prev) {
+      byKey.set(uidKey, {
+        uidKey,
+        category,
+        id: item.id,
+        title: meta.title,
+        subtitle: meta.subtitle,
+        updatedAt: item.updatedAt || item.createdAt,
+        source,
+        isTombstoned,
+        isAlreadyActive,
+        data: item,
+        trashId,
+      });
+      return;
+    }
+
+    // Prefer hydrated details over metadata stub, or newer timestamp, or Trash/Cloud provenance
+    if (nextItemIsStub && prevHasDetails) {
+      if (trashId && !prev.trashId) prev.trashId = trashId;
+      return;
+    }
+    if (getSyncItemTs(item) > getSyncItemTs(prev.data) || (prev.data?.detailsLoaded === false && item.detailsLoaded !== false)) {
+      byKey.set(uidKey, {
+        uidKey,
+        category,
+        id: item.id,
+        title: meta.title,
+        subtitle: meta.subtitle,
+        updatedAt: item.updatedAt || item.createdAt,
+        source,
+        isTombstoned,
+        isAlreadyActive,
+        data: item,
+        trashId: trashId || prev.trashId,
+      });
+    } else if (trashId && !prev.trashId) {
+      prev.trashId = trashId;
+    }
+  };
+
+  // 1. Cloud Firestore live/tombstoned docs
+  cloudRes.exams.forEach((x) => addEntry('exam', x, 'cloud'));
+  cloudRes.bundles.forEach((x) => addEntry('bundle', x, 'cloud'));
+  cloudRes.courses.forEach((x) => addEntry('course', x, 'cloud'));
+  cloudRes.classrooms.forEach((x) => addEntry('classroom', x, 'cloud'));
+  cloudRes.results.forEach((x) => addEntry('result', x, 'cloud'));
+  cloudRes.classroomHomeworks.forEach((x) => addEntry('classroomHomework', x, 'cloud'));
+  cloudRes.homeworkSubmissions.forEach((x) => addEntry('homeworkSubmission', x, 'cloud'));
+  cloudRes.scoreboards.forEach((x) => addEntry('scoreboard', x, 'cloud'));
+  cloudRes.subjects.forEach((x) => addEntry('subject', x, 'cloud'));
+
+  // 2. IndexedDB Full Archive + Legacy Archives
+  fullIdb.customExams.forEach((x) => addEntry('exam', x, 'indexeddb'));
+  examIdb.forEach((x) => addEntry('exam', x, 'indexeddb'));
+  fullIdb.customBundles.forEach((x) => addEntry('bundle', x, 'indexeddb'));
+  fullIdb.courses.forEach((x) => addEntry('course', x, 'indexeddb'));
+  courseIdb.forEach((x) => addEntry('course', x, 'indexeddb'));
+  fullIdb.classrooms.forEach((x) => addEntry('classroom', x, 'indexeddb'));
+  fullIdb.results.forEach((x) => addEntry('result', x, 'indexeddb'));
+  fullIdb.classroomHomeworks.forEach((x) => addEntry('classroomHomework', x, 'indexeddb'));
+  fullIdb.homeworkSubmissions.forEach((x) => addEntry('homeworkSubmission', x, 'indexeddb'));
+  fullIdb.scoreboards.forEach((x) => addEntry('scoreboard', x, 'indexeddb'));
+  fullIdb.subjects.forEach((x) => addEntry('subject', x, 'indexeddb'));
+
+  // 3. Authenticated Express Server Backup (/api/sync)
+  (Array.isArray(serverData?.customExams) ? serverData.customExams : []).forEach((x: any) => addEntry('exam', x, 'server_backup'));
+  (Array.isArray(serverData?.customBundles) ? serverData.customBundles : []).forEach((x: any) => addEntry('bundle', x, 'server_backup'));
+  (Array.isArray(serverData?.courses) ? serverData.courses : []).forEach((x: any) => addEntry('course', x, 'server_backup'));
+  (Array.isArray(serverData?.classrooms) ? serverData.classrooms : []).forEach((x: any) => addEntry('classroom', x, 'server_backup'));
+  (Array.isArray(serverData?.results) ? serverData.results : []).forEach((x: any) => addEntry('result', x, 'server_backup'));
+  (Array.isArray(serverData?.classroomHomeworks) ? serverData.classroomHomeworks : []).forEach((x: any) => addEntry('classroomHomework', x, 'server_backup'));
+  (Array.isArray(serverData?.homeworkSubmissions) ? serverData.homeworkSubmissions : []).forEach((x: any) => addEntry('homeworkSubmission', x, 'server_backup'));
+  (Array.isArray(serverData?.scoreboards) ? serverData.scoreboards : []).forEach((x: any) => addEntry('scoreboard', x, 'server_backup'));
+  (Array.isArray(serverData?.subjects) ? serverData.subjects : []).forEach((x: any) => addEntry('subject', x, 'server_backup'));
+
+  // 4. In-app Trash Bin
+  trashItems.forEach((t) => {
+    const mappedCat = t.entityType as RecoverableDataCategory;
+    addEntry(mappedCat, t.data, 'trash', t.id);
+  });
+
+  // 5. Hidden items still sitting in raw localStorage but masked by tombstones
+  readRawArrayLocal(STORAGE_KEY_CUSTOM_EXAMS).forEach((x) => {
+    if (tombSetByCat.exam.has(x?.id)) addEntry('exam', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_CUSTOM_BUNDLES).forEach((x) => {
+    if (tombSetByCat.bundle.has(x?.id)) addEntry('bundle', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_COURSES).forEach((x) => {
+    if (tombSetByCat.course.has(x?.id)) addEntry('course', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_CLASSROOMS).forEach((x) => {
+    if (tombSetByCat.classroom.has(x?.id)) addEntry('classroom', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_RESULTS).forEach((x) => {
+    if (tombSetByCat.result.has(x?.id)) addEntry('result', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_CLASSROOM_HOMEWORKS).forEach((x) => {
+    if (tombSetByCat.classroomHomework.has(x?.id)) addEntry('classroomHomework', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_HOMEWORK_SUBMISSIONS).forEach((x) => {
+    if (tombSetByCat.homeworkSubmission.has(x?.id)) addEntry('homeworkSubmission', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_SCOREBOARDS).forEach((x) => {
+    if (tombSetByCat.scoreboard.has(x?.id)) addEntry('scoreboard', x, 'local_hidden');
+  });
+  readRawArrayLocal(STORAGE_KEY_CUSTOM_SUBJECTS).forEach((x) => {
+    if (tombSetByCat.subject.has(x?.id)) addEntry('subject', x, 'local_hidden');
+  });
+
+  // 6. Presets hidden by tombstones
+  PRESET_EXAMS.forEach((ex) => {
+    if (tombSetByCat.exam.has(ex.id)) addEntry('exam', ex, 'preset');
+  });
+  PRESET_BUNDLES.forEach((b) => {
+    if (tombSetByCat.bundle.has(b.id)) addEntry('bundle', b, 'preset');
+  });
+  DEFAULT_SUBJECTS.forEach((s) => {
+    if (tombSetByCat.subject.has(s.id)) addEntry('subject', s, 'preset');
+  });
+
+  const entries = Array.from(byKey.values());
+  const totalTombstonedCount = Object.values(tombstonesByCategory).reduce((sum, arr) => sum + arr.length, 0);
+  const missingOrHiddenCount = entries.filter((e) => !e.isAlreadyActive || e.isTombstoned || e.source === 'trash').length;
+
+  return {
+    entries,
+    tombstonesByCategory,
+    totalTombstonedCount,
+    missingOrHiddenCount,
+    error: cloudRes.error,
+  };
+}
+
+export async function restoreAllRecoverableData(
+  entriesToRestore: RecoverableDataEntry[],
+  options?: { clearAllTombstones?: boolean }
+): Promise<{ ok: boolean; restoredCount: number; error?: string }> {
+  try {
+    const curUser = getCurrentUser();
+    const nowIso = new Date().toISOString();
+    const clearAll = Boolean(options?.clearAllTombstones);
+
+    const byCat: Record<RecoverableDataCategory, any[]> = {
+      exam: [],
+      bundle: [],
+      course: [],
+      classroom: [],
+      result: [],
+      classroomHomework: [],
+      homeworkSubmission: [],
+      scoreboard: [],
+      subject: [],
+    };
+    const idsByCat: Record<RecoverableDataCategory, Set<string>> = {
+      exam: new Set(),
+      bundle: new Set(),
+      course: new Set(),
+      classroom: new Set(),
+      result: new Set(),
+      classroomHomework: new Set(),
+      homeworkSubmission: new Set(),
+      scoreboard: new Set(),
+      subject: new Set(),
+    };
+
+    const trashIdsToRemove: string[] = [];
+    entriesToRestore.forEach((e) => {
+      if (!e || !e.id || !e.data) return;
+      byCat[e.category].push(e.data);
+      idsByCat[e.category].add(e.id);
+      trashIdsToRemove.push(`${e.category}::${e.id}`);
+      if (e.trashId) trashIdsToRemove.push(e.trashId);
+    });
+
+    const unblockLocal = (storageKey: string, existingIds: string[], idSet: Set<string>) => {
+      const next = clearAll ? [] : existingIds.filter((id) => !idSet.has(id));
+      localStorage.setItem(storageKey, JSON.stringify(next));
+    };
+
+    unblockLocal(STORAGE_KEY_DELETED_EXAMS, getDeletedExamIds(), idsByCat.exam);
+    unblockLocal(STORAGE_KEY_DELETED_BUNDLES, getDeletedBundleIds(), idsByCat.bundle);
+    unblockLocal(STORAGE_KEY_DELETED_COURSES, getDeletedCourseIds(), idsByCat.course);
+    unblockLocal(STORAGE_KEY_DELETED_CLASSROOMS, getDeletedClassroomIds(), idsByCat.classroom);
+    unblockLocal(STORAGE_KEY_DELETED_RESULTS, getDeletedResultIds(), idsByCat.result);
+    unblockLocal(STORAGE_KEY_DELETED_CLASSROOM_HOMEWORKS, getDeletedClassroomHomeworkIds(), idsByCat.classroomHomework);
+    unblockLocal(STORAGE_KEY_DELETED_HOMEWORK, getDeletedHomeworkIds(), idsByCat.homeworkSubmission);
+    unblockLocal(STORAGE_KEY_DELETED_SCOREBOARDS, getDeletedScoreboardIds(), idsByCat.scoreboard);
+    unblockLocal(STORAGE_KEY_DELETED_SUBJECTS, getDeletedSubjectIds(), idsByCat.subject);
+
+    if (clearAll) {
+      localStorage.removeItem(STORAGE_KEY_TRASH_BIN);
+    } else if (trashIdsToRemove.length > 0) {
+      removeItemsFromTrashBin(trashIdsToRemove);
+    }
+
+    const mergeIntoLocalKey = (storageKey: string, items: any[], colName: string, presetIdSet?: Set<string>): any[] | null => {
+      if (items.length === 0) return null;
+      const curList = readRawArrayLocal(storageKey);
+      const map = new Map<string, any>();
+      curList.forEach((x) => {
+        if (x?.id) map.set(x.id, x);
+      });
+      items.forEach((item) => {
+        if (!item?.id) return;
+        if (presetIdSet && presetIdSet.has(item.id) && !item.isCustom) return;
+        const prev = map.get(item.id);
+        const isStubCourse = colName === 'courses' && item.schemaVersion === 2 && item.detailsLoaded === false;
+        const prevHasCourseDetails =
+          colName === 'courses' &&
+          prev &&
+          prev.detailsLoaded !== false &&
+          ((Array.isArray(prev.chapters) && prev.chapters.length > 0) ||
+            (Array.isArray(prev.lessons) && prev.lessons.length > 0));
+        const stamped =
+          isStubCourse && prevHasCourseDetails
+            ? {
+                ...prev,
+                ...item,
+                chapters: prev.chapters,
+                lessons: prev.lessons,
+                detailsLoaded: true,
+                updatedAt: item.updatedAt || prev.updatedAt || nowIso,
+              }
+            : {
+                ...item,
+                updatedAt: item.updatedAt || nowIso,
+                ...(colName === 'exams' || colName === 'bundles' ? { isCustom: item.isCustom ?? true } : {}),
+              };
+        map.set(stamped.id, stamped);
+        markDirtyCloudEntity(colName, stamped.id);
+      });
+      const mergedArr = Array.from(map.values());
+      safeLocalStorageSetItem(storageKey, JSON.stringify(mergedArr));
+      return mergedArr;
+    };
+
+    const nextExamsRestored = mergeIntoLocalKey(STORAGE_KEY_CUSTOM_EXAMS, byCat.exam, 'exams', new Set(PRESET_EXAMS.map((p) => p.id)));
+    mergeIntoLocalKey(STORAGE_KEY_CUSTOM_BUNDLES, byCat.bundle, 'bundles', new Set(PRESET_BUNDLES.map((p) => p.id)));
+    const nextCoursesRestored = mergeIntoLocalKey(STORAGE_KEY_COURSES, byCat.course, 'courses');
+    mergeIntoLocalKey(STORAGE_KEY_CLASSROOMS, byCat.classroom.map(sanitizeClassroomStudents), 'classrooms');
+    mergeIntoLocalKey(STORAGE_KEY_RESULTS, byCat.result, 'results');
+    mergeIntoLocalKey(STORAGE_KEY_CLASSROOM_HOMEWORKS, byCat.classroomHomework, 'classroomHomeworks');
+    mergeIntoLocalKey(STORAGE_KEY_HOMEWORK_SUBMISSIONS, byCat.homeworkSubmission, 'homeworkSubmissions');
+    mergeIntoLocalKey(STORAGE_KEY_SCOREBOARDS, byCat.scoreboard, 'scoreboards');
+
+    if (byCat.subject.length > 0) {
+      const curSubj = readRawArrayLocal(STORAGE_KEY_CUSTOM_SUBJECTS);
+      const map = new Map<string, any>();
+      curSubj.forEach((s) => {
+        if (s?.id) map.set(s.id, s);
+      });
+      byCat.subject.forEach((s) => {
+        if (s?.id) map.set(s.id, { ...s, updatedAt: s.updatedAt || nowIso });
+      });
+      localStorage.setItem(STORAGE_KEY_CUSTOM_SUBJECTS, JSON.stringify(Array.from(map.values())));
+      markDirtySiteConfig('subjects');
+    }
+
+    if (entriesToRestore.length > 0 || clearAll) {
+      markDirtySiteConfig('tombstones');
+    }
+
+    const snapshot = {
+      ...buildFullSyncPayload(),
+      ...(nextExamsRestored ? { customExams: nextExamsRestored } : {}),
+      ...(nextCoursesRestored ? { courses: nextCoursesRestored } : {}),
+    };
+    saveSnapshotToIndexedDB(snapshot);
+
+    const unblockPayload = {
+      exams: Array.from(idsByCat.exam),
+      bundles: Array.from(idsByCat.bundle),
+      courses: Array.from(idsByCat.course),
+      classrooms: Array.from(idsByCat.classroom),
+      results: Array.from(idsByCat.result),
+      classroomHomeworks: Array.from(idsByCat.classroomHomework),
+      homeworkSubmissions: Array.from(idsByCat.homeworkSubmission),
+      scoreboards: Array.from(idsByCat.scoreboard),
+      subjects: Array.from(idsByCat.subject),
+    };
+
+    const fbUser = getFirebaseAuthUser();
+    if (fbUser && !fbUser.isAnonymous) {
+      await clearAllCloudTombstonesAndRestore(
+        {
+          clearAllTombstones: clearAll,
+          unblockIds: unblockPayload,
+        },
+        curUser
+      );
+
+      const authHeaders = await getAuthHeaders();
+      if (authHeaders.Authorization) {
+        await fetch('/api/sync/clear-tombstones', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify({
+            clearAllTombstones: clearAll,
+            unblockIds: unblockPayload,
+          }),
+        }).catch(() => {});
+      }
+
+      hasLocalMutations = true;
+      lastLocalMutationMs = Date.now();
+      await triggerCloudSync({ forceFull: true });
+    }
+
+    return { ok: true, restoredCount: entriesToRestore.length };
+  } catch (err: any) {
+    return { ok: false, restoredCount: 0, error: err?.message || String(err) };
+  }
+}
+
 
 

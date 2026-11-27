@@ -63,6 +63,8 @@ import {
   syncClassAssignmentForItem,
 } from '../utils/storage';
 import { processImageFile } from '../utils/imageUpload';
+import { uploadImageOrKeepFallback } from '../utils/courseMedia';
+import { ResilientImage } from './ResilientImage';
 import { CopyContentButton } from './CopyContentButton';
 import { formatQuestionForCopy } from '../utils/clipboard';
 import {
@@ -714,12 +716,13 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
     };
     try {
       const compressed = await processImageFile(pastedFile, 1200, 0.85);
+      const uploadedUrl = await uploadImageOrKeepFallback(compressed, pastedFile.name || 'exam_paste.png');
       setCursorImageModal({
         isOpen: true,
         qIdx,
         subIdx,
         field,
-        initialImageSrc: compressed,
+        initialImageSrc: uploadedUrl,
         targetEl: el,
         range,
         targetLabel,
@@ -2562,11 +2565,10 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                                 )}
                                 {optImg && (
                                   <div className="mt-1">
-                                    <img
+                                    <ResilientImage
                                       src={optImg}
                                       alt={`Phương án ${letter}`}
-                                      className="max-h-28 rounded border border-slate-200 object-contain"
-                                      referrerPolicy="no-referrer"
+                                      className="max-h-28 max-w-full rounded border border-slate-200 object-contain"
                                     />
                                   </div>
                                 )}
@@ -2690,11 +2692,10 @@ export const CustomExamCreator: React.FC<CustomExamCreatorProps> = ({
                                             />
                                           )}
                                           {sOptImg && (
-                                            <img
+                                            <ResilientImage
                                               src={sOptImg}
                                               alt={`Phương án ${sLetter}`}
-                                              className="max-h-20 rounded border border-slate-200 object-contain mt-1"
-                                              referrerPolicy="no-referrer"
+                                              className="max-h-20 max-w-full rounded border border-slate-200 object-contain mt-1"
                                             />
                                           )}
                                         </div>

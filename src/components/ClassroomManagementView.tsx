@@ -1203,7 +1203,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
       message: `Bạn có chắc chắn muốn xóa khóa học "${course.title}"? Toàn bộ chương, bài học và nội dung tương tác của khóa học này sẽ bị xóa.`,
       confirmText: 'Xóa khóa học',
       onConfirm: () => {
-        deleteCourse(course.id);
+        deleteCourse(course.id, { confirmedByUser: true });
         onRefreshData();
         setSaveToast(`✓ Đã xóa khóa học "${course.title}"!`);
         setTimeout(() => setSaveToast(null), 3500);
@@ -1220,7 +1220,7 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
       message: `Bạn có chắc chắn muốn xóa hoàn toàn lớp học "${deletingClass.name}" (Mã: ${deletingClass.code})? Danh sách học sinh và yêu cầu của lớp này sẽ bị xóa.`,
       confirmText: 'Xóa lớp học',
       onConfirm: () => {
-        deleteClassroom(deletingClass.id);
+        deleteClassroom(deletingClass.id, { confirmedByUser: true });
         const remaining = visibleClassrooms.filter((c) => c.id !== deletingClass.id);
         setSelectedClassId(remaining[0]?.id || '');
         onRefreshData();
@@ -3163,11 +3163,21 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
 
       {/* MODAL: CREATE CLASSROOM */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200 space-y-4">
-            <h3 className="text-base font-bold text-slate-900">
-              Tạo Lớp học mới
-            </h3>
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-xl border border-slate-200 overflow-hidden">
+            <div className="px-4 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3 shrink-0 bg-white">
+              <h3 className="text-base font-bold text-slate-900">
+                Tạo Lớp học mới
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsCreateModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-6 space-y-4">
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
                 Tên lớp học <span className="text-rose-500">*</span>
@@ -3270,18 +3280,19 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 sm:px-6 py-3.5 border-t border-slate-100 bg-slate-50/90 shrink-0">
               <button
                 type="button"
                 onClick={() => setIsCreateModalOpen(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                className="px-4 py-2 text-xs font-semibold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer"
               >
                 Hủy
               </button>
               <button
                 type="button"
                 onClick={handleCreateClass}
-                className="px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                className="px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer shadow-xs"
               >
                 Tạo lớp ngay
               </button>
@@ -3292,27 +3303,28 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
 
       {/* MODAL: ASSIGN COURSES TO CLASSROOM */}
       {isAssignCoursesModalOpen && currentClass && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <GraduationCap className="w-5 h-5 text-teal-600" />
-                <span>Quản lý Khóa học của lớp {currentClass.name}</span>
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-slate-100 bg-white shrink-0">
+              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 min-w-0">
+                <GraduationCap className="w-5 h-5 text-teal-600 shrink-0" />
+                <span className="truncate">Quản lý Khóa học của lớp {currentClass.name}</span>
               </h3>
               <button
                 type="button"
                 onClick={() => setIsAssignCoursesModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                className="text-slate-400 hover:text-slate-600 p-1.5 hover:bg-slate-100 rounded-lg cursor-pointer shrink-0"
               >
                 ✕
               </button>
             </div>
 
+            <div className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-6 space-y-3">
             <p className="text-xs text-slate-600">
               Chọn các khóa học lý thuyết và câu hỏi tương tác để giao cho học sinh trong lớp học này:
             </p>
 
-            <div className="max-h-60 overflow-y-auto border rounded-xl p-3 space-y-2 text-xs">
+            <div className="border rounded-xl p-3 space-y-2 text-xs">
               {selectableCoursesForTeacher.length === 0 ? (
                 <div className="text-slate-400 text-center py-4">Chưa có khóa học khả dụng để gán vào lớp.</div>
               ) : (
@@ -3348,12 +3360,13 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
                 })
               )}
             </div>
+            </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="flex items-center justify-end gap-2 px-4 sm:px-6 py-3.5 border-t border-slate-100 bg-slate-50/90 shrink-0">
               <button
                 type="button"
                 onClick={() => setIsAssignCoursesModalOpen(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                className="px-4 py-2 text-xs font-semibold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer"
               >
                 Hủy
               </button>
@@ -3407,8 +3420,8 @@ export const ClassroomManagementView: React.FC<ClassroomManagementViewProps> = (
         const selectableAccounts = filteredDirectory.filter((acc) => !isAlreadyEnrolled(acc));
 
         return (
-          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl max-w-2xl w-full p-5 sm:p-6 shadow-xl border border-slate-200 space-y-4 max-h-[90vh] flex flex-col">
+          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+            <div className="bg-white rounded-2xl max-w-2xl w-full p-4 sm:p-6 shadow-xl border border-slate-200 space-y-4 max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] overflow-hidden flex flex-col">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3 className="text-base font-bold text-slate-900">

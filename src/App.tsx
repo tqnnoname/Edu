@@ -61,7 +61,9 @@ import {
   getUserAttemptCountForExam,
   getUserAttemptCountForBundle,
   getAllClassroomHomeworks,
-  getAllHomeworkSubmissions
+  getAllHomeworkSubmissions,
+  getTotalLocalTombstoneCount,
+  getTrashBinItems
 } from './utils/storage';
 import {
   buildDerivedNotifications,
@@ -108,6 +110,10 @@ import { TeacherToolsView } from './components/TeacherToolsView';
 import { ExamScorePresentationView } from './components/ExamScorePresentationView';
 import { RoomLockGuard, tryEnterKioskFullscreen } from './components/RoomLockGuard';
 import { NotificationCenterModal } from './components/NotificationCenterModal';
+import { ExamRecoveryModal } from './components/ExamRecoveryModal';
+import { FullDataRecoveryModal } from './components/FullDataRecoveryModal';
+import { ResilientImage } from './components/ResilientImage';
+import heroExamImg from './assets/images/hero_exam_study_1793293047418.jpg';
 import { exportExamToWord, exportResultsToExcel } from './utils/exportFiles';
 import { 
   Search, 
@@ -148,7 +154,8 @@ import {
   Check,
   Award,
   Lock,
-  Gamepad2
+  Gamepad2,
+  WifiOff
 } from 'lucide-react';
 import {
   buildAppUrlPath,
@@ -232,6 +239,11 @@ export default function App() {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [isExamRecoveryOpen, setIsExamRecoveryOpen] = useState(false);
+  const [isFullRecoveryOpen, setIsFullRecoveryOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
   const [selectedCourseIdForView, setSelectedCourseIdForView] = useState<string>(
     initialParsedRoute.courseId || ''
   );
@@ -352,34 +364,55 @@ export default function App() {
     window.addEventListener('edutest-auth-profile-synced', handleProfileSynced);
 
     let lastFocusSyncAt = Date.now();
-    let hiddenSinceAt = 0;
     const handleVisibilityOrFocus = () => {
-      if (document.visibilityState === 'hidden') {
-        hiddenSinceAt = Date.now();
-        return;
-      }
       if (document.visibilityState === 'visible') {
         const now = Date.now();
-        const hiddenDuration = hiddenSinceAt > 0 ? now - hiddenSinceAt : 0;
-        hiddenSinceAt = 0;
-        // Only delta-refresh when returning from an extended background sleep (>= 2 min) & cooldown >= 3 min
-        if (hiddenDuration < 120_000 || now - lastFocusSyncAt < 180_000) return;
+        if (now - lastFocusSyncAt < 15_000) return;
         lastFocusSyncAt = now;
-        syncAll({ minIntervalMs: 120_000 });
+        syncAll({ minIntervalMs: 15_000 });
       }
     };
+    const handleOnline = () => {
+      setIsOnline(true);
+      syncAll({ minIntervalMs: 5_000 });
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
 
     const handleStorageSync = () => {
       refreshAllData();
     };
+    const handleAutoRecovered = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ restoredCount?: number; restoredTitles?: string[] }>).detail;
+      refreshAllData();
+      const count = detail?.restoredCount || 0;
+      if (count > 0) {
+        const previewTitles = (detail?.restoredTitles || []).slice(0, 2).join(', ');
+        setSyncToast(
+          previewTitles
+            ? `✓ Đã tự động khôi phục ${count} dữ liệu bị ẩn (${previewTitles}${count > 2 ? '...' : ''})!`
+            : `✓ Đã tự động khôi phục ${count} mục dữ liệu và đồng bộ Cloud!`
+        );
+        setTimeout(() => setSyncToast(null), 6000);
+      }
+    };
     window.addEventListener('storage', handleStorageSync);
+    window.addEventListener('edutest-data-auto-recovered', handleAutoRecovered);
     return () => {
       unsubscribeSyncState();
       unsubscribeAuth();
       window.removeEventListener('edutest-auth-profile-synced', handleProfileSynced);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       window.removeEventListener('storage', handleStorageSync);
+      window.removeEventListener('edutest-data-auto-recovered', handleAutoRecovered);
     };
   }, []);
 
@@ -1090,7 +1123,8 @@ export default function App() {
       sourceClassId || (exam.visibility === 'class' ? exam.assignedClassId || null : null);
 
     // Require entering Mã đề thi + Mã dự thi ONCE before entering exam (without pre-filled numbers)
-    const isCreatorTeacher = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(exam, currentUser);
+    const isCreatorTeacher =
+      isActualTeacher && userRole === 'teacher' && (isCreatorOfItem(exam, currentUser) || isMasterAdmin);
     if (!isCreatorTeacher && userRole === 'student' && (mode === 'exam' || exam.requireAccessCode) && !candidateNameOverride) {
       setAccessModalTarget({
         exam,
@@ -1135,7 +1169,7 @@ export default function App() {
   };
 
   const handleEditExam = (exam: Exam) => {
-    if (!isActualTeacher || userRole !== 'teacher' || !isCreatorOfItem(exam, currentUser)) return;
+    if (!isActualTeacher || userRole !== 'teacher' || (!isCreatorOfItem(exam, currentUser) && !isMasterAdmin)) return;
     setEditingExam(exam);
     setCurrentView('create');
   };
@@ -1157,7 +1191,7 @@ export default function App() {
   };
 
   const handleEditBundle = (bundle: ExamBundle) => {
-    if (!isActualTeacher || userRole !== 'teacher' || !isCreatorOfItem(bundle, currentUser)) return;
+    if (!isActualTeacher || userRole !== 'teacher' || (!isCreatorOfItem(bundle, currentUser) && !isMasterAdmin)) return;
     setEditingBundle(bundle);
     setCurrentView('bundle-create');
   };
@@ -1229,7 +1263,7 @@ export default function App() {
       cancelText: 'Hủy bỏ',
       isDanger: true,
       onConfirm: () => {
-        deleteExamResult(targetResult.id);
+        deleteExamResult(targetResult.id, { confirmedByUser: true });
         setResults(getExamResults());
       },
     });
@@ -1245,7 +1279,7 @@ export default function App() {
       cancelText: 'Hủy bỏ',
       isDanger: true,
       onConfirm: () => {
-        clearExamResults();
+        clearExamResults({ confirmedByUser: true });
         setResults(getExamResults());
       },
     });
@@ -1254,7 +1288,7 @@ export default function App() {
   const handleSaveCustomExam = (newExam: Exam) => {
     if (!isActualTeacher || userRole !== 'teacher') return;
     const existingTarget = exams.find((e) => e.id === newExam.id);
-    if (existingTarget && !isCreatorOfItem(existingTarget, currentUser)) {
+    if (existingTarget && !isCreatorOfItem(existingTarget, currentUser) && !isMasterAdmin) {
       setSyncToast('Bạn không có quyền chỉnh sửa đề thi gốc của giáo viên khác. Hãy sao chép hoặc lấy câu hỏi về đề mới.');
       setTimeout(() => setSyncToast(null), 4000);
       return;
@@ -1301,7 +1335,7 @@ export default function App() {
   const handleDeleteCustomExam = (examId: string) => {
     if (!isActualTeacher || userRole !== 'teacher') return;
     const target = exams.find((e) => e.id === examId);
-    if (target && !isCreatorOfItem(target, currentUser)) return;
+    if (target && !isCreatorOfItem(target, currentUser) && !isMasterAdmin) return;
     const title = target ? `"${target.title}"` : 'đề thi này';
     setConfirmModal({
       isOpen: true,
@@ -1311,7 +1345,7 @@ export default function App() {
       cancelText: 'Hủy bỏ',
       isDanger: true,
       onConfirm: () => {
-        deleteCustomExam(examId);
+        deleteCustomExam(examId, { confirmedByUser: true });
         refreshAllData();
       },
     });
@@ -1327,7 +1361,7 @@ export default function App() {
       cancelText: 'Hủy bỏ',
       isDanger: true,
       onConfirm: () => {
-        deleteAllExams();
+        deleteAllExams({ confirmedByUser: true });
         refreshAllData();
       },
     });
@@ -1392,7 +1426,8 @@ export default function App() {
     const resolvedClassId =
       sourceClassId || (bundle.visibility === 'class' ? bundle.assignedClassId || null : null);
 
-    const isCreatorTeacher = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(bundle, currentUser);
+    const isCreatorTeacher =
+      isActualTeacher && userRole === 'teacher' && (isCreatorOfItem(bundle, currentUser) || isMasterAdmin);
     if (!isCreatorTeacher && userRole === 'student' && !candidateNameOverride) {
       setAccessModalTarget({
         exam: null,
@@ -1607,7 +1642,7 @@ export default function App() {
   const handleSaveCustomBundle = (newBundle: ExamBundle) => {
     if (!isActualTeacher || userRole !== 'teacher') return;
     const existingTarget = bundles.find((b) => b.id === newBundle.id);
-    if (existingTarget && !isCreatorOfItem(existingTarget, currentUser)) {
+    if (existingTarget && !isCreatorOfItem(existingTarget, currentUser) && !isMasterAdmin) {
       setSyncToast('Bạn không có quyền chỉnh sửa tổ hợp đề thi gốc của giáo viên khác.');
       setTimeout(() => setSyncToast(null), 4000);
       return;
@@ -1622,7 +1657,7 @@ export default function App() {
   const handleDeleteCustomBundle = (bundleId: string) => {
     if (!isActualTeacher || userRole !== 'teacher') return;
     const target = bundles.find((b) => b.id === bundleId);
-    if (target && !isCreatorOfItem(target, currentUser)) return;
+    if (target && !isCreatorOfItem(target, currentUser) && !isMasterAdmin) return;
     const title = target ? `"${target.title}"` : 'tổ hợp môn này';
     setConfirmModal({
       isOpen: true,
@@ -1632,7 +1667,7 @@ export default function App() {
       cancelText: 'Hủy bỏ',
       isDanger: true,
       onConfirm: () => {
-        deleteCustomBundle(bundleId);
+        deleteCustomBundle(bundleId, { confirmedByUser: true });
         refreshAllData();
       },
     });
@@ -1826,7 +1861,7 @@ export default function App() {
           <span>{navTabs.filter((t) => t.isVisible !== false).length} mục</span>
         </div>
 
-        <nav className="space-y-1.5 overflow-y-auto max-h-[calc(100vh-340px)] pr-1">
+        <nav className="space-y-1.5 overflow-y-auto scroll-lane max-h-[calc(100dvh-320px)] pr-1">
           {navTabs
             .filter((t) => t.isVisible !== false)
             .map((tab) => {
@@ -1952,6 +1987,28 @@ export default function App() {
               >
                 <SlidersHorizontal className="w-3.5 h-3.5 text-slate-500" />
                 <span>Tùy biến Menu & Môn học</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsFullRecoveryOpen(true);
+                  setIsMobileNavOpen(false);
+                }}
+                className="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl text-xs font-bold text-emerald-800 bg-emerald-50/80 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <RotateCcw className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                  <span className="truncate">Khôi phục &amp; Thùng rác</span>
+                </span>
+                {(() => {
+                  const recoveryBadgeCount = getTotalLocalTombstoneCount() + getTrashBinItems().length;
+                  return recoveryBadgeCount > 0 ? (
+                    <span className="px-1.5 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-extrabold tabular-nums shrink-0">
+                      {recoveryBadgeCount}
+                    </span>
+                  ) : null;
+                })()}
               </button>
             </div>
           )}
@@ -2343,9 +2400,9 @@ export default function App() {
 
       {/* Non-taking views with Left Sidebar Layout */}
       {currentView !== 'taking' && currentView !== 'bundle-taking' && (
-        <div className="flex flex-col lg:flex-row flex-1 min-h-screen">
+        <div className="flex flex-col lg:flex-row flex-1 min-h-screen overflow-x-hidden pb-20 lg:pb-0">
           {/* Left Sidebar (Desktop: Sticky w-72 xl:w-80) */}
-          <aside className="hidden lg:flex w-72 xl:w-80 shrink-0 bg-white border-r border-slate-200 sticky top-0 h-screen overflow-y-auto p-4 z-30 flex-col justify-between">
+          <aside className="hidden lg:flex w-72 xl:w-80 shrink-0 bg-white border-r border-slate-200 sticky top-0 h-[100dvh] overflow-y-auto scroll-lane p-4 z-30 flex-col justify-between">
             {renderSidebarNav()}
           </aside>
 
@@ -2356,7 +2413,7 @@ export default function App() {
                 className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
                 onClick={() => setIsMobileNavOpen(false)}
               />
-              <aside className="relative w-80 max-w-[85vw] bg-white h-full p-4 overflow-y-auto z-10 shadow-2xl flex flex-col justify-between">
+              <aside className="relative w-80 max-w-[85vw] bg-white h-[100dvh] p-4 overflow-y-auto scroll-lane z-10 shadow-2xl flex flex-col justify-between pb-safe">
                 {renderSidebarNav()}
               </aside>
             </div>
@@ -2364,13 +2421,19 @@ export default function App() {
 
           {/* Main Content Area */}
           <div className="flex-1 min-w-0 flex flex-col">
+            {!isOnline && (
+              <div className="bg-amber-600 text-white px-4 py-1.5 text-xs font-bold flex items-center justify-center gap-2">
+                <WifiOff className="w-3.5 h-3.5 shrink-0" />
+                <span>Đang mất kết nối mạng — Thay đổi sẽ tự động lưu cục bộ và đồng bộ ngay khi có mạng.</span>
+              </div>
+            )}
             {/* Compact Top Header Bar */}
-            <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0 flex-1">
+            <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs px-3 sm:px-6 py-2.5 sm:py-3 flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+              <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
                 <button
                   type="button"
                   onClick={() => setIsMobileNavOpen(true)}
-                  className="lg:hidden p-2 rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-200 cursor-pointer shrink-0"
+                  className="lg:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-200 cursor-pointer shrink-0"
                   aria-label="Mở menu điều hướng"
                 >
                   <Menu className="w-5 h-5" />
@@ -2591,7 +2654,7 @@ export default function App() {
 
 {/* View 3: Bundle Result Summary */}
       {currentView === 'bundle-result' && activeBundleSession && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           <BundleResultSummary
             bundle={activeBundleSession.bundle}
             results={activeBundleSession.results}
@@ -2606,7 +2669,7 @@ export default function App() {
 
       {/* View 4: Single Exam Result View */}
       {currentView === 'result' && currentResult && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           <ExamResultView
             result={currentResult}
             onRetake={() => {
@@ -2625,7 +2688,7 @@ export default function App() {
 
       {/* View 5: Custom Single Exam Creator */}
       {currentView === 'create' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           {isActualTeacher ? (
             <CustomExamCreator
               initialExam={editingExam}
@@ -2661,7 +2724,7 @@ export default function App() {
 
       {/* View 6: Multi-subject Bundle Creator */}
       {currentView === 'bundle-create' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           {isActualTeacher ? (
             <BundleCreator
               availableExams={visibleLibraryExams}
@@ -2698,7 +2761,7 @@ export default function App() {
 
       {/* View 7: Exam History */}
       {currentView === 'history' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           <ExamHistoryView
             results={results}
             exams={exams}
@@ -2719,7 +2782,7 @@ export default function App() {
 
       {/* View 8: Classroom Management & Analytics */}
       {currentView === 'classrooms' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           <ClassroomManagementView
             classrooms={classrooms}
             allExams={exams}
@@ -2763,7 +2826,7 @@ export default function App() {
 
       {/* View 9: Micro-Courses (Khóa học nhỏ) */}
       {currentView === 'courses' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           <MicroCoursesView
             courses={courses}
             allExams={exams}
@@ -2805,7 +2868,7 @@ export default function App() {
 
       {/* View 10b: Dedicated Private Student Competency Tab */}
       {currentView === 'analytics' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           <StudentCompetencyView
             currentUser={currentUser}
             results={results}
@@ -2833,7 +2896,7 @@ export default function App() {
 
       {/* View 10c: Teacher Tools (Scoreboards, Odometer Reveal, FLIP Ranking, Mode Sync & Hidden Exams) */}
       {currentView === 'teacher-tools' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           {isActualTeacher ? (
             <TeacherToolsView
               currentUser={currentUser}
@@ -2870,7 +2933,7 @@ export default function App() {
 
       {/* View 11: Home / Library */}
       {currentView === 'home' && (
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           {/* Hero Section */}
           <section className="bg-white border-b border-slate-200 overflow-hidden">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 lg:py-14">
@@ -2947,14 +3010,10 @@ export default function App() {
                 {/* Right Hero Visual Banner (5 cols) */}
                 <div className="lg:col-span-5">
                   <div className="relative rounded-2xl overflow-hidden border border-slate-200 shadow-md aspect-16/10 bg-slate-100">
-                    <img
-                      src="/src/assets/images/hero_exam_study_1793293047418.jpg"
+                    <ResilientImage
+                      src={heroExamImg}
                       alt="Bàn học và không gian làm bài thi trực tuyến EduTest"
                       className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        (e.target as HTMLElement).style.display = 'none';
-                      }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-slate-900/70 via-slate-900/15 to-transparent pointer-events-none" />
                     <div className="absolute bottom-3 left-3 right-3 text-white text-xs font-medium px-2.5 py-1.5 rounded-lg bg-slate-950/45 backdrop-blur-xs flex flex-wrap items-center justify-between gap-2">
@@ -3155,6 +3214,28 @@ export default function App() {
                       <span>Xuất Excel KQ ({results.length})</span>
                     </button>
                   )}
+                  {isActualTeacher && userRole === 'teacher' && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setIsExamRecoveryOpen(true)}
+                        className="px-4 py-2.5 font-bold text-xs sm:text-sm text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 shadow-2xs"
+                        title="Quét và khôi phục đề thi đã bị xóa, bị ẩn hoặc mất đồng bộ"
+                      >
+                        <RotateCcw className="w-4 h-4 text-indigo-700" />
+                        <span>Khôi phục đề</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsFullRecoveryOpen(true)}
+                        className="px-4 py-2.5 font-bold text-xs sm:text-sm text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 shadow-2xs"
+                        title="Quét và khôi phục toàn bộ đề thi, khóa học, lớp học, kết quả, bài tập và Thùng rác"
+                      >
+                        <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                        <span>Khôi phục tất cả &amp; Thùng rác</span>
+                      </button>
+                    </>
+                  )}
                   {isMasterAdmin && userRole === 'teacher' && visibleLibraryExams.length > 0 && (
                     <button
                       onClick={handleDeleteAllExams}
@@ -3207,6 +3288,20 @@ export default function App() {
                         {isActualTeacher && userRole === 'teacher' && (
                           <div className="flex flex-wrap items-center justify-center gap-3">
                             <button
+                              onClick={() => setIsFullRecoveryOpen(true)}
+                              className="py-2.5 px-4 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>Khôi phục tất cả dữ liệu</span>
+                            </button>
+                            <button
+                              onClick={() => setIsExamRecoveryOpen(true)}
+                              className="py-2.5 px-4 text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>Khôi phục đề thi đã mất</span>
+                            </button>
+                            <button
                               onClick={() => setCurrentView('create')}
                               className="py-2.5 px-4 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
                             >
@@ -3242,7 +3337,8 @@ export default function App() {
                       const isEnrolled = exam.assignedClassId
                         ? classrooms.some((c) => c.id === exam.assignedClassId && isStudentMemberOfClass(c, currentUser))
                         : true;
-                      const isCreator = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(exam, currentUser);
+                      const isCreator =
+                        isActualTeacher && userRole === 'teacher' && (isCreatorOfItem(exam, currentUser) || isMasterAdmin);
                       const examResultCount = results.filter((r) => r.examId === exam.id).length;
                       const userAttemptCount = getUserAttemptCountForExam(exam.id, results, currentUser, candidateProfile);
                       return (
@@ -3336,7 +3432,8 @@ export default function App() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {filteredBundles.map((bundle) => {
-                      const isCreator = isActualTeacher && userRole === 'teacher' && isCreatorOfItem(bundle, currentUser);
+                      const isCreator =
+                        isActualTeacher && userRole === 'teacher' && (isCreatorOfItem(bundle, currentUser) || isMasterAdmin);
                       const userBundleAttempts = getUserAttemptCountForBundle(bundle, results, currentUser, candidateProfile);
                       return (
                         <BundleCard
@@ -3701,15 +3798,120 @@ export default function App() {
         }}
       />
 
+      {/* Exam Recovery Modal */}
+      <ExamRecoveryModal
+        isOpen={isExamRecoveryOpen}
+        onClose={() => setIsExamRecoveryOpen(false)}
+        onRestored={(count) => {
+          refreshAllData();
+          if (count > 0) {
+            setSyncToast(`✓ Đã khôi phục ${count} đề thi và đồng bộ lên Cloud!`);
+            setTimeout(() => setSyncToast(null), 4000);
+          }
+        }}
+      />
+
+      {/* Full Data Recovery & Trash Center Modal */}
+      <FullDataRecoveryModal
+        isOpen={isFullRecoveryOpen}
+        onClose={() => setIsFullRecoveryOpen(false)}
+        onRestored={(count) => {
+          refreshAllData();
+          if (count > 0) {
+            setSyncToast(`✓ Đã khôi phục ${count} mục dữ liệu và gỡ chặn đồng bộ Cloud!`);
+            setTimeout(() => setSyncToast(null), 4500);
+          }
+        }}
+      />
+
+      {/* Mobile Thumb-Zone Bottom Navigation Bar */}
+      {currentView !== 'taking' && currentView !== 'bundle-taking' && (
+        <nav
+          aria-label="Điều hướng nhanh trên điện thoại"
+          className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 px-2 pt-1.5 pb-safe shadow-[0_-4px_16px_rgba(15,23,42,0.06)] grid grid-cols-5 gap-1"
+        >
+          {[
+            {
+              id: 'home',
+              label: 'Đề thi',
+              Icon: BookOpen,
+              active: currentView === 'home',
+              onClick: () =>
+                requestProtectedNavigate(() => {
+                  setCurrentView('home');
+                  setIsMobileNavOpen(false);
+                }),
+            },
+            {
+              id: 'courses',
+              label: 'Khóa học',
+              Icon: GraduationCap,
+              active: currentView === 'courses',
+              onClick: () =>
+                requestProtectedNavigate(() => {
+                  setCurrentView('courses');
+                  setIsMobileNavOpen(false);
+                }),
+            },
+            {
+              id: 'classrooms',
+              label: 'Lớp học',
+              Icon: Users,
+              active: currentView === 'classrooms',
+              onClick: () =>
+                requestProtectedNavigate(() => {
+                  setCurrentView('classrooms');
+                  setIsMobileNavOpen(false);
+                }),
+            },
+            {
+              id: 'games',
+              label: 'Trò chơi',
+              Icon: Gamepad2,
+              active: currentView === 'games',
+              onClick: () =>
+                requestProtectedNavigate(() => {
+                  setCurrentView('games');
+                  setIsMobileNavOpen(false);
+                }),
+            },
+            {
+              id: 'more',
+              label: 'Menu',
+              Icon: Menu,
+              active: isMobileNavOpen,
+              onClick: () => setIsMobileNavOpen(true),
+            },
+          ].map((item) => {
+            const NavIcon = item.Icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={item.onClick}
+                className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-1 text-[10px] font-bold transition-colors cursor-pointer ${
+                  item.active
+                    ? 'text-blue-700 bg-blue-50/90'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <NavIcon className={`w-4 h-4 ${item.active ? 'text-blue-600' : 'text-slate-500'}`} />
+                <span className="truncate max-w-full">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
       {/* Cloud Sync Toast Notification */}
       {syncToast && (
-        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white text-xs font-semibold px-4 py-3 rounded-xl shadow-2xl border border-slate-700 flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className="fixed bottom-20 lg:bottom-6 right-4 lg:right-6 z-50 max-w-[calc(100vw-2rem)] bg-slate-900 text-white text-xs font-semibold px-4 py-3 rounded-xl shadow-2xl border border-slate-700 flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
           <Cloud className="w-4 h-4 text-blue-400 shrink-0 animate-pulse" />
-          <span>{syncToast}</span>
+          <span className="line-clamp-2">{syncToast}</span>
           <button
             type="button"
             onClick={() => setSyncToast(null)}
-            className="text-slate-400 hover:text-white ml-2 text-xs"
+            className="text-slate-400 hover:text-white ml-2 text-xs min-w-[28px] min-h-[28px] flex items-center justify-center"
           >
             ✕
           </button>

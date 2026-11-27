@@ -73,13 +73,13 @@ export const TeacherRequestModal: React.FC<TeacherRequestModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs font-sans overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-xs font-sans">
       <div 
-        className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden my-6 transition-all"
+        className="relative w-full max-w-lg max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col transition-all"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white p-6 relative">
+        <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white p-5 sm:p-6 relative shrink-0">
           <button
             onClick={onClose}
             className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-colors cursor-pointer"
@@ -104,7 +104,7 @@ export const TeacherRequestModal: React.FC<TeacherRequestModalProps> = ({
         </div>
 
         {/* Content */}
-        <div className="p-6">
+        <div className="p-5 sm:p-6 flex-1 min-h-0 overflow-y-auto scroll-lane">
           {existingRequest && existingRequest.status === 'pending' ? (
             <div className="p-5 bg-amber-50 rounded-2xl border border-amber-200 text-center space-y-3">
               <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">

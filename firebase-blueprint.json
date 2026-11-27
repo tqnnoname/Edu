@@ -1923,6 +1923,57 @@
         }
       },
       "required": ["id", "title", "message", "category", "targetType", "recipientScope", "senderUid", "senderName", "senderEmail", "createdAtStr", "updatedAt"]
+    },
+    "MediaAssetDoc": {
+      "title": "MediaAssetDoc",
+      "description": "Cross-device persistent compressed image asset stored in Firestore so images sync reliably across desktop, mobile, and iPad.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "mimeType": {
+          "type": "string",
+          "enum": ["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"]
+        },
+        "dataUrl": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 880000
+        },
+        "sizeBytes": {
+          "type": "number"
+        },
+        "fileName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerEmail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public", "authenticated"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "mimeType", "dataUrl", "ownerUid", "visibility", "updatedAt"]
     }
   },
   "firestore": {
@@ -2033,6 +2084,10 @@
     "/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/NotificationDoc" },
       "description": "Deep-linked in-app notifications scoped to roles, classrooms, or specific recipients."
+    },
+    "/mediaAssets/{assetId}": {
+      "schema": { "$ref": "#/entities/MediaAssetDoc" },
+      "description": "Cross-device persistent compressed image assets referenced via fsmedia://<assetId>."
     }
   }
 }

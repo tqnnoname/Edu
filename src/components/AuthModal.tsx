@@ -202,12 +202,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const cardContent = (
     <div
       className={`relative w-full ${
-        embedded ? 'max-w-none' : 'max-w-md my-6'
+        embedded
+          ? 'max-w-none'
+          : 'max-w-md max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col'
       } bg-white rounded-2xl shadow-2xl border border-slate-200/80 overflow-hidden transition-all`}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header decoration */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-900 text-white p-6 relative">
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-900 text-white p-5 sm:p-6 relative shrink-0">
         {!embedded && (
           <button
             type="button"
@@ -273,7 +275,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <div className="p-6">
+        <div className={`p-5 sm:p-6 ${embedded ? '' : 'flex-1 min-h-0 overflow-y-auto scroll-lane'}`}>
           {errorMsg && (
             <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -593,7 +595,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs font-sans overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-xs font-sans"
       onClick={handleClose}
     >
       {cardContent}

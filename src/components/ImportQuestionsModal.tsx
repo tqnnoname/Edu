@@ -15,7 +15,7 @@ import {
   Layers,
   AlertCircle,
 } from 'lucide-react';
-import { getAllExams, getAllSubjects, isCreatorOfItem } from '../utils/storage';
+import { getAllExams, getAllSubjects, isCreatorOfItem, isMasterAdminUser } from '../utils/storage';
 import { RichContentRenderer } from './RichContentRenderer';
 import { MatchingQuestionView } from './MatchingQuestionView';
 import {
@@ -117,10 +117,11 @@ export const ImportQuestionsModal: React.FC<ImportQuestionsModalProps> = ({
 
   const accessibleExams = useMemo(() => {
     if (!isOpen) return [];
+    const isAdmin = isMasterAdminUser(currentUser);
     return getAllExams().filter((ex) => {
       if (currentExamId && ex.id === currentExamId) return false;
       if (!ex.questions || ex.questions.length === 0) return false;
-      if (isCreatorOfItem(ex, currentUser)) return true;
+      if (isAdmin || isCreatorOfItem(ex, currentUser)) return true;
       const vis = ex.visibility || 'public';
       return vis === 'public' && ex.status !== 'draft';
     });

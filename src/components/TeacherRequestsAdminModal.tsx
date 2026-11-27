@@ -60,13 +60,13 @@ export const TeacherRequestsAdminModal: React.FC<TeacherRequestsAdminModalProps>
   const pendingCount = requests.filter((r) => r.status === 'pending').length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs font-sans overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-xs font-sans">
       <div 
-        className="relative w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden my-6 transition-all"
+        className="relative w-full max-w-3xl max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col transition-all"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="bg-slate-900 text-white p-6 relative">
+        <div className="bg-slate-900 text-white p-5 sm:p-6 relative shrink-0">
           <button
             onClick={onClose}
             className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-colors cursor-pointer"
@@ -132,7 +132,7 @@ export const TeacherRequestsAdminModal: React.FC<TeacherRequestsAdminModalProps>
         </div>
 
         {/* Body */}
-        <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
+        <div className="p-4 sm:p-6 flex-1 min-h-0 overflow-y-auto scroll-lane space-y-4">
           {actionToast && (
             <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-semibold flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -227,7 +227,7 @@ export const TeacherRequestsAdminModal: React.FC<TeacherRequestsAdminModalProps>
         </div>
 
         {/* Footer */}
-        <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+        <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 shrink-0">
           <span>Quyền quản trị tối cao của Thầy Trần Quang Nhật</span>
           <button
             onClick={onClose}

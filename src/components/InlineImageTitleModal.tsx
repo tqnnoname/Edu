@@ -9,6 +9,7 @@ import {
   removeInlineImageFromText,
   updateInlineImageTitleInText,
 } from '../utils/inlineImages';
+import { ResilientImage } from './ResilientImage';
 
 interface InlineImageTitleModalProps {
   isOpen: boolean;
@@ -86,11 +87,11 @@ export const InlineImageTitleModal: React.FC<InlineImageTitleModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+      className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-2 sm:p-4"
       onPaste={handlePaste}
     >
       <div
-        className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4"
+        className="bg-white rounded-2xl max-w-md w-full max-h-[92dvh] overflow-y-auto p-4 sm:p-5 shadow-2xl border border-slate-200 space-y-4"
       >
         <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
           <div>
@@ -150,11 +151,10 @@ export const InlineImageTitleModal: React.FC<InlineImageTitleModalProps> = ({
         ) : (
           <div className="space-y-3">
             <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex flex-col items-center gap-2">
-              <img
+              <ResilientImage
                 src={imageSrc}
                 alt={title || 'Ảnh xem trước'}
                 className="max-h-48 max-w-full rounded-lg object-contain bg-white border border-slate-100 shadow-2xs"
-                referrerPolicy="no-referrer"
               />
               <label className="text-[11px] font-semibold text-purple-700 hover:underline cursor-pointer flex items-center gap-1">
                 <Upload className="w-3 h-3" />
@@ -258,11 +258,11 @@ export const InlineImageStrip: React.FC<InlineImageStripProps> = ({
             className="p-2 bg-white border border-slate-200 rounded-lg flex items-center gap-2.5"
           >
             {im.src ? (
-              <img
+              <ResilientImage
                 src={im.src}
                 alt={im.title || `Ảnh #${idx + 1}`}
                 className="w-12 h-12 object-contain rounded border border-slate-100 bg-slate-50 shrink-0"
-                referrerPolicy="no-referrer"
+                hideFallbackOnError={false}
               />
             ) : (
               <div className="w-12 h-12 rounded border border-slate-200 bg-slate-100 flex items-center justify-center text-slate-400 shrink-0">
@@ -403,13 +403,12 @@ export const AttachedImageBox: React.FC<AttachedImageBoxProps> = ({
       {imageUrl && (
         <div className="p-2.5 bg-white rounded-lg border border-slate-200 space-y-2">
           <div className="text-center">
-            <img
+            <ResilientImage
               src={imageUrl}
               alt={caption || label}
               className={`${
                 compact ? 'max-h-36' : 'max-h-52'
-              } rounded-lg border border-slate-200 inline-block shadow-2xs object-contain bg-white`}
-              referrerPolicy="no-referrer"
+              } max-w-full rounded-lg border border-slate-200 inline-block shadow-2xs object-contain bg-white`}
             />
           </div>
           {showCaption && onChangeCaption && (

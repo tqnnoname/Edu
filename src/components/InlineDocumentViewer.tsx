@@ -26,6 +26,7 @@ import {
   buildOfficeOrGooglePreviewUrl,
   type ParsedSpreadsheetSheet,
 } from '../utils/documentPreview';
+import { ResilientImage } from './ResilientImage';
 
 interface InlineDocumentViewerProps {
   document: PreviewableDocument;
@@ -310,7 +311,7 @@ export const InlineDocumentViewer: React.FC<InlineDocumentViewerProps> = ({
 
         {!loading && !error && kind === 'image' && safeHref && (
           <div className="min-h-full w-full flex items-center justify-center p-4 overflow-auto">
-            <img
+            <ResilientImage
               src={safeHref}
               alt={doc.name}
               style={{ transform: `scale(${imageZoom})`, transformOrigin: 'top center' }}

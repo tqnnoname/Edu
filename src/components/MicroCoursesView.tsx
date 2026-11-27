@@ -113,6 +113,7 @@ import {
 } from '../utils/inlineImages';
 import { downloadCourseAsScorm12Zip } from '../utils/scormExport';
 import { RichContentRenderer } from './RichContentRenderer';
+import { ResilientImage } from './ResilientImage';
 import { MathToolbar } from './MathToolbar';
 import { InlineImageStrip, InlineImageTitleModal, AttachedImageBox } from './InlineImageTitleModal';
 import { ConfirmModal } from './ConfirmModal';
@@ -1606,7 +1607,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       title: 'Xác nhận xóa khóa học',
       message: `Bạn có chắc chắn muốn xóa vĩnh viễn khóa học "${course.title}" cùng toàn bộ chương và bài học bên trong không?`,
       onConfirm: () => {
-        deleteCourse(course.id);
+        deleteCourse(course.id, { confirmedByUser: true });
         onRefreshCourses();
         const remaining = visibleCourses.filter((c) => c.id !== course.id);
         setSelectedCourseId(remaining[0]?.id || '');
@@ -2499,7 +2500,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       : 'Not Attempted (Chưa bắt đầu)';
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 font-sans">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6 font-sans min-w-0">
       {/* Toast Alert */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl flex items-center gap-2 text-xs font-semibold animate-in fade-in border border-slate-700">
@@ -3731,7 +3732,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                                 </h4>
                               )}
                               {block.imageUrl && (
-                                <img
+                                <ResilientImage
                                   src={block.imageUrl}
                                   alt={block.caption || block.title || 'Hình ảnh bài giảng'}
                                   className="max-h-96 mx-auto rounded-xl border border-slate-200 object-contain shadow-2xs bg-white"
@@ -4564,28 +4565,27 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
       {/* --- MODAL 1: ADD / EDIT COURSE --- */}
       {isCourseModalOpen && editingCourse && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-slate-100 bg-white shrink-0">
               <h3 className="text-base font-bold text-slate-900">
                 {editingCourse.id ? 'Chỉnh sửa khóa học' : 'Tạo khóa học mới'}
               </h3>
               <button
                 onClick={() => setIsCourseModalOpen(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {courseModalError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                <span>{courseModalError}</span>
-              </div>
-            )}
-
-            <div className="space-y-3 text-xs">
+            <div className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-6 space-y-3 text-xs">
+              {courseModalError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{courseModalError}</span>
+                </div>
+              )}
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
                   Tên khóa học <span className="text-rose-500">*</span>
@@ -4937,7 +4937,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-100">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3.5 border-t border-slate-100 bg-slate-50/90 shrink-0">
               {editingCourse.id && currentCourse && editingCourse.id === currentCourse.id ? (
                 <button
                   type="button"
@@ -4956,18 +4956,18 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               ) : (
                 <div />
               )}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 ml-auto">
                 <button
                   type="button"
                   onClick={() => setIsCourseModalOpen(false)}
-                  className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
+                  className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   Hủy
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveCourse}
-                  className="px-4 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+                  className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs"
                 >
                   Lưu khóa học
                 </button>
@@ -4979,21 +4979,21 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
       {/* --- MODAL 2: ADD / EDIT CHAPTER --- */}
       {isChapterModalOpen && editingChapter && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-slate-100 bg-white shrink-0">
               <h3 className="text-base font-bold text-slate-900">
                 {editingChapter.id ? 'Sửa thông tin Chương' : 'Thêm Chương mới vào khóa học'}
               </h3>
               <button
                 onClick={() => setIsChapterModalOpen(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
+            <div className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-6 space-y-3.5 text-xs">
               <div>
                 <label className="font-bold text-slate-700 block mb-1">Tên chương:</label>
                 <input
@@ -5124,18 +5124,18 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            <div className="flex items-center justify-end gap-2 px-4 sm:px-6 py-3.5 border-t border-slate-100 bg-slate-50/90 shrink-0">
               <button
                 type="button"
                 onClick={() => setIsChapterModalOpen(false)}
-                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
+                className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Hủy
               </button>
               <button
                 type="button"
                 onClick={handleSaveChapter}
-                className="px-4 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+                className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs"
               >
                 Lưu Chương
               </button>
@@ -5146,21 +5146,21 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
       {/* --- MODAL 3: ADD / EDIT LESSON --- */}
       {isLessonModalOpen && editingLesson && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-slate-100 bg-white shrink-0">
               <h3 className="text-base font-bold text-slate-900">
                 {editingLesson.id ? 'Chỉnh sửa bài học' : 'Thêm bài học vào Chương'}
               </h3>
               <button
                 onClick={() => setIsLessonModalOpen(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
+            <div className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-6 space-y-3.5 text-xs">
               {editingLesson.id && (currentCourse?.chapters?.length || 0) > 1 && (
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">
@@ -5626,18 +5626,18 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            <div className="flex items-center justify-end gap-2 px-4 sm:px-6 py-3.5 border-t border-slate-100 bg-slate-50/90 shrink-0">
               <button
                 type="button"
                 onClick={() => setIsLessonModalOpen(false)}
-                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
+                className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Hủy
               </button>
               <button
                 type="button"
                 onClick={handleSaveLesson}
-                className="px-4 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+                className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs"
               >
                 Lưu bài học
               </button>
@@ -5648,31 +5648,32 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
       {/* --- MODAL 4: INSERT OR EDIT CONTENT BLOCK (THEORY / IMAGE / QUESTION / CALLOUT) --- */}
       {isBlockModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div
-            ref={blockModalBodyRef}
-            className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-3.5 border-b border-slate-100 bg-white shrink-0">
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 truncate">
                 {editingBlockId
                   ? `Chỉnh sửa nội dung trong: ${activeLessonItem?.title}`
                   : `Chèn khối nội dung vào: ${activeLessonItem?.title}`}
               </h3>
               <button
                 onClick={handleCloseBlockModalExplicitly}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {blockModalError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                <span>{blockModalError}</span>
-              </div>
-            )}
+            <div
+              ref={blockModalBodyRef}
+              className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-6 space-y-4"
+            >
+              {blockModalError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{blockModalError}</span>
+                </div>
+              )}
 
             {/* Block Type Picker */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
@@ -5970,7 +5971,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                     )}
                     {blockImageUrl ? (
                       <div className="text-center space-y-1.5">
-                        <img
+                        <ResilientImage
                           src={blockImageUrl}
                           alt={blockCaption || blockTitle || 'Preview'}
                           className="max-h-56 mx-auto rounded-lg object-contain border border-slate-100"
@@ -6729,19 +6730,20 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                 </div>
               )}
             </div>
+            </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            <div className="flex items-center justify-end gap-2 px-4 sm:px-6 py-3.5 border-t border-slate-100 bg-slate-50/90 shrink-0">
               <button
                 type="button"
                 onClick={handleCloseBlockModalExplicitly}
-                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
+                className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Hủy
               </button>
               <button
                 type="button"
                 onClick={handleSaveBlock}
-                className="px-4 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+                className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs"
               >
                 {editingBlockId ? 'Lưu cập nhật' : 'Chèn vào bài học'}
               </button>
@@ -6850,7 +6852,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
 
               {block.type === 'image' && block.imageUrl && (
                 <div className="text-center space-y-2">
-                  <img
+                  <ResilientImage
                     src={block.imageUrl}
                     alt={block.caption || block.title || 'Hình minh họa'}
                     className="max-h-80 mx-auto rounded-lg border border-slate-200 object-contain bg-white"
@@ -7037,10 +7039,10 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         };
 
         return (
-          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-            <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-5">
+            <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
               {/* Preview Header */}
-              <div className="p-5 bg-slate-900 text-white flex flex-wrap items-start justify-between gap-4">
+              <div className="p-4 sm:p-5 bg-slate-900 text-white flex flex-wrap items-start justify-between gap-4 shrink-0">
                 <div className="space-y-1.5 min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2 text-[11px]">
                     <span className="px-2 py-0.5 rounded bg-blue-500 text-white font-bold uppercase tracking-wider flex items-center gap-1">
@@ -7083,7 +7085,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               </div>
 
               {/* Preview Mode Tabs & Answer Toggle */}
-              <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="px-4 sm:px-5 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
                 <div className="inline-flex rounded-xl bg-slate-200/70 p-1 text-xs font-bold">
                   <button
                     type="button"
@@ -7134,7 +7136,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               </div>
 
               {/* Preview Body */}
-              <div className="flex-1 overflow-y-auto p-5 bg-slate-50/40">
+              <div className="flex-1 min-h-0 overflow-y-auto scroll-lane p-4 sm:p-5 bg-slate-50/40">
                 {flatLessons.length === 0 ? (
                   <div className="p-10 text-center bg-white rounded-2xl border border-dashed border-slate-300 text-slate-500 text-sm">
                     Khóa học này chưa có chương hoặc bài học nào để xem trước.
@@ -7487,9 +7489,9 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
         const src = previewingAttachment.dataUrl || previewingAttachment.url || '';
         const textBody = kind === 'text' ? decodeBase64DataUrlText(previewingAttachment.dataUrl) : '';
         return (
-          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-            <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-              <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between gap-3 shrink-0">
+          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-5">
+            <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+              <div className="px-4 sm:px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-2 min-w-0">
                   <Paperclip className="w-4 h-4 text-blue-300 shrink-0" />
                   <h3 className="text-sm font-bold truncate">{previewingAttachment.name}</h3>
@@ -7518,31 +7520,30 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setPreviewingAttachment(null)}
-                    className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+                    className="min-h-[40px] min-w-[40px] flex items-center justify-center p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
               </div>
 
-              <div className="p-4 flex-1 overflow-auto bg-slate-50 flex items-center justify-center">
+              <div className="p-4 flex-1 min-h-0 overflow-auto scroll-lane bg-slate-50 flex items-center justify-center">
                 {kind === 'pdf' && (
                   <iframe
                     src={src}
                     title={previewingAttachment.name}
-                    className="w-full h-[70vh] rounded-xl border border-slate-200 bg-white"
+                    className="w-full h-[70dvh] rounded-xl border border-slate-200 bg-white"
                   />
                 )}
                 {kind === 'image' && (
-                  <img
+                  <ResilientImage
                     src={src}
                     alt={previewingAttachment.name}
-                    className="max-h-[72vh] max-w-full rounded-xl border border-slate-200 object-contain bg-white shadow-sm"
-                    referrerPolicy="no-referrer"
+                    className="max-h-[72dvh] max-w-full rounded-xl border border-slate-200 object-contain bg-white shadow-sm"
                   />
                 )}
                 {kind === 'text' && (
-                  <pre className="w-full max-h-[70vh] overflow-auto p-4 bg-white rounded-xl border border-slate-200 text-xs font-mono text-slate-800 whitespace-pre-wrap">
+                  <pre className="w-full max-h-[70dvh] overflow-auto p-4 bg-white rounded-xl border border-slate-200 text-xs font-mono text-slate-800 whitespace-pre-wrap">
                     {textBody || 'Không thể hiển thị nội dung văn bản.'}
                   </pre>
                 )}
@@ -7602,9 +7603,9 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
       />
       {/* Course Recovery Modal */}
       {isRecoveryModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[88vh]">
-            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between gap-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-1rem)] sm:max-h-[90dvh]">
+            <div className="px-4 sm:px-6 py-4 bg-slate-900 text-white flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-2.5">
                 <RotateCcw className="w-5 h-5 text-amber-400" />
                 <div>
@@ -7625,7 +7626,7 @@ export const MicroCoursesView: React.FC<MicroCoursesViewProps> = ({
               </button>
             </div>
 
-            <div className="p-6 overflow-y-auto space-y-4">
+            <div className="p-4 sm:p-6 flex-1 min-h-0 overflow-y-auto scroll-lane space-y-4">
               {recoveryFeedback && (
                 <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
                   {recoveryFeedback}

@@ -24,6 +24,7 @@ import {
 } from '../utils/scoring';
 import { renderMath } from '../utils/renderMath';
 import { exportResultsToExcel } from '../utils/exportFiles';
+import { ResilientImage } from './ResilientImage';
 
 interface ExamResultViewProps {
   result: ExamResult;
@@ -493,11 +494,10 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                             <RichContentRenderer content={optText} inlineImages={q.inlineImages} />
                             {q.optionImages?.[optIdx] && (
                               <div className="mt-1.5">
-                                <img
+                                <ResilientImage
                                   src={q.optionImages[optIdx]}
                                   alt={`Phương án ${letter}`}
-                                  className="max-h-36 rounded border border-slate-200 object-contain bg-white shadow-2xs"
-                                  referrerPolicy="no-referrer"
+                                  className="max-h-36 max-w-full rounded border border-slate-200 object-contain bg-white shadow-2xs"
                                 />
                               </div>
                             )}
@@ -711,11 +711,10 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                                     </div>
                                     {subQ.optionImages?.[sOptIdx] && (
                                       <div className="mt-1">
-                                        <img
+                                        <ResilientImage
                                           src={subQ.optionImages[sOptIdx]}
                                           alt={`Ý ${sLetter}`}
-                                          className="max-h-24 rounded border border-purple-100 object-contain bg-white shadow-2xs"
-                                          referrerPolicy="no-referrer"
+                                          className="max-h-24 max-w-full rounded border border-purple-100 object-contain bg-white shadow-2xs"
                                         />
                                       </div>
                                     )}

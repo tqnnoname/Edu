@@ -48,6 +48,8 @@ import {
   registerImplicitImagesMap,
 } from '../utils/inlineImages';
 import { processImageFile } from '../utils/imageUpload';
+import { uploadImageOrKeepFallback } from '../utils/courseMedia';
+import { ResilientImage } from './ResilientImage';
 import {
   gradeEntireExam,
   shuffleExamQuestionsAndOptions,
@@ -741,11 +743,10 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                             <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                             {currentQuestion.optionImages?.[optIdx] && (
                               <div className="mt-2">
-                                <img
+                                <ResilientImage
                                   src={currentQuestion.optionImages[optIdx]}
                                   alt={`Phương án ${letter}`}
-                                  className="max-h-40 rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
-                                  referrerPolicy="no-referrer"
+                                  className="max-h-40 max-w-full rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
                                 />
                               </div>
                             )}
@@ -797,11 +798,10 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                             <RichContentRenderer content={optText} inlineImages={currentQuestion.inlineImages} />
                             {currentQuestion.optionImages?.[optIdx] && (
                               <div className="mt-2">
-                                <img
+                                <ResilientImage
                                   src={currentQuestion.optionImages[optIdx]}
                                   alt={`Phương án ${letter}`}
-                                  className="max-h-40 rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
-                                  referrerPolicy="no-referrer"
+                                  className="max-h-40 max-w-full rounded-lg border border-slate-200 object-contain bg-white shadow-2xs"
                                 />
                               </div>
                             )}
@@ -977,9 +977,10 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                           end: typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length,
                         };
                         void processImageFile(file, 1200, 0.85)
-                          .then((compressed) => {
+                          .then((compressed) => uploadImageOrKeepFallback(compressed, file.name || 'essay_paste.png'))
+                          .then((uploadedUrl) => {
                             setEssayPasteModal({
-                              imageSrc: compressed,
+                              imageSrc: uploadedUrl,
                               defaultTitle: 'Hình bài làm',
                               el,
                               range,
@@ -1076,11 +1077,10 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
                                       />
                                       {subQ.optionImages?.[optIdx] && (
                                         <div className="mt-1.5">
-                                          <img
+                                          <ResilientImage
                                             src={subQ.optionImages[optIdx]}
                                             alt={`Ý ${letter}`}
-                                            className="max-h-28 rounded border border-purple-200 object-contain bg-white shadow-2xs"
-                                            referrerPolicy="no-referrer"
+                                            className="max-h-28 max-w-full rounded border border-purple-200 object-contain bg-white shadow-2xs"
                                           />
                                         </div>
                                       )}
@@ -1481,8 +1481,8 @@ export const ElectiveClusterTakingView: React.FC<ElectiveClusterTakingViewProps>
 
       {/* Submission Confirmation Modal */}
       {isSubmitModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95 my-8">
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[calc(100dvh-1rem)] sm:max-h-[92dvh] overflow-y-auto scroll-lane p-5 sm:p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
                 <CheckCircle2 className="w-6 h-6" />

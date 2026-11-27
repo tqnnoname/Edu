@@ -765,6 +765,27 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidMediaAsset(data) {
+      return data.keys().hasAll([
+          'id', 'mimeType', 'dataUrl', 'ownerUid', 'visibility', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'mimeType', 'dataUrl', 'sizeBytes', 'fileName',
+          'ownerUid', 'ownerEmail', 'visibility', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.mimeType in ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif']
+        && isValidString(data.dataUrl, 20, 880000)
+        && data.dataUrl.matches('^data:image/(png|jpeg|jpg|webp|gif);base64,.*')
+        && (!('sizeBytes' in data) || (data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 900000))
+        && (!('fileName' in data) || isValidString(data.fileName, 0, 200))
+        && isValidString(data.ownerUid, 1, 128)
+        && (!('ownerEmail' in data) || isValidString(data.ownerEmail, 0, 180))
+        && data.visibility in ['public', 'authenticated']
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
     // 4. Collection Match Rules
 
     // Connection Probe
@@ -1403,6 +1424,32 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(notificationId) && (
         isAdmin() ||
         existing().senderUid == request.auth.uid
+      );
+    }
+
+    // Cross-Device Persistent Compressed Image Assets (fsmedia://<assetId>)
+    match /mediaAssets/{assetId} {
+      allow get: if isSignedIn() || existing().visibility == 'public';
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        existing().ownerUid == request.auth.uid
+      );
+      allow create: if isSignedIn()
+        && isValidId(assetId)
+        && isValidMediaAsset(incoming())
+        && incoming().id == assetId
+        && incoming().updatedAt == request.time
+        && (isAdmin() || incoming().ownerUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && isValidId(assetId)
+        && isValidMediaAsset(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerUid == existing().ownerUid
+        && isValidUpdateTimestamp(incoming())
+        && (isAdmin() || existing().ownerUid == request.auth.uid);
+      allow delete: if isSignedIn() && isValidId(assetId) && (
+        isAdmin() ||
+        existing().ownerUid == request.auth.uid
       );
     }
   }

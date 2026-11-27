@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { normalizeMathSyntax, renderMath } from '../utils/renderMath';
 import { registerImplicitImagesMap, resolveImplicitImage } from '../utils/inlineImages';
+import {
+  isFirestoreMediaUri,
+  resolveFirestoreMediaUrlAsync,
+  resolveMediaSrcSync,
+} from '../utils/mediaAssets';
+import { ResilientImage } from './ResilientImage';
 
 interface RichContentRendererProps {
   content: string;
@@ -90,10 +96,17 @@ export function renderRichTextToHtml(
     if (!resolvedSrc || /^javascript:/i.test(resolvedSrc)) {
       return escapeHtml(cleanAlt ? `[Hình ảnh: ${cleanAlt}]` : '[Hình ảnh]');
     }
+    const isFs = isFirestoreMediaUri(resolvedSrc);
+    const immediateSrc = isFs ? resolveMediaSrcSync(resolvedSrc) : resolvedSrc;
     const showCaption = Boolean(cleanAlt && cleanAlt.toLowerCase() !== 'image' && cleanAlt !== 'Hình minh họa');
     const key = `___DOM_IMG_${imageHolders.length}___`;
+    const fsAttr = isFs && !immediateSrc ? ` data-fsmedia-src="${escapeHtml(resolvedSrc)}"` : '';
+    const srcAttr = immediateSrc
+      ? `src="${escapeHtml(immediateSrc)}"`
+      : 'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"';
+    const extraCls = immediateSrc ? '' : ' animate-pulse bg-slate-100 min-w-[140px] min-h-[84px]';
     imageHolders.push(
-      `<figure class="my-3 text-center"><img src="${escapeHtml(resolvedSrc)}" alt="${escapeHtml(cleanAlt || 'Hình minh họa')}" class="max-h-80 max-w-full rounded-xl border border-slate-200 inline-block shadow-xs bg-white object-contain" referrerpolicy="no-referrer" />${
+      `<figure class="my-3 text-center"><img ${srcAttr}${fsAttr} alt="${escapeHtml(cleanAlt || 'Hình minh họa')}" class="max-h-80 max-w-full rounded-xl border border-slate-200 inline-block shadow-xs bg-white object-contain${extraCls}" referrerpolicy="no-referrer" loading="lazy" decoding="async" />${
         showCaption ? `<figcaption class="text-xs text-slate-500 italic mt-1.5">${escapeHtml(cleanAlt)}</figcaption>` : ''
       }</figure>`
     );
@@ -106,11 +119,18 @@ export function renderRichTextToHtml(
     if (/^javascript:/i.test(trimmedSrc)) {
       return escapeHtml(alt || '');
     }
+    const isFs = isFirestoreMediaUri(trimmedSrc);
+    const immediateSrc = isFs ? resolveMediaSrcSync(trimmedSrc) : trimmedSrc;
     const cleanAlt = String(alt || '').trim();
     const showCaption = Boolean(cleanAlt && cleanAlt.toLowerCase() !== 'image' && cleanAlt !== 'Hình minh họa');
     const key = `___DOM_IMG_${imageHolders.length}___`;
+    const fsAttr = isFs && !immediateSrc ? ` data-fsmedia-src="${escapeHtml(trimmedSrc)}"` : '';
+    const srcAttr = immediateSrc
+      ? `src="${escapeHtml(immediateSrc)}"`
+      : 'src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"';
+    const extraCls = immediateSrc ? '' : ' animate-pulse bg-slate-100 min-w-[140px] min-h-[84px]';
     imageHolders.push(
-      `<figure class="my-3.5 text-center"><img src="${escapeHtml(trimmedSrc)}" alt="${escapeHtml(cleanAlt || 'Hình minh họa')}" class="max-h-80 max-w-full rounded-xl border border-slate-200 inline-block shadow-xs bg-white object-contain" referrerpolicy="no-referrer" />${
+      `<figure class="my-3.5 text-center"><img ${srcAttr}${fsAttr} alt="${escapeHtml(cleanAlt || 'Hình minh họa')}" class="max-h-80 max-w-full rounded-xl border border-slate-200 inline-block shadow-xs bg-white object-contain${extraCls}" referrerpolicy="no-referrer" loading="lazy" decoding="async" />${
         showCaption ? `<figcaption class="text-xs text-slate-500 italic mt-1.5">${escapeHtml(cleanAlt)}</figcaption>` : ''
       }</figure>`
     );
@@ -366,7 +386,42 @@ export const RichContentRenderer: React.FC<RichContentRendererProps> = ({
   }, [content, inlineImages]);
 
   useEffect(() => {
-    renderMath(containerRef.current);
+    const rootEl = containerRef.current;
+    renderMath(rootEl);
+    if (!rootEl) return;
+
+    let cancelled = false;
+    const attachFallbackIfBroken = (imgEl: HTMLImageElement) => {
+      if (imgEl.dataset.fallbackBound === '1') return;
+      imgEl.dataset.fallbackBound = '1';
+      imgEl.addEventListener('error', () => {
+        if (imgEl.dataset.fsmediaSrc) return; // still hydrating or failed hydration handled below
+        imgEl.classList.remove('animate-pulse');
+        imgEl.classList.add('p-3', 'bg-slate-50', 'border-dashed');
+      });
+    };
+
+    const imgs = Array.from(rootEl.querySelectorAll('img'));
+    imgs.forEach((imgEl) => {
+      attachFallbackIfBroken(imgEl);
+      const fsSrc = imgEl.getAttribute('data-fsmedia-src');
+      if (!fsSrc) return;
+      void resolveFirestoreMediaUrlAsync(fsSrc).then((dataUrl) => {
+        if (cancelled) return;
+        imgEl.classList.remove('animate-pulse', 'min-w-[140px]', 'min-h-[84px]');
+        if (dataUrl) {
+          imgEl.src = dataUrl;
+          imgEl.removeAttribute('data-fsmedia-src');
+        } else {
+          imgEl.alt = imgEl.alt || 'Không tải được ảnh';
+          imgEl.classList.add('p-3', 'bg-slate-50', 'border-dashed');
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [content, imageUrl, imageCaption, inlineImages, renderedContent]);
 
   return (
@@ -375,14 +430,10 @@ export const RichContentRenderer: React.FC<RichContentRendererProps> = ({
 
       {imageUrl && (
         <figure className="my-4 text-center">
-          <img
+          <ResilientImage
             src={imageUrl}
             alt={imageCaption || 'Hình minh họa'}
             className="max-h-80 max-w-full rounded-xl border border-slate-200 shadow-xs inline-block object-contain bg-white p-1"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              (e.target as HTMLElement).style.display = 'none';
-            }}
           />
           {imageCaption && imageCaption.trim() && (
             <figcaption className="text-xs text-slate-500 italic mt-1.5">
